@@ -113,7 +113,6 @@ export interface SessionMenuSheetProps {
   initialView: SessionMenuView;
   session: RemoteSession;
   busy: boolean;
-  readOnlyReason?: string | null;
   onContextError(error: string | null): void;
   /**
    * 账号级限额快照(被控端 `maker:usage:account` 原始返回,unknown 防御解析)。
@@ -158,7 +157,6 @@ export function SessionMenuSheet({
   initialView,
   session,
   busy,
-  readOnlyReason,
   onContextError,
   accountUsage,
   codexRateLimits,
@@ -330,13 +328,12 @@ export function SessionMenuSheet({
     return base;
   }, [copiedKey, t]);
 
-  const writeDisabled = busy || !!readOnlyReason;
-  const header = buildSessionMenuHeader(session, { readOnlyReason });
+  const header = buildSessionMenuHeader(session);
   const actions = buildSessionMenuActions({
     archived: session.status === 'archived',
     pinned: !!session.pinnedAt,
     busy,
-    writeDisabled,
+    writeDisabled: busy,
   });
 
   const submitRename = useCallback(() => {
@@ -561,8 +558,7 @@ export function SessionMenuSheet({
       ) : (
         <>
           {(header.chips.length > 0 ||
-            (!messageOnly && !!session.tags?.length) ||
-            !!readOnlyReason) && (
+            (!messageOnly && !!session.tags?.length)) && (
             <View style={styles.headerBlock} testID="session.menuHeader">
               {!messageOnly && !!session.tags?.length && (
                 <View
@@ -585,10 +581,6 @@ export function SessionMenuSheet({
                     </View>
                   ))}
                 </View>
-              ) : null}
-              {readOnlyReason ? (
-                <Text style={styles.readOnlyText} testID="session.menuReadOnlyNotice">
-                  {readOnlyReason}</Text>
               ) : null}
             </View>
                 )}
@@ -650,7 +642,7 @@ export function SessionMenuSheet({
               key={`${tagDeviceId ?? session.deviceLinkDeviceId}:${session.id}`}
               session={session}
               deviceId={tagDeviceId}
-              disabled={busy || !!readOnlyReason}
+              disabled={busy}
               expanded={false}
               onExpandedChange={(open) => {
                 if (open) tagsSheet.open();
@@ -800,7 +792,7 @@ export function SessionMenuSheet({
                 <View key={dir} style={styles.extraDirRow} testID="session.extraDirRow">
                   <Text numberOfLines={1} style={styles.extraDirPath}>{dir}</Text>
                   <MenuPillButton
-                    disabled={writeDisabled}
+                    disabled={busy}
                     label={t('session.menu.remove')}
                     onPress={() => removeExtraDir(dir)}
                     testID="session.extraDirRemoveButton"
@@ -814,7 +806,7 @@ export function SessionMenuSheet({
           ) : null}
           <View style={styles.infoActionRow}>
             <MenuPillButton
-              disabled={writeDisabled || !!extraDirBrowser?.loading}
+              disabled={busy || !!extraDirBrowser?.loading}
               label={extraDirBrowser?.open ? t('session.menu.collapseRemoteDir') : t('session.menu.browseRemoteDir')}
               onPress={onToggleExtraDirBrowser}
               testID="session.extraDirsBrowseToggle"
@@ -832,13 +824,13 @@ export function SessionMenuSheet({
               </Text>
               <View style={styles.infoActionRow}>
                 <MenuPillButton
-                  disabled={writeDisabled || extraDirBrowser.loading || !extraDirBrowser.parent}
+                  disabled={busy || extraDirBrowser.loading || !extraDirBrowser.parent}
                   label={t('session.menu.parentDir')}
                   onPress={() => extraDirBrowser.parent && onLoadExtraDirPath(extraDirBrowser.parent)}
                   testID="session.extraDirsBrowseParentButton"
                 />
                 <MenuPillButton
-                  disabled={writeDisabled || extraDirBrowser.loading || !extraDirBrowser.path}
+                  disabled={busy || extraDirBrowser.loading || !extraDirBrowser.path}
                   label={t('session.menu.addCurrentDir')}
                   onPress={() => addExtraDir(extraDirBrowser.path)}
                   testID="session.extraDirsBrowseAddCurrent"
@@ -853,7 +845,7 @@ export function SessionMenuSheet({
                     <Pressable
                       accessibilityLabel={t('session.menu.enterRemoteDir', { name: entry.name })}
                       accessibilityRole="button"
-                      disabled={writeDisabled || extraDirBrowser.loading}
+                      disabled={busy || extraDirBrowser.loading}
                       onPress={() => onLoadExtraDirPath(entry.path)}
                       style={({ pressed }) => [styles.browseEntryButton, pressed && styles.pressed]}
                     >
@@ -863,7 +855,7 @@ export function SessionMenuSheet({
                       </Text>
                     </Pressable>
                     <MenuPillButton
-                      disabled={writeDisabled || extraDirBrowser.loading}
+                      disabled={busy || extraDirBrowser.loading}
                       label={t('session.menu.add')}
                       onPress={() => addExtraDir(entry.path)}
                       testID="session.extraDirsBrowseAddEntry"
@@ -908,7 +900,7 @@ export function SessionMenuSheet({
     <TaskTagsSheet
       session={session}
       deviceId={tagDeviceId}
-      disabled={busy || !!readOnlyReason}
+      disabled={busy}
       visible={tagsSheet.visible}
       onClose={tagsSheet.close}
       onClosed={tagsSheet.closed}
@@ -1151,12 +1143,6 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     metaLine: {
       textAlign: 'center',
       color: colors.textSecondary,
-      fontSize: typeScale.caption,
-      lineHeight: lineHeight.caption,
-    },
-    readOnlyText: {
-      textAlign: 'center',
-      color: colors.textTertiary,
       fontSize: typeScale.caption,
       lineHeight: lineHeight.caption,
     },

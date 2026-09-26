@@ -1583,6 +1583,9 @@ function collaborationSettingsWire() {
     isCustomized: state.isCustomized,
     customizedKeys: state.customizedKeys,
     defaults: state.defaults,
+    // 只读追加:手机等 device-link 控制端据此预选「创建 Worker」的权限(被控端记住的
+    // Worker 创建偏好)。老控制端忽略未知字段;老被控端缺该字段时控制端回落产品默认。
+    workerPermissionMode: getWorkerPermissionModeFromCreationPrefs(),
   };
 }
 

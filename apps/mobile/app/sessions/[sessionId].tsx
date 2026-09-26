@@ -56,6 +56,7 @@ import {
   Square,
   Sparkles,
   Target,
+  UsersRound,
   Zap,
   X,
 } from 'lucide-react-native';
@@ -254,10 +255,13 @@ import {
 } from '@/session/attachments';
 import {
   ContextSheet,
-
+  ContextSheetFooterButton,
   ContextSheetGroup,
   ContextSheetRow,
 } from '@/session/ContextSheet';
+import { OrcaTeamPanelView, OrcaWorkerFormView } from '@/session/ContextSheetCollabView';
+import { useSessionOrcaCollab } from '@/session/useSessionOrcaCollab';
+import { takeOrcaStartFailure } from '@/session/orcaTeam';
 import { RecentPhotosStrip } from '@/session/ContextSheetMediaViews';
 import { ContextSheetGoalView, goalStatusLabel } from '@/session/ContextSheetGoalView';
 import { parseGoalLimitsRouteParam } from '@/session/goalLimitsRouteParam';
@@ -287,11 +291,7 @@ import {
   resolveContextSheetMediaAssetForUpload,
   type ContextSheetMediaAsset,
 } from '@/session/useContextSheetMediaAssets';
-import {
-  sessionCollaborationComposerReadOnlyReason,
-  sessionCollaborationLabel,
-  sessionCollaborationReadOnlyReason,
-} from '@/session/collaboration';
+import { sessionCollaborationLabel } from '@/session/collaboration';
 import {
   agentKindForSession,
   detectComposerTrigger,
@@ -1232,7 +1232,7 @@ export default function SessionScreen() {
   }, [mode, shareCharacterSrc, shareLogoSrc, shareSelectionActive]);
   // Context 面板(+ 号弹出的可拖动 sheet):open + 面板内子视图(主视图 / 截图列表 / 目标模式)。
   const [contextSheetOpen, setContextSheetOpen] = useState(false);
-  const [contextSheetView, setContextSheetView] = useState<'main' | 'goal'>('main');
+  const [contextSheetView, setContextSheetView] = useState<'main' | 'goal' | 'collab' | 'collab-create'>('main');
   const contextSheetMediaLibraryEnabled = canBrowsePhotoLibraryDirectly(Platform.OS);
   // 模型 + 权限浮窗(ContextSheet 同款 Modal,含二级「模型选项 / 权限」叠层)。
   const [modelSheetOpen, setModelSheetOpen] = useState(false);
@@ -2031,7 +2031,36 @@ export default function SessionScreen() {
     JSON.stringify([auth.accountGeneration, deviceId, sessionId]),
     currentSession,
   );
-  const composerDeviceProviders = useDeviceProviders(deviceId || undefined, modelSheetOpen);
+  // 协同(Orca):+ 面板「协同模式」二级视图 + Lead / Worker 导航。团队真身在被控端。
+  const openCollabSession = useCallback((targetSessionId: string) => {
+    if (!deviceId || !targetSessionId || targetSessionId === sessionId) return;
+    router.push({
+      pathname: '/sessions/[sessionId]',
+      params: { sessionId: targetSessionId, deviceId, deviceName },
+    });
+  }, [deviceId, deviceName, router, sessionId]);
+  const collab = useSessionOrcaCollab({
+    maker,
+    deviceId: deviceId || null,
+    sessionId,
+    session: currentSession,
+    enabled: !isSharedTaskPeer(deviceId) && !sessionManagedByHost,
+    sheetView: contextSheetView === 'collab' || contextSheetView === 'collab-create' ? contextSheetView : null,
+    sheetOpen: contextSheetOpen,
+    setSheetView: setContextSheetView,
+    setSheetOpen: setContextSheetOpen,
+    openSession: openCollabSession,
+  });
+  const composerDeviceProviders = useDeviceProviders(
+    deviceId || undefined,
+    modelSheetOpen || collab.workerForm.modelPicker.open,
+  );
+  // 新建任务页在后台开启协同失败时任务照单任务继续,提示在这里(跳转后的会话页)出现。
+  useEffect(() => {
+    const reason = takeOrcaStartFailure(sessionId);
+    if (reason) setError(t('session.collab.startFailedContinue', { reason }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId]);
   const accountProvider = composerDeviceProviders.ready
     ? composerDeviceProviders.providers.find((provider) => provider.id === currentSession?.providerId)
     : undefined;
@@ -2287,16 +2316,6 @@ export default function SessionScreen() {
       return () => clearTimeout(timer);
     }, [appStateActive, connectionEpoch, deviceId, hasRenderedMessages, liveAttention, maker, readAckSyncedKey, sessionId]),
   );
-  // 写编排只读 reason(fork/rewind、队列编辑、会话设置写、pending interaction):对 lead + worker 都返回。
-  const collaborationReadOnlyReason = useMemo(
-    () => sessionCollaborationReadOnlyReason(currentSession),
-    [currentSession?.orcaRole, i18nInstance.language],
-  );
-  // composer(发消息)只读 reason:仅非 lead 的协作角色只读;Lead 返回 null → 可在手机上发文字消息。
-  const composerReadOnlyReason = useMemo(
-    () => sessionCollaborationComposerReadOnlyReason(currentSession),
-    [currentSession?.orcaRole, i18nInstance.language],
-  );
   const activePendingInteraction = useMemo(() => {
     return selectPendingInteractionByRequestId(pending, pendingInteractionActiveRequestId);
   }, [pending, pendingInteractionActiveRequestId]);
@@ -2375,10 +2394,8 @@ export default function SessionScreen() {
       hasActivePendingInteraction,
       pendingInteractionBlocksComposer: pendingInteractionBlocksComposer && !isSharedTaskPeer(deviceId),
       remoteUnavailableReason: composerRemoteUnavailableReason,
-      // composer 用 composer-only reason:Lead → editable(可发消息),worker → read-only。
-      readOnlyReason: composerReadOnlyReason,
     }),
-    [composerReadOnlyReason, composerRemoteUnavailableReason, hasActivePendingInteraction, hasCurrentSession, pendingInteractionBlocksComposer, deviceId],
+    [composerRemoteUnavailableReason, hasActivePendingInteraction, hasCurrentSession, pendingInteractionBlocksComposer, deviceId],
   );
   useEffect(() => {
     if (!pendingInteractionActiveRequestId) return;
@@ -2433,10 +2450,6 @@ export default function SessionScreen() {
   const queueAvailabilityReason = cacheSeededReason
     ?? pendingCreationReason
     ?? (sessionOperationLayout.showQueue ? null : composerDisabledReason);
-  const queueInlineReadOnlyReason = collaborationReadOnlyReason ?? queueAvailabilityReason;
-  // 重试/清错属于输入恢复：Lead 能发消息，也应能恢复失败输入。
-  // 队列编辑和恢复整组队列仍沿用协作编排只读规则。
-  const errorRecoveryReadOnlyReason = composerReadOnlyReason ?? queueAvailabilityReason;
   const companionInlineInteraction = companionChat && pending.length > 0 && !pendingInteractionFullHeight;
   const showMessageHistory = companionInlineInteraction || sessionOperationLayout.messageHistoryMode === 'visible'
     || (sessionOperationLayout.messageHistoryMode === 'collapsed' && pendingHistoryExpanded);
@@ -4310,13 +4323,11 @@ export default function SessionScreen() {
   // 尾部未忽略 error 行由 SessionTailBanner 独家承载,消息流里滤掉对应错误卡
   // (对齐桌面 MessageStream 返回 null);dismissed / 有后续消息时判定不命中,回流照常。
   // 本视图刚点过「忽略」的行同样回流(持久化 dismiss 落库前内存 content 未变,只滤
-  // messages 会让 banner 和错误卡同时消失、错误信息无处可见,review P2)。协同只读
-  // (worker)会话不渲染 banner,错误卡必须留在消息流(同一 review P2)。
+  // messages 会让 banner 和错误卡同时消失、错误信息无处可见,review P2)。
   const errorTailClientId = useMemo(() => {
-    if (collaborationReadOnlyReason) return null;
     const id = findErrorTailClientId(latestMessagesRef.current);
     return id && !dismissedTailErrorClientIds.has(id) ? id : null;
-  }, [collaborationReadOnlyReason, dismissedTailErrorClientIds, messageStructureToken]);
+  }, [dismissedTailErrorClientIds, messageStructureToken]);
   const projectedMessageWindowRef = useRef<{
     projection: LoadedMessageWindowProjection;
     sessionId: string;
@@ -5583,7 +5594,7 @@ export default function SessionScreen() {
           originalIndex: index,
           projection: inputProjection,
           queueLength: inputProjection.pendingQueue.length,
-          readOnlyReason: queueInlineReadOnlyReason,
+          readOnlyReason: queueAvailabilityReason,
         });
         presentationByClientId.set(item.clientId, {
           actions: presentation.actions,
@@ -5610,7 +5621,7 @@ export default function SessionScreen() {
       queueBusy,
       queueEditing?.clientId,
       queueHiddenClientIds,
-      queueInlineReadOnlyReason,
+      queueAvailabilityReason,
       sendingQueueBadgeClientIds,
       settlingItemsForRender,
     ],
@@ -7092,7 +7103,7 @@ export default function SessionScreen() {
    * 且旧条目编辑期间新增的附件先回收再覆写托盘(否则成为 OSS 孤儿,review P2)。
    */
   const beginQueueEdit = (item: QueuedRemoteMessage) => {
-    if (queueInlineReadOnlyReason || queueBusy) return;
+    if (queueAvailabilityReason || queueBusy) return;
     // 上一条的保存(update-content)在途时不允许进入/切换编辑:切换路径会立即解锁
     // 旧条目并回收其编辑期附件,与在途 RPC 竞争——桌面端可能用旧内容抢先派发,或
     // OSS 引用在物化完成前被删(review P2)。编辑生命周期的全部入口/出口由此都被
@@ -7220,12 +7231,12 @@ export default function SessionScreen() {
   }, [cancelQueueEdit, inputProjection.pendingQueue, queueEditing]);
 
   const retryQueueError = () => {
-    if (errorRecoveryReadOnlyReason || !inputProjection.errorRetryText) return;
+    if (queueAvailabilityReason || !inputProjection.errorRetryText) return;
     void runQueueAction(() => maker.input.retryLastError(sessionId));
   };
 
   const clearQueueError = () => {
-    if (errorRecoveryReadOnlyReason) return;
+    if (queueAvailabilityReason) return;
     void runQueueAction(() => maker.input.clearError(sessionId));
   };
 
@@ -8825,7 +8836,6 @@ export default function SessionScreen() {
               pendingCount={pending.length}
               queueCount={inputProjection?.pendingQueue.length ?? 0}
               queuePaused={inputProjection?.queuePaused ?? false}
-              readOnlyReason={composerReadOnlyReason}
               remoteUnavailableReason={remoteUnavailableReason}
               searchOpen={searchOpen}
               title={isDeviceAccessRevoked
@@ -8934,7 +8944,6 @@ export default function SessionScreen() {
             )}
             onToggleExtraDirBrowser={toggleExtraDirBrowser}
             onTogglePinned={() => patchSessionMeta({ pinnedAt: currentSession.pinnedAt ? null : new Date().toISOString() })}
-            readOnlyReason={collaborationReadOnlyReason}
             session={currentSession}
             visible={settingsOpen}
           />
@@ -8975,10 +8984,35 @@ export default function SessionScreen() {
             ) : null}
         error={contextSheetView === 'main' ? attachmentError : null}
           keyboardAvoidingBehavior={nativeShellLayout.keyboardAvoidingBehavior}
-          onBack={contextSheetView !== 'main' ? () => setContextSheetView('main') : undefined}
+          onBack={contextSheetView === 'collab-create'
+            ? () => setContextSheetView('collab')
+            : contextSheetView !== 'main' ? () => setContextSheetView('main') : undefined}
           onClose={() => setContextSheetOpen(false)}
+          footer={contextSheetView === 'collab' && !collab.isLead ? (
+            <ContextSheetFooterButton
+              busy={collab.busy}
+              disabled={!collab.canSubmit || collab.entryBlocked}
+              label={t('session.collab.enableSubmit')}
+              onPress={() => void collab.submitEnable()}
+              testID="session.collabEnableButton"
+            />
+          ) : contextSheetView === 'collab-create' ? (
+            <ContextSheetFooterButton
+              busy={collab.busy}
+              disabled={!collab.canSubmit}
+              label={t('session.collab.createWorkerSubmit')}
+              onPress={() => void collab.submitCreate()}
+              testID="session.collabCreateWorkerButton"
+            />
+          ) : undefined}
           testID="session.contextSheet"
-          title={contextSheetView === 'goal' ? t('session.common.goalMode') : t('session.common.context')}
+          title={contextSheetView === 'goal'
+            ? t('session.common.goalMode')
+            : contextSheetView === 'collab'
+              ? (collab.isLead ? t('session.collab.title') : t('session.collab.enableTitle'))
+              : contextSheetView === 'collab-create'
+                ? t('session.collab.createWorkerTitle')
+                : t('session.common.context')}
           visible={contextSheetOpen}
         >
           {contextSheetView === 'main' ? (
@@ -9044,8 +9078,49 @@ export default function SessionScreen() {
                     </>
                   ) : 'chevron'}
                 />
+                {collab.eligible ? (
+                  <ContextSheetRow
+                    accessibilityHint={collab.entryHint ?? undefined}
+                    icon={<UsersRound color={colors.textPrimary} size={iconSize.lg} strokeWidth={iconStroke.regular} />}
+                    label={t('session.collab.modeLabel')}
+                    onPress={collab.openFromMain}
+                    testID="session.contextSheetCollabRow"
+                    trailing={collab.isLead ? (
+                      <>
+                        <Text style={{ color: colors.textTertiary, fontSize: typeScale.footnote }}>
+                          {t('session.collab.enabled')}
+                        </Text>
+                        <ChevronRight color={colors.textTertiary} size={iconSize.md} strokeWidth={iconStroke.regular} />
+                      </>
+                    ) : 'chevron'}
+                  />
+                ) : null}
               </ContextSheetGroup> : null}
             </>
+          ) : contextSheetView === 'collab' && collab.isLead ? (
+            <OrcaTeamPanelView
+              busy={collab.busy}
+              error={collab.error ?? collab.team.error}
+              loading={collab.team.loading}
+              onCreateWorker={collab.openCreateWorker}
+              onEndTeam={collab.confirmEndTeam}
+              onWorkerPress={collab.pressWorker}
+              settings={collab.team.settings}
+              workers={collab.team.workers}
+            />
+          ) : contextSheetView === 'collab' || contextSheetView === 'collab-create' ? (
+            <OrcaWorkerFormView
+              agents={collab.workerForm.agents}
+              busy={collab.busy}
+              customRoleMode={collab.workerForm.customRoleMode}
+              error={collab.error}
+              form={collab.workerForm.form}
+              notice={contextSheetView === 'collab' ? collab.entryHint : null}
+              onChange={collab.workerForm.patch}
+              onCustomRoleModeChange={collab.workerForm.setCustomRoleMode}
+              onPermissionChange={(mode) => void collab.workerForm.changePermission(mode)}
+              onPickModel={collab.workerForm.modelPicker.openPicker}
+            />
           ) : (
             // goal 接回载荷按 sessionId 归属、渲染时同步过滤(codex review P1):
             // key={sessionId} 重挂载发生在渲染新 sessionId 的瞬间,此时 goalRestore
@@ -9123,6 +9198,57 @@ export default function SessionScreen() {
             selectedProviderId={modelSheetSelection.providerId}
             testID="session.modelSheet"
             visible={modelSheetOpen && canUseRemoteSessionControls}
+          />
+        ) : null}
+        {currentSession && collab.eligible ? (
+          // 协同 Worker 的模型选择:与会话模型浮窗同一套统一模型目录,但只回写 Worker 表单,
+          // 不触碰当前任务的模型。iOS 原生 sheet 不能叠开:打开前先收起 + 面板,关闭后再展开。
+          <ModelPickerSheet
+            unified={{
+              currentSelection: collab.workerForm.form.model ? {
+                agentKind: collab.workerForm.form.agent,
+                activeModelId: collab.workerForm.form.model.id,
+                selectedProviderId: collab.workerForm.form.model.providerId,
+                selectedEffort: collab.workerForm.form.model.effort ?? '',
+                selectedFastMode: collab.workerForm.form.model.fast,
+              } : undefined,
+              scope: JSON.stringify([auth.user?.id, deviceId, 'orca-worker']),
+              agents: collab.workerForm.pickerAgents,
+              loadCapabilities: async agent => {
+                const result = normalizeMobileAgentCapabilities(await maker.getCapabilities(agent));
+                if (!result) throw new Error('Capabilities unavailable');
+                return result;
+              },
+              onSelect: collab.workerForm.modelPicker.select,
+            }}
+            activeModelId={collab.workerForm.form.model?.id ?? ''}
+            activePermissionMode=""
+            agentKind={collab.workerForm.form.agent}
+            apiKeyStatus={deviceApiKeyStatus}
+            capabilities={null}
+            emptyHint={composerDeviceProviders.error && !composerDeviceProviders.unsupported
+              ? humanizeRemoteError(composerDeviceProviders.error)
+              : undefined}
+            flatOptions={[]}
+            hidePermissionTrigger
+            keyboardAvoidingBehavior={nativeShellLayout.keyboardAvoidingBehavior}
+            loading={composerDeviceProviders.loading}
+            modelVisibilityOverrides={composerDeviceProviders.modelVisibilityOverrides}
+            onClose={collab.workerForm.modelPicker.close}
+            onClosed={collab.workerForm.modelPicker.closed}
+            onSelectFlatModel={() => undefined}
+            onSelectPermissionMode={() => undefined}
+            onSelectProviderRow={() => undefined}
+            permissionOptions={[]}
+            pricing={deviceModelPricing}
+            providers={composerDeviceProviders.providers}
+            providersReady={composerDeviceProviders.ready}
+            providersUnsupported={composerDeviceProviders.unsupported}
+            selectedEffort={collab.workerForm.form.model?.effort ?? ''}
+            selectedFastMode={!!collab.workerForm.form.model?.fast}
+            selectedProviderId={collab.workerForm.form.model?.providerId ?? null}
+            testID="session.collabModelSheet"
+            visible={collab.workerForm.modelPicker.open}
           />
         ) : null}
         {/* 权限模式独立浮窗(composer 权限图标钮点开;列表复用 MobilePermissionPickerList,
@@ -9244,15 +9370,15 @@ export default function SessionScreen() {
                     loadEarlierProgressKey={oldestLoadedMessageCursor}
                     onCopyMessageLink={copyMessageLink}
                     onAddMessageToComposer={canUseComposer ? addMessageToComposer : undefined}
-                    onDeleteMessage={collaborationReadOnlyReason || isSharedTaskPeer(deviceId) ? undefined : deleteMessage}
-                    onForkMessage={collaborationReadOnlyReason || isSharedTaskPeer(deviceId) ? undefined : forkAtMessage}
+                    onDeleteMessage={isSharedTaskPeer(deviceId) ? undefined : deleteMessage}
+                    onForkMessage={isSharedTaskPeer(deviceId) ? undefined : forkAtMessage}
                     onLoadEarlier={loadEarlierMessages}
                     onLoadToolInput={loadToolInput}
                     onOpenForkOrigin={forkOrigin ? openForkOrigin : undefined}
                     onOpenOriginSession={openOriginSession}
                     onBlockingOverlayChange={handleMessageBlockingOverlayChange}
                     onOpenSessionLink={openSessionLink}
-                    onPreviewRewind={collaborationReadOnlyReason || isSharedTaskPeer(deviceId) ? undefined : previewRewindAtMessage}
+                    onPreviewRewind={isSharedTaskPeer(deviceId) ? undefined : previewRewindAtMessage}
                     onEnterShareSelection={enterShareSelection}
                     onVisibleShareableMessageIdsReaderChange={handleVisibleShareableMessageIdsReaderChange}
                     shareSelectionActive={shareSelectionActive}
@@ -9265,7 +9391,7 @@ export default function SessionScreen() {
                     onReleaseRemoteMedia={releaseRemoteMedia}
                     onResolveRemoteMedia={resolveRemoteMedia}
                     onShareImage={shareLightboxImage}
-                    imageAnnotation={collaborationReadOnlyReason ? undefined : composerAnnotations.chatAnnotation}
+                    imageAnnotation={composerAnnotations.chatAnnotation}
                     queueFooter={(
                       <>
                         {companionInlineInteraction && !shareSelectionActive ? <InteractionPanel
@@ -9276,27 +9402,21 @@ export default function SessionScreen() {
                           interactions={pending} activeRequestId={pendingInteractionActiveRequestId}
                           onActiveRequestIdChange={setPendingInteractionActiveRequestId}
                           planViewerState={pendingPlanViewerState} onPlanViewerStateChange={setPendingPlanViewerState}
-                          onError={setError} readOnlyReason={collaborationReadOnlyReason}
+                          onError={setError}
                         /> : null}
                         {/* error-tail / interrupted 收尾提示:live 错误与队列区互斥
-                            (resolveSessionTailBanner 内部已按 projection.error 抑制)。
-                            协同只读会话(worker):error-tail 不渲染(错误卡已回流
-                            消息流,信息可见);interrupted 渲染只读信息版——它没有
-                            任何消息行可回落,不显示会让用户不知道任务为何停了
-                            (review P2),操作行按只读隐藏。 */}
-                        {tailBannerState
-                          && (!collaborationReadOnlyReason || tailBannerState.kind === 'interrupted') ? (
+                            (resolveSessionTailBanner 内部已按 projection.error 抑制)。 */}
+                        {tailBannerState ? (
                           <SessionTailBanner
                             busy={tailBannerBusy}
                             onContinue={() => void continueTailBanner()}
                             onDismiss={dismissTailBanner}
-                            readOnly={!!collaborationReadOnlyReason}
                             state={tailBannerState}
                           />
                         ) : null}
                         {shouldShowFailedScheduleNotice({
                           latestFailedRun: scheduleFailure?.source === scheduleNoticeSource ? scheduleFailure.run : null,
-                          readOnly: !!collaborationReadOnlyReason,
+                          readOnly: false,
                           tailError: !!errorTailClientId || !!retryHiddenTailClientId,
                           interrupted: tailBannerState?.kind === 'interrupted',
                           continuationPending: tailContinuationInFlight,
@@ -9311,12 +9431,11 @@ export default function SessionScreen() {
                         <InlineQueueSection
                           busy={queueBusy}
                           sessionSource={currentSession?.source}
-                          errorRecoveryReadOnlyReason={errorRecoveryReadOnlyReason}
                           onClearError={clearQueueError}
                           onResume={resumeQueue}
                           onRetryError={retryQueueError}
                           projection={inputProjection}
-                          readOnlyReason={queueInlineReadOnlyReason}
+                          readOnlyReason={queueAvailabilityReason}
                         />
                       </>
                     )}
@@ -9440,7 +9559,6 @@ export default function SessionScreen() {
                   activeRequestId={pendingInteractionActiveRequestId}
                   onActiveRequestIdChange={setPendingInteractionActiveRequestId}
                   onError={setError}
-                  readOnlyReason={collaborationReadOnlyReason}
                 />
               </ScrollView>
             </View>
@@ -9482,7 +9600,6 @@ export default function SessionScreen() {
                     planViewerState={pendingPlanViewerState}
                     onPlanViewerStateChange={setPendingPlanViewerState}
                     onError={setError}
-                    readOnlyReason={collaborationReadOnlyReason}
                   />
                 </View>
               ) : (
@@ -9504,19 +9621,11 @@ export default function SessionScreen() {
                   planViewerState={pendingPlanViewerState}
                   onPlanViewerStateChange={setPendingPlanViewerState}
                   onError={setError}
-                  readOnlyReason={collaborationReadOnlyReason}
                 />
                 </ScrollView>
               )}
             </View>
-          )) : sessionOperationLayout.composerSlot === 'read-only' ? (
-            <View style={styles.readOnlyComposer} testID="session.collaborationReadOnlyComposer">
-              <Text style={styles.collaborationTitle}>{t('session.screen.readOnlyMode')}</Text>
-              <Text style={styles.collaborationText}>
-                {composerDisabledReason}
-              </Text>
-            </View>
-          ) : (
+          )) : (
             <>
               {/* 消息区还在「正在同步」占位(新建会话第一帧 / 冷开首屏)时不谈运行状态:
                   「正在同步 + 思考中 + 0s · 0 tokens」三件事同时铺开,反倒像出错,而且
@@ -9564,6 +9673,39 @@ export default function SessionScreen() {
                     avatar={companionPortrait(COMPANION_STATUS_AVATAR_SIZE)}
                   />
                 </View>
+              ) : null}
+              {/* 协同状态条:Lead 显示 Worker 概况并打开协同面板;Worker 回到所属 Lead。 */}
+              {!companionChat && !shareSelectionActive
+                && (collab.isLead || (collab.isWorker && collab.workerLeadSessionId)) ? (
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => {
+                    if (!collab.isLead) {
+                      collab.openLead();
+                      return;
+                    }
+                    setModelSheetOpen(false);
+                    collab.openFromMain();
+                    setContextSheetOpen(true);
+                  }}
+                  style={({ pressed }) => [
+                    styles.queueEditBar,
+                    { marginHorizontal: composerTouchLayout.composerPaddingHorizontal },
+                    pressed && styles.collabBarPressed,
+                  ]}
+                  testID="session.collabBar"
+                >
+                  <UsersRound color={colors.textTertiary} size={iconSize.sm} strokeWidth={iconStroke.regular} />
+                  <Text numberOfLines={1} style={styles.queueEditBarText}>
+                    {collab.isLead
+                      ? t('session.collab.barLead', {
+                        count: collab.team.workers.length,
+                        running: collab.team.workers.filter((worker) => worker.status === 'running').length,
+                      })
+                      : t('session.collab.barWorker')}
+                  </Text>
+                  <ChevronRight color={colors.textTertiary} size={iconSize.sm} strokeWidth={iconStroke.regular} />
+                </Pressable>
               ) : null}
               {queueEditing ? (
                 <View
@@ -9729,7 +9871,6 @@ function SessionHeaderBar({
   pendingCount,
   queueCount,
   queuePaused,
-  readOnlyReason,
   remoteUnavailableReason,
   searchOpen,
   title,
@@ -9759,7 +9900,6 @@ function SessionHeaderBar({
   pendingCount: number;
   queueCount: number;
   queuePaused: boolean;
-  readOnlyReason?: string | null;
   remoteUnavailableReason?: string | null;
   searchOpen: boolean;
   title: string;
@@ -9774,7 +9914,6 @@ function SessionHeaderBar({
         pendingCount,
         queueCount,
         queuePaused,
-        readOnlyReason,
         remoteUnavailableReason,
         searchOpen,
         session: currentSession,
@@ -9797,7 +9936,6 @@ function SessionHeaderBar({
     isDeviceAccessRevoked,
     pendingCount,
     queuePaused,
-    readOnlyReason,
     session: currentSession,
   });
   const nativeHeader = Platform.OS === 'ios';
@@ -10040,21 +10178,17 @@ function compactSessionHeaderNotice({
   isDeviceAccessRevoked,
   pendingCount,
   queuePaused,
-  readOnlyReason,
   session,
 }: {
   isDeviceAccessRevoked: boolean;
   pendingCount: number;
   queuePaused: boolean;
-  readOnlyReason?: string | null;
   session: RemoteSession | null;
 }): string | null {
   if (isDeviceAccessRevoked) return i18n.t('session.screen.accessRevoked');
   if (!session) return null;
   if (pendingCount > 0) return i18n.t('session.screen.pendingCount', { num: pendingCount });
-  // readOnlyReason 现在传入的是 composer 只读 reason:worker(只读)→「只读模式」;Lead(可聊天)→ 不显示。
-  if (readOnlyReason) return i18n.t('session.screen.readOnlyMode');
-  // 协作角色会话(Lead 等可聊天的角色)显示协作标签而非「只读模式」,标明其协作身份。
+  // 协同任务(Lead / Worker 等)显示协同标签,标明其协同身份。
   const collaborationLabel = sessionCollaborationLabel(session);
   if (collaborationLabel) return collaborationLabel;
   if (session.status === 'archived') return i18n.t('session.screen.archived');
@@ -11604,6 +11738,9 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
   },
+  collabBarPressed: {
+    opacity: 0.7,
+  },
   queueEditBarText: {
     color: colors.textSecondary,
     flex: 1,
@@ -11787,16 +11924,6 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     fontSize: typeScale.caption,
     fontWeight: fontWeight.medium,
   },
-  collaborationTitle: {
-    color: colors.textPrimary,
-    fontSize: typeScale.caption,
-    fontWeight: fontWeight.medium,
-  },
-  collaborationText: {
-    color: colors.textSecondary,
-    fontSize: typeScale.caption,
-    lineHeight: lineHeight.caption,
-  },
   sessionSyncPlaceholder: {
     flex: 1,
     justifyContent: 'flex-start',
@@ -11853,13 +11980,6 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   pendingInteractionFullContent: {
     flexGrow: 1,
     minHeight: 0,
-  },
-  readOnlyComposer: {
-    borderTopColor: colors.border,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    gap: spacing.xs,
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.md,
   },
   composer: {
     backgroundColor: 'transparent',

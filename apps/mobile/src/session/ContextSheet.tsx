@@ -18,7 +18,7 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
-import { Text } from '@/components/AppText';
+import { Text, TextInput } from '@/components/AppText';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { computeContextSheetSnapHeights, type ContextSheetSnap } from '@/session/contextSheetModel';
 import { SheetModal } from '@/session/SheetModal';
@@ -156,6 +156,8 @@ export interface ContextSheetRowProps {
   testID?: string;
   /** Destructive actions (delete) read in the destructive text color. */
   destructive?: boolean;
+  /** 标签下方的次要说明(如 Worker 的 Agent · 模型)。 */
+  detail?: string;
 }
 
 export function ContextSheetRow({
@@ -168,6 +170,7 @@ export function ContextSheetRow({
   accessibilityHint,
   testID,
   destructive = false,
+  detail,
 }: ContextSheetRowProps) {
   const styles = useThemedStyles(makeContextSheetStyles);
   const { colors } = useTheme();
@@ -184,7 +187,14 @@ export function ContextSheetRow({
     >
       <View style={styles.rowLeft}>
         {icon}
-        <Text style={[styles.rowLabel, destructive && { color: colors.destructive }]}>{label}</Text>
+        {detail ? (
+          <View style={styles.rowTextColumn}>
+            <Text numberOfLines={1} style={[styles.rowLabel, destructive && { color: colors.destructive }]}>{label}</Text>
+            <Text numberOfLines={1} style={styles.rowDetail}>{detail}</Text>
+          </View>
+        ) : (
+          <Text style={[styles.rowLabel, destructive && { color: colors.destructive }]}>{label}</Text>
+        )}
       </View>
       <View style={styles.rowTrailing}>
         {busy ? (
@@ -240,6 +250,108 @@ export function ContextSheetFooterButton({
   );
 }
 
+/** 分组内的说明文字(提示 / 错误),不可点击。 */
+export function ContextSheetNote({ text, tone = 'secondary', testID }: {
+  text: string;
+  tone?: 'secondary' | 'error';
+  testID?: string;
+}) {
+  const styles = useThemedStyles(makeContextSheetStyles);
+  return (
+    <Text style={[styles.note, tone === 'error' && styles.noteError]} testID={testID}>{text}</Text>
+  );
+}
+
+export interface ContextSheetChoiceRowProps<T extends string> {
+  label: string;
+  options: readonly { id: T; label: string }[];
+  value: T | null;
+  onChange: (value: T) => void;
+  disabled?: boolean;
+  testID?: string;
+}
+
+/** 单选(pill 组;iOS 版为原生 Picker)。 */
+export function ContextSheetChoiceRow<T extends string>({
+  label,
+  options,
+  value,
+  onChange,
+  disabled,
+  testID,
+}: ContextSheetChoiceRowProps<T>) {
+  const styles = useThemedStyles(makeContextSheetStyles);
+  return (
+    // 标签由外层分组标题承担(iOS 原生 Picker 自带 label),这里只作无障碍分组名。
+    <View accessibilityLabel={label} accessibilityRole="radiogroup" style={styles.choiceRow} testID={testID}>
+      <View style={styles.choicePills}>
+        {options.map((option) => {
+          const selected = option.id === value;
+          return (
+            <Pressable
+              accessibilityLabel={option.label}
+              accessibilityRole="radio"
+              accessibilityState={{ checked: selected, disabled }}
+              disabled={disabled}
+              key={option.id}
+              onPress={() => onChange(option.id)}
+              style={({ pressed }) => [
+                styles.choicePill,
+                selected && styles.choicePillSelected,
+                pressed && styles.rowPressed,
+                disabled && styles.rowDisabled,
+              ]}
+              testID={testID ? `${testID}.${option.id}` : undefined}
+            >
+              <Text style={[styles.choicePillText, selected && styles.choicePillTextSelected]}>{option.label}</Text>
+            </Pressable>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
+export interface ContextSheetTextFieldProps {
+  value: string;
+  onChange: (value: string) => void;
+  placeholder: string;
+  accessibilityLabel: string;
+  multiline?: boolean;
+  disabled?: boolean;
+  maxLength?: number;
+  testID?: string;
+}
+
+/** 文本输入(iOS 版为原生 TextField)。 */
+export function ContextSheetTextField({
+  value,
+  onChange,
+  placeholder,
+  accessibilityLabel,
+  multiline,
+  disabled,
+  maxLength,
+  testID,
+}: ContextSheetTextFieldProps) {
+  const styles = useThemedStyles(makeContextSheetStyles);
+  const { colors } = useTheme();
+  return (
+    <TextInput
+      accessibilityLabel={accessibilityLabel}
+      editable={!disabled}
+      maxLength={maxLength}
+      multiline={multiline}
+      onChangeText={onChange}
+      placeholder={placeholder}
+      placeholderTextColor={colors.textTertiary}
+      style={[styles.textField, multiline && styles.textFieldMultiline]}
+      testID={testID}
+      value={value}
+    />
+  );
+}
+
 const ROW_HEIGHT = 48;
 
 function makeContextSheetStyles(colors: ThemeColors) {
@@ -290,12 +402,72 @@ function makeContextSheetStyles(colors: ThemeColors) {
     rowLeft: {
       alignItems: 'center' as const,
       flexDirection: 'row' as const,
+      flexShrink: 1,
       gap: spacing.md,
     },
     rowLabel: {
       color: colors.textPrimary,
       fontSize: typeScale.body,
       fontWeight: fontWeight.medium,
+    },
+    rowTextColumn: {
+      flexShrink: 1,
+      gap: 2,
+    },
+    rowDetail: {
+      color: colors.textTertiary,
+      fontSize: typeScale.footnote,
+    },
+    note: {
+      color: colors.textTertiary,
+      fontSize: typeScale.footnote,
+      paddingVertical: spacing.sm,
+    },
+    noteError: {
+      color: colors.errorText,
+    },
+    choiceRow: {
+      gap: spacing.sm,
+      paddingVertical: spacing.sm,
+    },
+    choicePills: {
+      flexDirection: 'row' as const,
+      flexWrap: 'wrap' as const,
+      gap: spacing.sm,
+    },
+    choicePill: {
+      alignItems: 'center' as const,
+      backgroundColor: colors.surfaceChip,
+      borderRadius: radius.pill,
+      height: 32,
+      justifyContent: 'center' as const,
+      paddingHorizontal: spacing.md,
+    },
+    choicePillSelected: {
+      backgroundColor: colors.cta,
+    },
+    choicePillText: {
+      color: colors.textPrimary,
+      fontSize: typeScale.footnote,
+      fontWeight: fontWeight.medium,
+    },
+    choicePillTextSelected: {
+      color: colors.ctaText,
+    },
+    textField: {
+      backgroundColor: colors.surface,
+      borderColor: colors.border,
+      borderRadius: radius.container,
+      borderWidth: StyleSheet.hairlineWidth,
+      color: colors.textPrimary,
+      fontSize: typeScale.body,
+      marginVertical: spacing.sm,
+      paddingHorizontal: spacing.md,
+      paddingVertical: spacing.sm + 2,
+    },
+    textFieldMultiline: {
+      minHeight: 96,
+      textAlignVertical: 'top' as const,
     },
     rowTrailing: {
       alignItems: 'center' as const,

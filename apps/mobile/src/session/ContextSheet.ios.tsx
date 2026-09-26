@@ -4,26 +4,34 @@ import { ComposerNativeSection as Section } from './ComposerNativeSection';
 import {
   createContext,
   useContext,
+  useEffect,
   useRef,
   type ReactNode,
 } from "react";
-import { Button, HStack, Image, RNHostView, ProgressView, Spacer, Text } from '@expo/ui/swift-ui';
+import { Button, HStack, Image, Picker, RNHostView, ProgressView, Spacer, Text, TextField, VStack, useNativeState } from '@expo/ui/swift-ui';
 import {
   accessibilityHint,
+  accessibilityLabel,
   buttonStyle,
   contentShape,
   disabled as disable,
+  font,
   frame,
   foregroundStyle,
+  lineLimit,
   listRowInsets,
+  pickerStyle,
   shapes,
+  tag,
 } from "@expo/ui/swift-ui/modifiers";
 import { useTranslation } from "react-i18next";
 import { View } from "react-native";
 import type {
+  ContextSheetChoiceRowProps,
   ContextSheetProps,
   ContextSheetRowProps,
   ContextSheetFooterButtonProps,
+  ContextSheetTextFieldProps,
 } from "./ContextSheet";
 import { ComposerSheet } from "./ComposerSheet";
 const DismissAction = createContext<(action: () => void) => void>((action) =>
@@ -75,6 +83,8 @@ export function ContextSheetGroup({
 }
 export function ContextSheetRow(props: ContextSheetRowProps) {
   const dismiss = useContext(DismissAction);
+  const { colors } = useTheme();
+  const labelModifiers = props.destructive ? [foregroundStyle(colors.destructive)] : [];
   return (
     <Button
       onPress={() =>
@@ -101,7 +111,14 @@ export function ContextSheetRow(props: ContextSheetRowProps) {
             {props.icon}
           </View>
         </RNHostView>
-        <Text>{props.label}</Text>
+        {props.detail ? (
+          <VStack alignment="leading" spacing={2}>
+            <Text modifiers={[...labelModifiers, lineLimit(1)]}>{props.label}</Text>
+            <Text modifiers={[font({ textStyle: 'footnote' }), foregroundStyle(colors.textSecondary), lineLimit(1)]}>{props.detail}</Text>
+          </VStack>
+        ) : (
+          <Text modifiers={labelModifiers}>{props.label}</Text>
+        )}
         <Spacer />
         {props.busy ? (
           <ProgressView />
@@ -130,5 +147,57 @@ export function ContextSheetFooterButton(props: ContextSheetFooterButtonProps) {
     >
       {props.busy ? <ProgressView /> : <Text>{props.label}</Text>}
     </Button>
+  );
+}
+
+export function ContextSheetNote({ text, tone = 'secondary', testID }: {
+  text: string;
+  tone?: 'secondary' | 'error';
+  testID?: string;
+}) {
+  const { colors } = useTheme();
+  return (
+    <Text testID={testID} modifiers={[font({ textStyle: 'footnote' }), foregroundStyle(tone === 'error' ? colors.errorText : colors.textSecondary)]}>
+      {text}
+    </Text>
+  );
+}
+
+export function ContextSheetChoiceRow<T extends string>(props: ContextSheetChoiceRowProps<T>) {
+  return (
+    <Picker
+      label={props.label}
+      selection={props.value ?? ''}
+      onSelectionChange={(next: string | number) => {
+        const option = props.options.find((item) => item.id === String(next));
+        if (option) props.onChange(option.id);
+      }}
+      modifiers={[pickerStyle(props.options.length <= 3 ? 'segmented' : 'menu'), disable(!!props.disabled)]}
+      testID={props.testID}
+    >
+      {props.options.map((option) => (
+        <Text key={option.id} modifiers={[tag(option.id)]}>{option.label}</Text>
+      ))}
+    </Picker>
+  );
+}
+
+export function ContextSheetTextField(props: ContextSheetTextFieldProps) {
+  const text = useNativeState(props.value);
+  useEffect(() => { if (text.get() !== props.value) text.set(props.value); }, [props.value, text]);
+  return (
+    <TextField
+      text={text}
+      onTextChange={props.onChange}
+      axis={props.multiline ? 'vertical' : 'horizontal'}
+      placeholder={props.placeholder}
+      maxLength={props.maxLength}
+      testID={props.testID}
+      modifiers={[
+        disable(!!props.disabled),
+        accessibilityLabel(props.accessibilityLabel),
+        ...(props.multiline ? [lineLimit({ min: 3, max: 6 })] : []),
+      ]}
+    />
   );
 }

@@ -1,0 +1,176 @@
+import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { i18n } from '@/i18n';
+import {
+  buildOrcaEnableOptions,
+  createOrcaWorker,
+  defaultOrcaWorkerForm,
+  describeOrcaError,
+  enableOrcaTeam,
+  isOrcaCollabEligible,
+  readOrcaCollabEntryStatus,
+  rememberOrcaStartFailure,
+  takeOrcaStartFailure,
+} from '@/session/orcaTeam';
+import type { MobileMakerTransport } from '@/device-link/mobileMakerTransport';
+
+beforeAll(async () => {
+  await i18n.changeLanguage('zh-CN');
+});
+
+type OrcaFake = Partial<MobileMakerTransport['orca']>;
+
+function fakeMaker(opts: {
+  capabilities?: unknown;
+  capabilitiesError?: Error;
+  orca?: OrcaFake;
+}): MobileMakerTransport {
+  return {
+    getCapabilities: vi.fn(async () => {
+      if (opts.capabilitiesError) throw opts.capabilitiesError;
+      return opts.capabilities ?? { supportsOrcaWorkerPermissionMode: true };
+    }),
+    orca: {
+      getCollabPolicy: vi.fn(async () => ({ effectiveEnabled: true })),
+      enable: vi.fn(async () => ({ workerSessionId: 'worker-1' })),
+      disable: vi.fn(async () => ({ ok: true })),
+      createWorker: vi.fn(async () => ({ ok: true, workerSessionId: 'worker-2' })),
+      listWorkers: vi.fn(async () => []),
+      getTeamByWorkerSession: vi.fn(async () => null),
+      switchFocus: vi.fn(async () => ({ ok: true })),
+      acknowledgeDone: vi.fn(async () => ({ ok: true })),
+      archiveWorker: vi.fn(async () => ({ ok: true })),
+      getCollaborationSettings: vi.fn(async () => ({})),
+      ...opts.orca,
+    },
+  } as unknown as MobileMakerTransport;
+}
+
+const project = { orcaRole: null, workspaceKind: 'project' as const, workingDir: '/repo', remoteHostId: null };
+
+describe('mobile Orca collaboration entry', () => {
+  it('only offers collaboration to Lead-capable tasks', () => {
+    expect(isOrcaCollabEligible(project)).toBe(true);
+    expect(isOrcaCollabEligible({ ...project, workingDir: '' })).toBe(false);
+    expect(isOrcaCollabEligible({ ...project, workspaceKind: 'dialogue', workingDir: null })).toBe(true);
+    expect(isOrcaCollabEligible({ ...project, orcaRole: 'worker' })).toBe(false);
+    expect(isOrcaCollabEligible(null)).toBe(false);
+  });
+
+  it('fails closed when the computer does not declare Worker permission support', async () => {
+    const maker = fakeMaker({ capabilities: {} });
+    await expect(readOrcaCollabEntryStatus(maker, project, 'codex')).resolves.toBe('unsupported');
+    expect(maker.orca.getCollabPolicy).not.toHaveBeenCalled();
+  });
+
+  it('maps policy query results to entry states', async () => {
+    await expect(readOrcaCollabEntryStatus(fakeMaker({}), project, 'codex')).resolves.toBe('ready');
+    await expect(readOrcaCollabEntryStatus(fakeMaker({
+      orca: { getCollabPolicy: vi.fn(async () => ({ effectiveEnabled: false })) },
+    }), project, 'codex')).resolves.toBe('disabled');
+    await expect(readOrcaCollabEntryStatus(fakeMaker({
+      orca: { getCollabPolicy: vi.fn(async () => { throw new Error('[DEVICE_LINK_CHANNEL_NOT_ALLOWED] no'); }) },
+    }), project, 'codex')).resolves.toBe('unsupported');
+    await expect(readOrcaCollabEntryStatus(fakeMaker({
+      orca: { getCollabPolicy: vi.fn(async () => { throw new Error('[NOT_CONNECTED] offline'); }) },
+    }), project, 'codex')).resolves.toBe('unavailable');
+  });
+
+  it('skips the project policy query for SSH-remote sessions and existing Leads', async () => {
+    const remote = fakeMaker({});
+    await readOrcaCollabEntryStatus(remote, { ...project, remoteHostId: 'host-1' }, 'claude-code');
+    expect(remote.orca.getCollabPolicy).toHaveBeenCalledWith(undefined, 'project');
+
+    const lead = fakeMaker({});
+    await expect(readOrcaCollabEntryStatus(lead, { ...project, orcaRole: 'lead' }, 'claude-code')).resolves.toBe('ready');
+    expect(lead.orca.getCollabPolicy).not.toHaveBeenCalled();
+  });
+});
+
+describe('mobile Orca collaboration mutations', () => {
+  const form = { ...defaultOrcaWorkerForm('codex', 'auto'), role: 'Reviewer', initialTask: 'check tests' };
+
+  it('builds enable options with a derived label and only the chosen model fields', () => {
+    expect(buildOrcaEnableOptions(form, 'task')).toEqual({
+      workerAgent: 'codex',
+      role: 'Reviewer',
+      label: 'reviewer',
+      workerPermissionMode: 'auto',
+      delegateTask: 'task',
+    });
+    expect(buildOrcaEnableOptions({
+      ...form,
+      model: { id: 'gpt-5.5', providerId: 'openai', effort: 'high', fast: true },
+    }, '  ')).toEqual({
+      workerAgent: 'codex',
+      role: 'Reviewer',
+      label: 'reviewer',
+      model: 'gpt-5.5',
+      effort: 'high',
+      fast: true,
+      providerId: 'openai',
+      workerPermissionMode: 'auto',
+    });
+    expect(defaultOrcaWorkerForm('pi', null).permissionMode).toBe('bypassPermissions');
+  });
+
+  it('re-checks capabilities before enabling and refuses on downgraded hosts', async () => {
+    const maker = fakeMaker({ capabilities: { supportsOrcaWorkerPermissionMode: false } });
+    await expect(enableOrcaTeam(maker, 'lead-1', buildOrcaEnableOptions(form))).rejects.toThrow('CHANNEL_NOT_ALLOWED');
+    expect(maker.orca.enable).not.toHaveBeenCalled();
+  });
+
+  it('treats a tunnel timeout as ambiguous and confirms the team from the Worker list', async () => {
+    const maker = fakeMaker({
+      orca: {
+        enable: vi.fn(async () => { throw new Error('[INVOKE_TIMEOUT] timed out'); }),
+        listWorkers: vi.fn(async () => [{ id: 'w-1', sessionId: 'worker-9' }]),
+      },
+    });
+    await expect(enableOrcaTeam(maker, 'lead-1', buildOrcaEnableOptions(form))).resolves.toEqual({ workerSessionId: 'worker-9' });
+    expect(maker.orca.enable).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats an already-active team as the desired end state', async () => {
+    const maker = fakeMaker({
+      orca: { enable: vi.fn(async () => { throw new Error('[ALREADY_EXISTS] active team'); }) },
+    });
+    await expect(enableOrcaTeam(maker, 'lead-1', buildOrcaEnableOptions(form))).resolves.toEqual({ workerSessionId: null });
+  });
+
+  it('does not retry authoritative enable failures', async () => {
+    const maker = fakeMaker({
+      orca: { enable: vi.fn(async () => { throw new Error('[PRECONDITION_FAILED] disabled'); }) },
+    });
+    await expect(enableOrcaTeam(maker, 'lead-1', buildOrcaEnableOptions(form))).rejects.toThrow('PRECONDITION_FAILED');
+    expect(maker.orca.listWorkers).not.toHaveBeenCalled();
+  });
+
+  it('re-derives the label from a fresh Worker list after a duplicate-label race', async () => {
+    const createWorker = vi.fn()
+      .mockRejectedValueOnce(new Error('[DUPLICATE_LABEL] taken'))
+      .mockResolvedValueOnce({ ok: true, workerSessionId: 'worker-3' });
+    const maker = fakeMaker({
+      orca: {
+        createWorker,
+        listWorkers: vi.fn(async () => [{ id: 'w-1', sessionId: 's-1', role: 'reviewer', label: 'reviewer' }]),
+      },
+    });
+    await expect(createOrcaWorker(maker, 'lead-1', form, [])).resolves.toEqual({ workerSessionId: 'worker-3' });
+    expect(createWorker.mock.calls.map((call) => call[0].label)).toEqual(['reviewer', 'reviewer-2']);
+    expect(createWorker.mock.calls[1][0]).toMatchObject({ initialTask: 'check tests', agent: 'codex' });
+  });
+
+  it('describes known Orca errors in the interface language', () => {
+    expect(describeOrcaError(new Error('[WORKER_LIMIT_HARD_EXCEEDED] full'), 'session.collab.errors.createFailed'))
+      .toBe('已达 Worker 硬上限，请先归档现有 Worker。');
+    expect(describeOrcaError(new Error('[DEVICE_LINK_CHANNEL_NOT_ALLOWED] old'), 'session.collab.errors.startFailed'))
+      .toBe('电脑端版本过旧，暂不支持协同');
+    expect(describeOrcaError(new Error('boom'), 'session.collab.errors.startFailed')).toContain('开启协同失败。');
+  });
+
+  it('hands a new-task start failure to the session page exactly once', () => {
+    rememberOrcaStartFailure('s-1', 'reason');
+    expect(takeOrcaStartFailure('s-1')).toBe('reason');
+    expect(takeOrcaStartFailure('s-1')).toBeNull();
+  });
+});

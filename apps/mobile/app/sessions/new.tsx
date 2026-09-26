@@ -57,6 +57,7 @@ import {
   Plus,
   Settings,
   Target,
+  UsersRound,
   X,
   Zap,
 } from 'lucide-react-native';
@@ -125,10 +126,25 @@ import {
 } from '@/session/agentCapabilitiesCache';
 import {
   ContextSheet,
-
+  ContextSheetFooterButton,
   ContextSheetGroup,
   ContextSheetRow,
 } from '@/session/ContextSheet';
+import { OrcaWorkerFormView } from '@/session/ContextSheetCollabView';
+import { useOrcaWorkerForm } from '@/session/useSessionOrcaCollab';
+import {
+  buildOrcaEnableOptions,
+  describeOrcaError,
+  enableOrcaTeam,
+  isOrcaCollabEligible,
+  orcaAgentLabel,
+  orcaCollabEntryHint,
+  readOrcaCollabEntryStatus,
+  rememberOrcaStartFailure,
+  type OrcaCollabEntryStatus,
+  type OrcaWorkerFormValue,
+} from '@/session/orcaTeam';
+import { buildDraftWorkerInitialTask } from '@cindy/maker-shared/orca-team';
 import { RecentPhotosStrip } from '@/session/ContextSheetMediaViews';
 import { ContextSheetGoalCreateForm } from '@/session/ContextSheetGoalView';
 import type { MobileGoalLimitsInput } from '@cindy/maker-shared/device-link-contract';
@@ -544,8 +560,45 @@ export default function NewRemoteSessionScreen() {
   const [showHiddenDirectories, setShowHiddenDirectories] = useState(false);
   // Context 面板(+ 号弹出的可拖动 sheet):open + 子视图(主视图 / 截图列表 / 目标草稿)。
   const [contextSheetOpen, setContextSheetOpen] = useState(false);
-  const [contextSheetView, setContextSheetView] = useState<'main' | 'goal'>('main');
+  const [contextSheetView, setContextSheetView] = useState<'main' | 'goal' | 'collab'>('main');
   const contextSheetMediaLibraryEnabled = canBrowsePhotoLibraryDirectly(Platform.OS);
+  // 新建即协同(对齐桌面 NewMakerDraftRoute 的协同草稿):确认后只武装草稿,发送首条消息 /
+  // 建目标时在 createSession 之后开启(首轮 Lead 才有协同工具)。一次性:创建后复位。
+  const [collabDraft, setCollabDraft] = useState<OrcaWorkerFormValue | null>(null);
+  const [collabEntryStatus, setCollabEntryStatus] = useState<OrcaCollabEntryStatus>('loading');
+  const collabForm = useOrcaWorkerForm({
+    maker,
+    active: contextSheetOpen && contextSheetView === 'collab',
+    defaultAgent: draft.agentKind,
+    setSheetOpen: setContextSheetOpen,
+  });
+  const collabTarget = useMemo(() => ({
+    orcaRole: null,
+    workspaceKind: draft.workspaceKind,
+    workingDir: draft.workingDir || null,
+    remoteHostId: null,
+  }), [draft.workingDir, draft.workspaceKind]);
+  const collabEligible = isOrcaCollabEligible(collabTarget);
+  // 换设备 / 换工作区后,草稿里的协同设置属于旧目标:丢弃,避免在新目标上静默开启。
+  useEffect(() => {
+    setCollabDraft(null);
+  }, [selectedDeviceId, draft.workspaceKind, draft.workingDir]);
+  useEffect(() => {
+    if (!contextSheetOpen || !collabEligible || !selectedDeviceId) return undefined;
+    let cancelled = false;
+    setCollabEntryStatus('loading');
+    void readOrcaCollabEntryStatus(maker, collabTarget, draft.agentKind)
+      .then((status) => { if (!cancelled) setCollabEntryStatus(status); });
+    return () => { cancelled = true; };
+  }, [collabEligible, collabTarget, contextSheetOpen, draft.agentKind, maker, selectedDeviceId]);
+  const openCollabDraftForm = useCallback(() => {
+    if (collabDraft) {
+      collabForm.setForm(collabDraft);
+    } else {
+      collabForm.reset(draft.agentKind, null);
+    }
+    setContextSheetView('collab');
+  }, [collabDraft, collabForm, draft.agentKind]);
   // 目标模式(对齐桌面 NewMakerDraftRoute.handleCreateGoal):填完表单直接建会话 + setGoal,
   // 被控端落目标消息并自动开跑第一轮,成功后跳转会话页。
   const [goalBusy, setGoalBusy] = useState(false);
@@ -899,7 +952,10 @@ export default function NewRemoteSessionScreen() {
     [capabilities, draft.model],
   );
   // 被控端供应商目录 → provider-aware 模型分段(对齐桌面)。0 供应商 / 旧被控端 → 回退扁平列表。
-  const deviceProviders = useDeviceProviders(selectedDeviceId || undefined, modelSheetOpen);
+  const deviceProviders = useDeviceProviders(
+    selectedDeviceId || undefined,
+    modelSheetOpen || collabForm.modelPicker.open,
+  );
   // 模型列表元信息(单价 / 折扣版 key presence)+ 草稿 per-(agent,来源,模型) 记忆(对齐桌面)。
   const deviceModelPricing = useDeviceModelPricing(selectedDeviceId || undefined);
   const deviceApiKeyStatus = useDeviceApiKeyStatus(selectedDeviceId || undefined);
@@ -3695,6 +3751,20 @@ export default function NewRemoteSessionScreen() {
             testID="newSession.planModeChip"
           />
         ) : null}
+        {collabDraft ? (
+          <PlanModeChip
+            disabled={creating}
+            exitAccessibilityLabel={t('session.collab.draftRemove')}
+            icon={<UsersRound color={colors.textPrimary} size={iconSize.sm} strokeWidth={iconStroke.regular} />}
+            label={t('session.collab.draftChip')}
+            onExit={() => setCollabDraft(null)}
+            onPress={() => {
+              openCollabDraftForm();
+              setContextSheetOpen(true);
+            }}
+            testID="newSession.collabChip"
+          />
+        ) : null}
         <Pressable
           accessibilityLabel={t('session.new.modelAccessibility', { model: runtimeSummary.modelSummary })}
           accessibilityRole="button"
@@ -4637,6 +4707,14 @@ export default function NewRemoteSessionScreen() {
         attachments: sendAttachments,
         planModeArm: planModeCapability && planModeDraftOn,
         legacyPlanRestore,
+        // 首个 Worker 先于 Lead 首条消息创建:把待发送的 Lead 输入作为上下文附在 Worker
+        // 任务后(与桌面控制端老被控端兼容路径同口径,见 buildDraftWorkerInitialTask)。
+        ...(collabDraft ? {
+          orcaEnable: buildOrcaEnableOptions(
+            collabDraft,
+            buildDraftWorkerInitialTask(collabDraft.initialTask, effectiveDraft.firstMessage),
+          ),
+        } : {}),
         precreatedWorktree,
         precreatedWorktreeAccountId: worktreeAccountId,
         // stale-ready 防护(review P1):缓存判 ready/unknown 也可能已过期。管线内
@@ -4708,6 +4786,7 @@ export default function NewRemoteSessionScreen() {
         // 一次性语义:chip 状态只影响这一次创建,创建后复位草稿态。
         setPlanModeDraftOn(false);
       }
+      setCollabDraft(null);
       voiceDictionaryLearningTrackerRef.current?.flush();
       // 本页即将 unmount 跳转会话页,标注私有缓存(源图 / 烧录图副本)清一遍
       // (review P2——此前只有目标流有这行,首条消息发送成功路径漏了,标注
@@ -4736,6 +4815,7 @@ export default function NewRemoteSessionScreen() {
   }, [
     agentAuthVerdict,
     auth.user?.id,
+    collabDraft,
     confirmAgentUnauthenticated,
     deviceLinkStatus,
     selectedDeviceId,
@@ -5332,6 +5412,18 @@ export default function NewRemoteSessionScreen() {
       // 调用进「编辑已有目标」分支会重落目标消息、停/重启轮次并重置计数)——仅
       // 当首次请求确认未执行才可重试,故失败直接进入接回:继续 settle 落账并跳转,
       // 目标未设置经 goalError 路由参数在会话页呈现,用户可在会话内重试设置目标。
+      // 协同草稿:goal.set 之前开启,首轮目标 Lead 才有协同工具。失败不阻断目标,
+      // 任务照单任务继续,原因带到会话页提示。
+      if (collabDraft) {
+        try {
+          await enableOrcaTeam(maker, result.sessionId, buildOrcaEnableOptions(
+            collabDraft,
+            buildDraftWorkerInitialTask(collabDraft.initialTask, input.objective),
+          ));
+        } catch (collabErr) {
+          rememberOrcaStartFailure(result.sessionId, describeOrcaError(collabErr, null));
+        }
+      }
       let goalSetError: string | null = null;
       try {
         await maker.goal.set({ sessionId: result.sessionId, objective: input.objective, ...(input.limits ? { limits: input.limits } : {}) });
@@ -5485,6 +5577,7 @@ export default function NewRemoteSessionScreen() {
   }, [
     agentAuthVerdict,
     auth,
+    collabDraft,
     confirmAgentUnauthenticated,
     draft,
     goalBusy,
@@ -6162,8 +6255,24 @@ export default function NewRemoteSessionScreen() {
         keyboardAvoidingBehavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         onBack={contextSheetView !== 'main' ? () => setContextSheetView('main') : undefined}
         onClose={() => setContextSheetOpen(false)}
+        footer={contextSheetView === 'collab' ? (
+          <ContextSheetFooterButton
+            disabled={!collabForm.valid || collabEntryStatus !== 'ready' || creating}
+            label={t('session.collab.draftSubmit')}
+            onPress={() => {
+              setCollabDraft(collabForm.form);
+              setContextSheetView('main');
+              setContextSheetOpen(false);
+            }}
+            testID="newSession.collabDraftSubmit"
+          />
+        ) : undefined}
         testID="newSession.contextSheet"
-        title={contextSheetView === 'goal' ? t('session.common.goalMode') : t('session.common.context')}
+        title={contextSheetView === 'goal'
+          ? t('session.common.goalMode')
+          : contextSheetView === 'collab'
+            ? t('session.collab.enableTitle')
+            : t('session.common.context')}
         visible={contextSheetOpen}
       >
         {contextSheetView === 'main' ? (
@@ -6219,7 +6328,53 @@ export default function NewRemoteSessionScreen() {
                 testID="newSession.contextSheetGoalRow"
                 trailing="chevron"
               />
+              {collabEligible ? (
+                <ContextSheetRow
+                  accessibilityHint={orcaCollabEntryHint(collabEntryStatus) ?? undefined}
+                  disabled={creating}
+                  icon={<UsersRound color={colors.textPrimary} size={iconSize.lg} strokeWidth={iconStroke.regular} />}
+                  label={t('session.collab.modeLabel')}
+                  onPress={openCollabDraftForm}
+                  testID="newSession.contextSheetCollabRow"
+                  trailing={collabDraft ? (
+                    <>
+                      <Text style={{ color: colors.textTertiary, fontSize: typeScale.footnote }}>
+                        {t('session.collab.enabled')}
+                      </Text>
+                      <ChevronRight color={colors.textTertiary} size={iconSize.md} strokeWidth={iconStroke.regular} />
+                    </>
+                  ) : 'chevron'}
+                />
+              ) : null}
             </ContextSheetGroup>
+          </>
+        ) : contextSheetView === 'collab' ? (
+          <>
+            <OrcaWorkerFormView
+              agents={collabForm.agents}
+              busy={creating}
+              customRoleMode={collabForm.customRoleMode}
+              form={collabForm.form}
+              notice={orcaCollabEntryHint(collabEntryStatus)}
+              onChange={collabForm.patch}
+              onCustomRoleModeChange={collabForm.setCustomRoleMode}
+              onPermissionChange={(mode) => void collabForm.changePermission(mode)}
+              onPickModel={collabForm.modelPicker.openPicker}
+            />
+            {collabDraft ? (
+              <ContextSheetGroup label="">
+                <ContextSheetRow
+                  destructive
+                  icon={<X color={colors.destructive} size={iconSize.lg} strokeWidth={iconStroke.regular} />}
+                  label={t('session.collab.draftRemove')}
+                  onPress={() => {
+                    setCollabDraft(null);
+                    setContextSheetView('main');
+                  }}
+                  testID="newSession.collabDraftRemove"
+                />
+              </ContextSheetGroup>
+            ) : null}
           </>
         ) : (
           <ContextSheetGoalCreateForm
@@ -6352,6 +6507,56 @@ export default function NewRemoteSessionScreen() {
         testID="newSession.modelSheet"
         visible={modelSheetOpen}
       />
+      {collabEligible ? (
+        // 协同首个 Worker 的模型选择:只回写协同表单,不改新任务自己的模型。
+        <ModelPickerSheet
+          unified={{
+            currentSelection: collabForm.form.model ? {
+              agentKind: collabForm.form.agent,
+              activeModelId: collabForm.form.model.id,
+              selectedProviderId: collabForm.form.model.providerId,
+              selectedEffort: collabForm.form.model.effort ?? '',
+              selectedFastMode: collabForm.form.model.fast,
+            } : undefined,
+            scope: JSON.stringify([auth.user?.id, selectedDeviceId, 'orca-worker']),
+            agents: collabForm.pickerAgents,
+            loadCapabilities: async agent => {
+              const result = normalizeMobileAgentCapabilities(await maker.getCapabilities(agent));
+              if (!result) throw new Error('Capabilities unavailable');
+              return result;
+            },
+            onSelect: collabForm.modelPicker.select,
+          }}
+          activeModelId={collabForm.form.model?.id ?? ''}
+          activePermissionMode=""
+          agentKind={collabForm.form.agent}
+          apiKeyStatus={deviceApiKeyStatus}
+          capabilities={null}
+          emptyHint={deviceProviders.error && !deviceProviders.unsupported
+            ? humanizeRemoteError(deviceProviders.error)
+            : undefined}
+          flatOptions={[]}
+          hidePermissionTrigger
+          keyboardAvoidingBehavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          loading={deviceProviders.loading}
+          modelVisibilityOverrides={deviceProviders.modelVisibilityOverrides}
+          onClose={collabForm.modelPicker.close}
+          onClosed={collabForm.modelPicker.closed}
+          onSelectFlatModel={() => undefined}
+          onSelectPermissionMode={() => undefined}
+          onSelectProviderRow={() => undefined}
+          permissionOptions={[]}
+          pricing={deviceModelPricing}
+          providers={deviceProviders.providers}
+          providersReady={deviceProviders.ready}
+          providersUnsupported={deviceProviders.unsupported}
+          selectedEffort={collabForm.form.model?.effort ?? ''}
+          selectedFastMode={!!collabForm.form.model?.fast}
+          selectedProviderId={collabForm.form.model?.providerId ?? null}
+          testID="newSession.collabModelSheet"
+          visible={collabForm.modelPicker.open}
+        />
+      ) : null}
       {/* 权限模式独立浮窗:composer 权限药丸点开;列表复用 MobilePermissionPickerList,
           选择走 selectPermissionMode(含 Full access 确认弹层 + per-agent 记忆)后关浮窗。 */}
       {Platform.OS === 'ios' ? (<NativePermissionSheet visible={permissionSheetOpen} onClose={() => setPermissionSheetOpen(false)}

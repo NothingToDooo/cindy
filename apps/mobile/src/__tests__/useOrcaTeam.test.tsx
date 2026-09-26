@@ -1,0 +1,85 @@
+// @vitest-environment jsdom
+import { act } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import type { MobileMakerTransport } from '@/device-link/mobileMakerTransport';
+
+const pushListeners = new Set<(deviceId: string, leadSessionId: string) => void>();
+
+vi.mock('react-native', () => ({ Alert: { alert: vi.fn() } }));
+vi.mock('@/device-link/DeviceLinkContext', () => ({
+  subscribeRemoteOrcaWorkerChanged: (listener: (deviceId: string, leadSessionId: string) => void) => {
+    pushListeners.add(listener);
+    return () => pushListeners.delete(listener);
+  },
+}));
+vi.mock('@/session/ContextSheetCollabView', () => ({ canSubmitOrcaWorkerForm: () => true }));
+vi.mock('@/session/fullAccessConfirmation', () => ({ confirmFullAccessChange: async () => true }));
+vi.mock('@/session/remoteSessionStore', () => ({ remoteSessionStore: { applySessionPatch: vi.fn() } }));
+
+const { useOrcaTeam } = await import('@/session/useSessionOrcaCollab');
+
+let root: Root;
+let host: HTMLDivElement;
+let latest: ReturnType<typeof useOrcaTeam> | null = null;
+
+function Probe(props: { maker: MobileMakerTransport; leadSessionId: string | null }) {
+  latest = useOrcaTeam({ maker: props.maker, deviceId: 'dev-1', leadSessionId: props.leadSessionId });
+  return null;
+}
+
+function fakeMaker(listWorkers: ReturnType<typeof vi.fn>): MobileMakerTransport {
+  return {
+    orca: {
+      listWorkers,
+      getCollaborationSettings: vi.fn(async () => ({ workerSoftLimit: 2, workerHardLimit: 4 })),
+    },
+  } as unknown as MobileMakerTransport;
+}
+
+beforeEach(() => {
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+  pushListeners.clear();
+  latest = null;
+  host = document.createElement('div');
+  root = createRoot(host);
+});
+afterEach(() => act(() => root.unmount()));
+
+it('loads the Lead team and refreshes only on worker-changed pushes for that Lead and device', async () => {
+  const listWorkers = vi.fn(async () => [{ id: 'w-1', sessionId: 's-1', status: 'running' }]);
+  const maker = fakeMaker(listWorkers);
+  await act(async () => root.render(<Probe maker={maker} leadSessionId="lead-1" />));
+  expect(listWorkers).toHaveBeenCalledTimes(1);
+  expect(latest?.workers.map((worker) => worker.workerId)).toEqual(['w-1']);
+  expect(latest?.settings.workerHardLimit).toBe(4);
+
+  await act(async () => {
+    for (const listener of pushListeners) listener('dev-1', 'other-lead');
+    for (const listener of pushListeners) listener('dev-2', 'lead-1');
+  });
+  expect(listWorkers).toHaveBeenCalledTimes(1);
+
+  await act(async () => {
+    for (const listener of pushListeners) listener('dev-1', 'lead-1');
+  });
+  expect(listWorkers).toHaveBeenCalledTimes(2);
+});
+
+it('does not load or subscribe for non-Lead tasks', async () => {
+  const listWorkers = vi.fn(async () => []);
+  await act(async () => root.render(<Probe maker={fakeMaker(listWorkers)} leadSessionId={null} />));
+  expect(listWorkers).not.toHaveBeenCalled();
+  expect(pushListeners.size).toBe(0);
+  expect(latest?.workers).toEqual([]);
+});
+
+it('surfaces load failures without dropping the last known list', async () => {
+  const listWorkers = vi.fn()
+    .mockResolvedValueOnce([{ id: 'w-1', sessionId: 's-1' }])
+    .mockRejectedValueOnce(new Error('[NOT_CONNECTED] offline'));
+  await act(async () => root.render(<Probe maker={fakeMaker(listWorkers)} leadSessionId="lead-1" />));
+  await act(async () => { await latest?.refresh(); });
+  expect(latest?.workers.map((worker) => worker.workerId)).toEqual(['w-1']);
+  expect(latest?.error).toBeTruthy();
+});
