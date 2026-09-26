@@ -3,6 +3,9 @@ import { setImportProbeConfirmation } from '../bot-import/probeAuthorization.js'
 import { requestHostInteraction } from './interactionRouter.js';
 import { prepareCompanionImportDeletion } from '../bot-import/host.js';
 import { createBotMessageTransport } from './botMessageTransport.js';
+import { MANAGED_LLAMACPP_PROVIDER_ID, llamaCppModelPreset } from '../../shared/llamaCpp.js';
+import { getManagedLlamaCppService } from '../local-model-runtime/llamaCppService.js';
+import { ensureManagedLlamaCppProvider } from '../local-model-runtime/managedLlamaCppProvider.js';
 import { setBotRemoteMessageService } from './botRemoteMessageReceiver.js';
 import { handleListDevices, defaultDeps as deviceDirectoryDeps } from '../device-link/ipc.js';
 import { getSelfDeviceId, remoteInvoke as invokeBotPeer } from '../device-link/index.js';
@@ -5973,10 +5976,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       ),
     }),
     validateModelContextLimit: async (targets, limit) => {
-      const { MANAGED_LLAMACPP_PROVIDER_ID, llamaCppModelPreset } = await import('../../shared/llamaCpp.js');
       const localTargets = targets.filter((target) => target.providerId === MANAGED_LLAMACPP_PROVIDER_ID);
       if (localTargets.length) {
-        const { getManagedLlamaCppService } = await import('../local-model-runtime/llamaCppService.js');
         const { models } = await getManagedLlamaCppService(app.getPath('userData')).snapshot();
         for (const target of localTargets) {
           const model = models.find((entry) => entry.id === target.modelId);
@@ -5997,15 +5998,12 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       }
     },
     writeModelContextLimit: async (targets, limit) => {
-      const { MANAGED_LLAMACPP_PROVIDER_ID } = await import('../../shared/llamaCpp.js');
       if (targets.some((target) => target.providerId === MANAGED_LLAMACPP_PROVIDER_ID)) {
         const owner = getActiveAppSession();
         const active = () => {
           const now = getActiveAppSession();
           return now?.dataOwnerId === owner?.dataOwnerId && now?.generation === owner?.generation;
         };
-        const { getManagedLlamaCppService } = await import('../local-model-runtime/llamaCppService.js');
-        const { ensureManagedLlamaCppProvider } = await import('../local-model-runtime/managedLlamaCppProvider.js');
         await ensureManagedLlamaCppProvider(
           (await getManagedLlamaCppService(app.getPath('userData')).snapshot()).models, active,
         );
