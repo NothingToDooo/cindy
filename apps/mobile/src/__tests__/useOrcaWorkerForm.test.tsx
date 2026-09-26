@@ -95,3 +95,46 @@ it('remembers the submitted choice for next time', async () => {
     initialTask: '',
   });
 });
+
+it('never lets a late memory read overwrite a permission the user already chose', async () => {
+  saveOrcaWorkerCreationPrefs('user-1', { ...defaultOrcaWorkerCreationPrefs(), workerPermissionMode: 'bypassPermissions' });
+  resetOrcaWorkerCreationPrefsMemory();
+  // 预读还没完成就打开表单并立刻改成「自动审批」。
+  await act(async () => root.render(<Probe maker={fakeMaker()} />));
+  act(() => { latest!.reset(); });
+  await act(async () => { await latest!.changePermission('auto'); });
+  await act(async () => { await flush(); });
+  expect(latest!.form.permissionMode).toBe('auto');
+});
+
+it('keeps every Worker action menu within three buttons for Android', async () => {
+  const { Alert } = await import('react-native');
+  const { useSessionOrcaCollab } = await import('@/session/useSessionOrcaCollab');
+  let collab: ReturnType<typeof useSessionOrcaCollab> | null = null;
+  const maker = {
+    ...fakeMaker(),
+    orca: {
+      listWorkers: vi.fn(async () => []),
+      getCollaborationSettings: vi.fn(async () => ({})),
+      getTeamByWorkerSession: vi.fn(async () => null),
+    },
+  } as unknown as MobileMakerTransport;
+  function Host() {
+    collab = useSessionOrcaCollab({
+      maker, deviceId: 'dev-1', sessionId: 'lead-1', prefsScope: 'user-1', enabled: true,
+      session: { id: 'lead-1', orcaRole: 'lead', workspaceKind: 'project', workingDir: '/repo', agentKind: 'codex' } as never,
+      sheetView: null, sheetOpen: false, setSheetView: () => undefined, setSheetOpen: () => undefined, openSession: () => undefined,
+    });
+    return null;
+  }
+  await act(async () => root.render(<Host />));
+  const alert = vi.mocked(Alert.alert);
+  const worker = { workerId: 'w-1', sessionId: 's-1', role: 'developer', label: null, status: 'idle' as const, focused: false, agentKind: 'codex' as const, model: null, effort: null, title: null };
+  act(() => collab!.pressWorker(worker));
+  const first = alert.mock.calls.at(-1)![2]!;
+  expect(first.length).toBeLessThanOrEqual(3);
+  act(() => first.find((button) => button.text === 'More actions' || button.text === '更多操作')?.onPress?.());
+  expect(alert.mock.calls.at(-1)![2]!.length).toBeLessThanOrEqual(3);
+  act(() => collab!.pressWorker({ ...worker, focused: true }));
+  expect(alert.mock.calls.at(-1)![2]!.length).toBeLessThanOrEqual(3);
+});

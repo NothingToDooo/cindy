@@ -581,6 +581,7 @@
     "archiveConfirmDesc": "세션을 중지합니다. 기록은 보관 상태로 남습니다. 보관한 Worker는 복원할 수 없으니 계속하려면 새 Worker를 만드세요.",
     "openWorker": "열기",
     "setFocus": "포커스로 지정",
+    "moreActions": "추가 작업",
     "loadingHint": "협업 설정 확인 중…",
     "disabledHint": "협업 모드가 꺼져 있습니다. 컴퓨터 설정에서 다시 켜세요",
     "unavailableHint": "협업 설정을 확인하지 못했습니다. 잠시 후 다시 시도하세요",

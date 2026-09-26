@@ -229,9 +229,9 @@ export function OrcaTeamPanelView({
   const running = workers.filter((worker) => worker.status === 'running').length;
   const slot = orcaWorkerSlotState(workers, settings);
   const createHint = slot === 'hard'
-    ? t('session.collab.hardLimitHint', { count: settings.workerHardLimit })
+    ? t('session.collab.hardLimitHint', { limit: settings.workerHardLimit })
     : slot === 'soft'
-      ? t('session.collab.softLimitHint', { count: settings.workerSoftLimit })
+      ? t('session.collab.softLimitHint', { limit: settings.workerSoftLimit })
       : null;
   return (
     <>

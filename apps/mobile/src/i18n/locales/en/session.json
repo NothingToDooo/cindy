@@ -585,6 +585,7 @@
     "archiveConfirmDesc": "This stops its session. History is kept as archived. Archived Workers can't be restored; create a new Worker to continue.",
     "openWorker": "Open",
     "setFocus": "Set as focus",
+    "moreActions": "More actions",
     "loadingHint": "Checking collaboration settings…",
     "disabledHint": "Collaboration mode is off. Turn it back on in Settings on your computer.",
     "unavailableHint": "Couldn't check collaboration settings. Try again later.",

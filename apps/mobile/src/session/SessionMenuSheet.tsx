@@ -488,8 +488,11 @@ export function SessionMenuSheet({
   const sharedGuest = isSharedTaskPeer(session.deviceLinkDeviceId ?? '');
   const showExtraDirs = !sharedGuest && sessionInfoShowsExtraDirs(session);
 
+  // 协同 Worker 的生命周期只能经所属 Lead 的协同面板(归档 Worker / 结束协同)走 Orca 服务;
+  // 通用归档 / 删除会绕过团队状态与焦点收尾。桌面同样不给 Worker 这两个入口。
+  const lifecycleHidden = sharedGuest || session.orcaRole === 'worker';
   const mainActions = messageOnly ? [] : actions.filter((action) => sharedGuest ? action.id === 'copyLink' : action.id !== 'delete' && action.id !== 'archive');
-  const deleteAction = messageOnly ? undefined : sharedGuest ? undefined : actions.find((action) => action.id === 'delete');
+  const deleteAction = messageOnly ? undefined : lifecycleHidden ? undefined : actions.find((action) => action.id === 'delete');
 
   const confirmCodexReset = useCallback(() => {
     if (!resetSummary?.canReset || codexResetBusy) return;
@@ -649,7 +652,7 @@ export function SessionMenuSheet({
               }}
             />
           )}
-          {!messageOnly &&
+          {!messageOnly && session.orcaRole !== 'worker' &&
             actions
               .filter((action) => action.id === 'archive')
               .map((action) =>

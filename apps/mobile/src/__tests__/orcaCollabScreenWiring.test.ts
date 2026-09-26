@@ -30,6 +30,12 @@ describe('mobile Orca collaboration wiring', () => {
     expect(source).toContain('takeOrcaStartFailure(sessionId)');
   });
 
+  it('keeps Worker lifecycle on the Orca path instead of the generic task menu', () => {
+    const source = read('src/session/SessionMenuSheet.tsx');
+    expect(source).toContain("const lifecycleHidden = sharedGuest || session.orcaRole === 'worker';");
+    expect(source).toContain("{!messageOnly && session.orcaRole !== 'worker' &&");
+  });
+
   it('starts new-task collaboration after create with the pending Lead input as Worker context', () => {
     const source = read('app/sessions/new.tsx');
     expect(source).toContain('buildDraftWorkerInitialTask(collabDraft.initialTask, effectiveDraft.firstMessage)');

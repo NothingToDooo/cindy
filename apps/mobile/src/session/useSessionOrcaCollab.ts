@@ -183,9 +183,29 @@ export function useOrcaWorkerForm(params: {
   const makerRef = useRef(maker);
   makerRef.current = maker;
   const prefsRef = useRef<OrcaWorkerCreationPrefs>(defaultOrcaWorkerCreationPrefs());
+  const prefsLoadedRef = useRef(false);
+  /** 本次复位后用户是否动过表单:动过就不再让迟到的记忆 / 能力结果覆盖用户的选择。 */
+  const touchedRef = useRef(false);
   const agentsRef = useRef(agents);
   agentsRef.current = agents;
   const generationRef = useRef(0);
+
+  // 挂载 / 换账号时预读记忆,复位时即可同步恢复,不在用户操作期间异步覆盖表单。
+  useEffect(() => {
+    prefsLoadedRef.current = false;
+    prefsRef.current = defaultOrcaWorkerCreationPrefs();
+    if (!prefsScope) {
+      prefsLoadedRef.current = true;
+      return undefined;
+    }
+    let cancelled = false;
+    void readOrcaWorkerCreationPrefs(prefsScope).then((prefs) => {
+      if (cancelled) return;
+      prefsRef.current = prefs;
+      prefsLoadedRef.current = true;
+    });
+    return () => { cancelled = true; };
+  }, [prefsScope]);
 
   useEffect(() => {
     if (!active) return undefined;
@@ -200,7 +220,10 @@ export function useOrcaWorkerForm(params: {
     return () => { cancelled = true; };
   }, [active, maker]);
 
-  /** 按被控端能力收敛模型选择;能力读不到时保留原选择(提交时由被控端裁决)。 */
+  /**
+   * 按被控端能力收敛模型选择;能力读不到时保留原选择(提交时由被控端裁决)。
+   * 只改模型字段,且结果迟到时(期间用户又改了模型 / Agent)按代次丢弃。
+   */
   const converge = useCallback((agent: OrcaWorkerAgentKind, generation: number) => {
     makerRef.current.getCapabilities(agent)
       .then((raw) => {
@@ -216,24 +239,29 @@ export function useOrcaWorkerForm(params: {
   /** 恢复记忆(上次的 Agent 不在当前电脑上时取第一个可用 Agent)。初始任务不记忆。 */
   const reset = useCallback(() => {
     const generation = ++generationRef.current;
+    touchedRef.current = false;
     setCustomRoleMode(false);
     const apply = (prefs: OrcaWorkerCreationPrefs) => {
-      if (generation !== generationRef.current) return;
-      prefsRef.current = prefs;
       const available = agentsRef.current;
       const agent = available.includes(prefs.lastAgent) ? prefs.lastAgent : available[0] ?? prefs.lastAgent;
       setForm(orcaWorkerFormFromPrefs(prefs, agent));
       converge(agent, generation);
     };
-    if (!prefsScope) {
-      apply(defaultOrcaWorkerCreationPrefs());
-      return;
+    apply(prefsRef.current);
+    // 预读尚未完成(极少见:刚登录就打开表单):读完后仅在用户还没动过这张表单时补一次。
+    if (!prefsLoadedRef.current && prefsScope) {
+      void readOrcaWorkerCreationPrefs(prefsScope).then((prefs) => {
+        prefsRef.current = prefs;
+        prefsLoadedRef.current = true;
+        if (generation !== generationRef.current || touchedRef.current) return;
+        apply(prefs);
+      });
     }
-    void readOrcaWorkerCreationPrefs(prefsScope).then(apply);
   }, [converge, prefsScope]);
 
   /** 切 Agent:带出该 Agent 上次的模型 / 推理强度 / Fast(对齐桌面)。 */
   const changeAgent = useCallback((agent: OrcaWorkerAgentKind) => {
+    touchedRef.current = true;
     const generation = ++generationRef.current;
     const remembered = prefsRef.current.agents[agent];
     setForm((current) => ({
@@ -267,10 +295,12 @@ export function useOrcaWorkerForm(params: {
   }, [prefsScope]);
 
   const patch = useCallback((next: Partial<OrcaWorkerFormValue>) => {
+    touchedRef.current = true;
     setForm((current) => ({ ...current, ...next }));
   }, []);
 
   const changePermission = useCallback(async (mode: OrcaWorkerPermissionMode) => {
+    touchedRef.current = true;
     if (!await confirmFullAccessChange(form.permissionMode, mode)) return;
     setForm((current) => ({ ...current, permissionMode: mode }));
   }, [form.permissionMode]);
@@ -283,6 +313,7 @@ export function useOrcaWorkerForm(params: {
   const closed = useCallback(() => setSheetOpen(true), [setSheetOpen]);
   const select = useCallback(async (config: MobileModelConfiguration): Promise<boolean> => {
     if (!ALL_AGENTS.includes(config.agent as OrcaWorkerAgentKind)) return false;
+    touchedRef.current = true;
     generationRef.current += 1;
     setForm((current) => ({
       ...current,
@@ -474,26 +505,38 @@ export function useSessionOrcaCollab(params: {
     );
   }, [runTeamAction, sessionId]);
 
-  /** 点 Worker 行:打开 / 设为焦点 / 归档。 */
+  /**
+   * 点 Worker 行:打开 / 设为焦点 / 归档。Android 原生 Alert 最多三个按钮,所以每一层
+   * 都控制在三个以内:已是焦点时「打开 / 归档 / 取消」;否则「打开 / 更多 / 取消」,
+   * 「更多」再给「设为焦点 / 归档 / 取消」。
+   */
   const pressWorker = useCallback((worker: OrcaTeamWorker) => {
-    Alert.alert(
-      orcaWorkerDisplayName(worker),
-      orcaWorkerStatusLabel(worker.status),
-      [
-        { text: i18n.t('session.collab.openWorker'), onPress: () => openWorker(worker) },
-        ...(worker.focused ? [] : [{
-          text: i18n.t('session.collab.setFocus'),
-          onPress: () => {
-            void runTeamAction(
-              () => makerRef.current.orca.switchFocus(sessionId, worker.workerId),
-              'session.collab.errors.switchFailed',
-            );
-          },
-        }]),
-        { text: i18n.t('session.collab.archive'), style: 'destructive' as const, onPress: () => confirmArchive(worker) },
-        { text: i18n.t('session.collab.cancel'), style: 'cancel' as const },
-      ],
-    );
+    const name = orcaWorkerDisplayName(worker);
+    const cancel = { text: i18n.t('session.collab.cancel'), style: 'cancel' as const };
+    const open = { text: i18n.t('session.collab.openWorker'), onPress: () => openWorker(worker) };
+    const archive = {
+      text: i18n.t('session.collab.archive'),
+      style: 'destructive' as const,
+      onPress: () => confirmArchive(worker),
+    };
+    if (worker.focused) {
+      Alert.alert(name, orcaWorkerStatusLabel(worker.status), [open, archive, cancel]);
+      return;
+    }
+    const setFocus = {
+      text: i18n.t('session.collab.setFocus'),
+      onPress: () => {
+        void runTeamAction(
+          () => makerRef.current.orca.switchFocus(sessionId, worker.workerId),
+          'session.collab.errors.switchFailed',
+        );
+      },
+    };
+    Alert.alert(name, orcaWorkerStatusLabel(worker.status), [
+      open,
+      { text: i18n.t('session.collab.moreActions'), onPress: () => Alert.alert(name, undefined, [setFocus, archive, cancel]) },
+      cancel,
+    ]);
   }, [confirmArchive, openWorker, runTeamAction, sessionId]);
 
   const confirmEndTeam = useCallback(() => {

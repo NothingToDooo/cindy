@@ -233,9 +233,11 @@ export async function enableOrcaTeam(
     const result = await maker.orca.enable(leadSessionId, options);
     return { workerSessionId: typeof result?.workerSessionId === 'string' ? result.workerSessionId : null };
   } catch (error) {
-    // 团队已存在(另一端刚开启 / 管线重跑)就是想要的终态,按成功处理,不报「开启失败」。
-    if (formatRemoteError(error).includes('ALREADY_EXISTS')) return { workerSessionId: null };
-    if (!isAmbiguousTimeout(error)) throw error;
+    // 隧道超时不代表被控端没执行;ALREADY_EXISTS 说明已有团队(另一端刚开启 / 管线重跑),
+    // 但团队先于首个 Worker 落库,并发开启时首个 Worker 仍可能失败。两种都以被控端的
+    // Worker 列表为准:有 Worker 才算开启成功,查不到按原错误处理。
+    const alreadyExists = formatRemoteError(error).includes('ALREADY_EXISTS');
+    if (!alreadyExists && !isAmbiguousTimeout(error)) throw error;
     for (let attempt = 0; attempt < TIMEOUT_RECOVERY_ATTEMPTS; attempt += 1) {
       if (attempt > 0) await delay(TIMEOUT_RECOVERY_DELAY_MS);
       try {

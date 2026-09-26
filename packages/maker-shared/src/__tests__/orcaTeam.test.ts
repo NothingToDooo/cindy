@@ -17,6 +17,9 @@ describe('orca team shared helpers', () => {
     expect(createWorkerLabel('Code Reviewer!', [])).toBe('code-reviewer');
     expect(createWorkerLabel('developer', ['developer', 'Developer-2'])).toBe('developer-3');
     expect(createWorkerLabel('   ', [])).toBe('worker');
+    expect(createWorkerLabel('--- lead ---', [])).toBe('lead');
+    // 大量连字符也是线性处理(CodeQL:避免可回溯正则)。
+    expect(createWorkerLabel(`${'-'.repeat(50_000)}x`, [])).toBe('x');
     expect(shouldShowWorkerLabel('developer', 'developer-2')).toBe(true);
     expect(shouldShowWorkerLabel('developer', 'developer')).toBe(false);
   });

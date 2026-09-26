@@ -163,11 +163,28 @@ describe('mobile Orca collaboration mutations', () => {
     expect(maker.orca.enable).toHaveBeenCalledTimes(1);
   });
 
-  it('treats an already-active team as the desired end state', async () => {
-    const maker = fakeMaker({
-      orca: { enable: vi.fn(async () => { throw new Error('[ALREADY_EXISTS] active team'); }) },
+  it('confirms an already-existing team from the Worker list before treating it as started', async () => {
+    const withWorker = fakeMaker({
+      orca: {
+        enable: vi.fn(async () => { throw new Error('[ALREADY_EXISTS] active team'); }),
+        listWorkers: vi.fn(async () => [{ id: 'w-1', sessionId: 'worker-7' }]),
+      },
     });
-    await expect(enableOrcaTeam(maker, 'lead-1', buildOrcaEnableOptions(form))).resolves.toEqual({ workerSessionId: null });
+    await expect(enableOrcaTeam(withWorker, 'lead-1', buildOrcaEnableOptions(form))).resolves.toEqual({ workerSessionId: 'worker-7' });
+
+    // 团队已建但首个 Worker 没落库:不能按成功处理。
+    const teamOnly = fakeMaker({
+      orca: {
+        enable: vi.fn(async () => { throw new Error('[ALREADY_EXISTS] active team'); }),
+        listWorkers: vi.fn(async () => []),
+      },
+    });
+    vi.useFakeTimers();
+    const pending = enableOrcaTeam(teamOnly, 'lead-1', buildOrcaEnableOptions(form));
+    const assertion = expect(pending).rejects.toThrow('ALREADY_EXISTS');
+    await vi.runAllTimersAsync();
+    await assertion;
+    vi.useRealTimers();
   });
 
   it('does not retry authoritative enable failures', async () => {

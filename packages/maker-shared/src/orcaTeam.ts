@@ -33,12 +33,12 @@ export const DEFAULT_ORCA_WORKER_MODELS: Readonly<Record<OrcaWorkerAgentKind, st
  * 重名时追加 `-2`、`-3`…;极端情况下用时间戳后缀兜底。
  */
 export function createWorkerLabel(role: string, existingLabels: readonly string[]): string {
-  const base = role
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 24) || 'worker';
+  const base = trimHyphens(
+    role
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, '-'),
+  ).slice(0, 24) || 'worker';
   const existing = new Set(existingLabels.map((label) => label.toLowerCase()));
   if (!existing.has(base)) return base;
 
@@ -49,6 +49,15 @@ export function createWorkerLabel(role: string, existingLabels: readonly string[
   }
 
   return `${base.slice(0, 27)}-${Date.now().toString(36).slice(-4)}`;
+}
+
+/** 去掉首尾连字符(线性扫描,不用可回溯的正则)。 */
+function trimHyphens(value: string): string {
+  let start = 0;
+  let end = value.length;
+  while (start < end && value[start] === '-') start += 1;
+  while (end > start && value[end - 1] === '-') end -= 1;
+  return value.slice(start, end);
 }
 
 export function shouldShowWorkerLabel(role: string, label: string | null | undefined): label is string {
