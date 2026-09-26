@@ -121,6 +121,7 @@ const ORCA_ERROR_CODES = [
   'PRECONDITION_FAILED',
   'WORKER_CREATION_IN_PROGRESS',
   'WORKER_NOT_FOUND',
+  'ORCA_CREATE_UNCONFIRMED',
 ] as const;
 
 export function isOrcaUnsupportedError(error: unknown): boolean {
@@ -220,15 +221,44 @@ const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
  * 开启协同。mutation 前重读能力(弹窗展示时的快照可能已随重连降级);隧道超时后回查
  * 被控端 Worker 列表 —— 非空即团队已提交,按成功返回;查不到才把原始超时抛出。
  */
+/**
+ * 创建 Worker 前重读被控端能力:老被控端会忽略 workerPermissionMode、按它自己的默认权限
+ * 建 Worker(可能是完全访问),与用户在手机上选的不符 —— 一律 fail-closed。
+ */
+async function assertWorkerPermissionSupported(
+  maker: MobileMakerTransport,
+  agent: OrcaWorkerAgentKind,
+): Promise<void> {
+  const capabilities = normalizeMobileAgentCapabilities(await maker.getCapabilities(agent));
+  if (capabilities?.supportsOrcaWorkerPermissionMode !== true) {
+    throw new Error('[DEVICE_LINK_CHANNEL_NOT_ALLOWED] controlled device does not support Orca Worker permission mode');
+  }
+}
+
+/** 隧道超时后按被控端 Worker 列表回查;predicate 命中即说明写操作已提交。 */
+async function probeCommittedWorker(
+  maker: MobileMakerTransport,
+  leadSessionId: string,
+  predicate: (worker: OrcaTeamWorker) => boolean,
+): Promise<OrcaTeamWorker | null> {
+  for (let attempt = 0; attempt < TIMEOUT_RECOVERY_ATTEMPTS; attempt += 1) {
+    if (attempt > 0) await delay(TIMEOUT_RECOVERY_DELAY_MS);
+    try {
+      const match = parseOrcaTeamWorkers(await maker.orca.listWorkers(leadSessionId)).find(predicate);
+      if (match) return match;
+    } catch (probeError) {
+      if (!isTransientRemoteError(probeError)) return null;
+    }
+  }
+  return null;
+}
+
 export async function enableOrcaTeam(
   maker: MobileMakerTransport,
   leadSessionId: string,
   options: MobileOrcaEnableOptions,
 ): Promise<{ workerSessionId: string | null }> {
-  const capabilities = normalizeMobileAgentCapabilities(await maker.getCapabilities(options.workerAgent));
-  if (capabilities?.supportsOrcaWorkerPermissionMode !== true) {
-    throw new Error('[DEVICE_LINK_CHANNEL_NOT_ALLOWED] controlled device does not support Orca Worker permission mode');
-  }
+  await assertWorkerPermissionSupported(maker, options.workerAgent);
   try {
     const result = await maker.orca.enable(leadSessionId, options);
     return { workerSessionId: typeof result?.workerSessionId === 'string' ? result.workerSessionId : null };
@@ -238,46 +268,57 @@ export async function enableOrcaTeam(
     // Worker 列表为准:有 Worker 才算开启成功,查不到按原错误处理。
     const alreadyExists = formatRemoteError(error).includes('ALREADY_EXISTS');
     if (!alreadyExists && !isAmbiguousTimeout(error)) throw error;
-    for (let attempt = 0; attempt < TIMEOUT_RECOVERY_ATTEMPTS; attempt += 1) {
-      if (attempt > 0) await delay(TIMEOUT_RECOVERY_DELAY_MS);
-      try {
-        const workers = parseOrcaTeamWorkers(await maker.orca.listWorkers(leadSessionId));
-        if (workers[0]) return { workerSessionId: workers[0].sessionId };
-      } catch (probeError) {
-        if (!isTransientRemoteError(probeError)) break;
-      }
-    }
+    const committed = await probeCommittedWorker(maker, leadSessionId, () => true);
+    if (committed) return { workerSessionId: committed.sessionId };
     throw error;
   }
 }
 
-/** 追加 Worker:label 按现有团队派生,撞 DUPLICATE_LABEL(并发创建)时重拉一次后重试。 */
+/**
+ * 追加 Worker:label 按现有团队派生,撞 DUPLICATE_LABEL(并发创建)时重拉一次后重试。
+ * 隧道超时不是权威失败:按本次请求的确切 label 回查被控端,查到即成功;查不到抛
+ * ORCA_CREATE_UNCONFIRMED,提示用户先看 Worker 列表,不让「超时→重试」建出第二个。
+ */
 export async function createOrcaWorker(
   maker: MobileMakerTransport,
   leadSessionId: string,
   form: OrcaWorkerFormValue,
   existingWorkers: readonly OrcaTeamWorker[],
 ): Promise<{ workerSessionId: string | null }> {
+  await assertWorkerPermissionSupported(maker, form.agent);
   const role = form.role.trim() || 'developer';
-  const submit = (labels: readonly string[]) => maker.orca.createWorker({
-    leadSessionId,
-    role,
-    label: createWorkerLabel(role, labels),
-    agent: form.agent,
-    ...formWireFields(form),
-    ...(form.initialTask.trim() ? { initialTask: form.initialTask.trim() } : {}),
-  });
+  const submit = async (labels: readonly string[]) => {
+    const label = createWorkerLabel(role, labels);
+    try {
+      const result = await maker.orca.createWorker({
+        leadSessionId,
+        role,
+        label,
+        agent: form.agent,
+        ...formWireFields(form),
+        ...(form.initialTask.trim() ? { initialTask: form.initialTask.trim() } : {}),
+      });
+      return typeof result?.workerSessionId === 'string' ? result.workerSessionId : null;
+    } catch (error) {
+      if (!isAmbiguousTimeout(error)) throw error;
+      const committed = await probeCommittedWorker(
+        maker,
+        leadSessionId,
+        (worker) => worker.label?.toLowerCase() === label,
+      );
+      if (committed) return committed.sessionId;
+      throw new Error('[ORCA_CREATE_UNCONFIRMED] worker creation timed out and could not be confirmed');
+    }
+  };
   const labelsOf = (workers: readonly OrcaTeamWorker[]) =>
     workers.map((worker) => worker.label).filter((label): label is string => !!label);
-  let result;
   try {
-    result = await submit(labelsOf(existingWorkers));
+    return { workerSessionId: await submit(labelsOf(existingWorkers)) };
   } catch (error) {
     if (!isOrcaDuplicateLabelError(error)) throw error;
     const fresh = parseOrcaTeamWorkers(await maker.orca.listWorkers(leadSessionId));
-    result = await submit(labelsOf(fresh));
+    return { workerSessionId: await submit(labelsOf(fresh)) };
   }
-  return { workerSessionId: typeof result?.workerSessionId === 'string' ? result.workerSessionId : null };
 }
 
 // ─── 新建任务开启协同失败的跨页提示 ──────────────────────────────────────────

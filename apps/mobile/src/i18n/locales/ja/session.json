@@ -618,7 +618,8 @@
       "INVALID_PARAMS": "選択したモデルまたは設定にコンピューターが対応していません。対応するモデルを選んで再試行してください。",
       "PRECONDITION_FAILED": "コラボレーションモードがオフか、このタスクはコラボレーションに対応していません。",
       "WORKER_CREATION_IN_PROGRESS": "同じ名前の Worker を作成中です。しばらくしてから再試行してください。",
-      "WORKER_NOT_FOUND": "この Worker はもう存在しません。一覧を更新しました。"
+      "WORKER_NOT_FOUND": "この Worker はもう存在しません。一覧を更新しました。",
+      "ORCA_CREATE_UNCONFIRMED": "Worker の作成がタイムアウトし、成功したか確認できませんでした。まず Worker 一覧を確認し、新しい Worker がない場合のみ再試行してください。"
     }
   }
 }

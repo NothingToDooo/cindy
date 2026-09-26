@@ -618,7 +618,8 @@
       "INVALID_PARAMS": "電腦端不支援所選模型或協同設定。請改選該電腦支援的模型後重試。",
       "PRECONDITION_FAILED": "協同模式已關閉，或目前任務暫不支援協同。",
       "WORKER_CREATION_IN_PROGRESS": "另一個同名 Worker 正在建立，請稍後重試。",
-      "WORKER_NOT_FOUND": "這個 Worker 已不存在，列表已重新整理。"
+      "WORKER_NOT_FOUND": "這個 Worker 已不存在，列表已重新整理。",
+      "ORCA_CREATE_UNCONFIRMED": "建立 Worker 逾時，暫時無法確認是否成功。請先查看 Worker 列表，確認沒有新建的 Worker 後再重試。"
     }
   }
 }

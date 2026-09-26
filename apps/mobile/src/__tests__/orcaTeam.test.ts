@@ -210,6 +210,43 @@ describe('mobile Orca collaboration mutations', () => {
     expect(createWorker.mock.calls[1][0]).toMatchObject({ initialTask: 'check tests', agent: 'codex' });
   });
 
+  it('refuses to create Workers on computers that would ignore the chosen permission', async () => {
+    const maker = fakeMaker({ capabilities: {} });
+    await expect(createOrcaWorker(maker, 'lead-1', form, [])).rejects.toThrow('CHANNEL_NOT_ALLOWED');
+    expect(maker.orca.createWorker).not.toHaveBeenCalled();
+  });
+
+  it('confirms a timed-out Worker creation by its exact label instead of retrying', async () => {
+    const createWorker = vi.fn(async () => { throw new Error('[INVOKE_TIMEOUT] timed out'); });
+    const landed = fakeMaker({
+      orca: {
+        createWorker,
+        listWorkers: vi.fn(async () => [
+          { id: 'w-0', sessionId: 'old', role: 'reviewer', label: 'other' },
+          { id: 'w-1', sessionId: 'new', role: 'Reviewer', label: 'reviewer' },
+        ]),
+      },
+    });
+    await expect(createOrcaWorker(landed, 'lead-1', form, [])).resolves.toEqual({ workerSessionId: 'new' });
+    expect(createWorker).toHaveBeenCalledTimes(1);
+
+    const lost = fakeMaker({
+      orca: {
+        createWorker: vi.fn(async () => { throw new Error('[INVOKE_TIMEOUT] timed out'); }),
+        listWorkers: vi.fn(async () => []),
+      },
+    });
+    vi.useFakeTimers();
+    const pending = createOrcaWorker(lost, 'lead-1', form, []);
+    const assertion = expect(pending).rejects.toThrow('ORCA_CREATE_UNCONFIRMED');
+    await vi.runAllTimersAsync();
+    await assertion;
+    vi.useRealTimers();
+    expect(lost.orca.createWorker).toHaveBeenCalledTimes(1);
+    expect(describeOrcaError(new Error('[ORCA_CREATE_UNCONFIRMED] x'), 'session.collab.errors.createFailed'))
+      .toContain('暂时无法确认是否成功');
+  });
+
   it('describes known Orca errors in the interface language', () => {
     expect(describeOrcaError(new Error('[WORKER_LIMIT_HARD_EXCEEDED] full'), 'session.collab.errors.createFailed'))
       .toBe('已达 Worker 硬上限，请先归档现有 Worker。');

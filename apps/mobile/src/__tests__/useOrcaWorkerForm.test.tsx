@@ -138,3 +138,17 @@ it('keeps every Worker action menu within three buttons for Android', async () =
   act(() => collab!.pressWorker({ ...worker, focused: true }));
   expect(alert.mock.calls.at(-1)![2]!.length).toBeLessThanOrEqual(3);
 });
+
+it('moves an untouched form off an Agent the computer does not have', async () => {
+  const maker = { ...fakeMaker(), listAvailableAgents: vi.fn(async () => ['claude-code']) } as unknown as MobileMakerTransport;
+  function ActiveProbe() {
+    latest = useOrcaWorkerForm({ maker, prefsScope: 'user-1', active: true, setSheetOpen: () => undefined });
+    return null;
+  }
+  await act(async () => root.render(<ActiveProbe />));
+  act(() => { latest!.reset(); });
+  await act(async () => { await flush(); });
+  expect(latest!.agents).toEqual(['claude-code']);
+  expect(latest!.form.agent).toBe('claude-code');
+  expect(latest!.form.model?.id).toBe('claude-opus-4-7');
+});

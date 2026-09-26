@@ -182,6 +182,8 @@ export function useOrcaWorkerForm(params: {
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const makerRef = useRef(maker);
   makerRef.current = maker;
+  const formRef = useRef(form);
+  formRef.current = form;
   const prefsRef = useRef<OrcaWorkerCreationPrefs>(defaultOrcaWorkerCreationPrefs());
   const prefsLoadedRef = useRef(false);
   /** 本次复位后用户是否动过表单:动过就不再让迟到的记忆 / 能力结果覆盖用户的选择。 */
@@ -207,18 +209,6 @@ export function useOrcaWorkerForm(params: {
     return () => { cancelled = true; };
   }, [prefsScope]);
 
-  useEffect(() => {
-    if (!active) return undefined;
-    let cancelled = false;
-    makerRef.current.listAvailableAgents()
-      .then((available) => {
-        if (cancelled) return;
-        const next = ALL_AGENTS.filter((agent) => available.includes(agent));
-        if (next.length > 0) setAgents(next);
-      })
-      .catch(() => undefined);
-    return () => { cancelled = true; };
-  }, [active, maker]);
 
   /**
    * 按被控端能力收敛模型选择;能力读不到时保留原选择(提交时由被控端裁决)。
@@ -235,6 +225,33 @@ export function useOrcaWorkerForm(params: {
       })
       .catch(() => undefined);
   }, []);
+
+  // 读被控端实际注册的 Agent。复位时列表可能还是乐观的三个:结果回来后,若用户还没动过
+  // 表单且当前 Agent 不在这台电脑上,切到第一个可用 Agent 并带出它的记忆,避免提交必然失败。
+  useEffect(() => {
+    if (!active) return undefined;
+    let cancelled = false;
+    makerRef.current.listAvailableAgents()
+      .then((available) => {
+        if (cancelled) return;
+        const next = ALL_AGENTS.filter((agent) => available.includes(agent));
+        if (next.length === 0) return;
+        agentsRef.current = next;
+        setAgents(next);
+        if (touchedRef.current || next.includes(formRef.current.agent)) return;
+        const generation = ++generationRef.current;
+        const switched = next[0]!;
+        const remembered = prefsRef.current.agents[switched];
+        setForm((current) => ({
+          ...current,
+          agent: switched,
+          model: { id: remembered.model, providerId: null, effort: remembered.effort, fast: remembered.fast },
+        }));
+        converge(switched, generation);
+      })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [active, converge, maker]);
 
   /** 恢复记忆(上次的 Agent 不在当前电脑上时取第一个可用 Agent)。初始任务不记忆。 */
   const reset = useCallback(() => {
