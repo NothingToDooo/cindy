@@ -72,14 +72,14 @@ describe('orca team shared helpers', () => {
     expect(parseOrcaTeamWorkers(null)).toEqual([]);
   });
 
-  it('parses collaboration settings and tolerates old hosts without the permission field', () => {
+  it('parses collaboration settings defensively', () => {
     expect(parseOrcaCollaborationSettings({
       workerSoftLimit: 3,
       workerHardLimit: 6,
       workerIdleReleaseMinutes: 10,
-      workerPermissionMode: 'auto',
-    })).toEqual({ workerSoftLimit: 3, workerHardLimit: 6, workerIdleReleaseMinutes: 10, workerPermissionMode: 'auto' });
-    expect(parseOrcaCollaborationSettings({ workerSoftLimit: 2 }).workerPermissionMode).toBeNull();
+      isCustomized: true,
+    })).toEqual({ workerSoftLimit: 3, workerHardLimit: 6, workerIdleReleaseMinutes: 10 });
+    expect(parseOrcaCollaborationSettings({ workerSoftLimit: 2 }).workerHardLimit).toBe(8);
     expect(parseOrcaCollaborationSettings('bad')).toEqual(DEFAULT_ORCA_COLLABORATION_SETTINGS);
   });
 

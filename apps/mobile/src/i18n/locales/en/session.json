@@ -559,7 +559,6 @@
     "modelLabel": "Model",
     "modelDefault": "Default",
     "modelDefaultHint": "Uses the computer's default Worker model",
-    "modelReset": "Use default model",
     "permissionLabel": "Permission mode",
     "permissionAuto": "Auto-review",
     "permissionFull": "Full access",

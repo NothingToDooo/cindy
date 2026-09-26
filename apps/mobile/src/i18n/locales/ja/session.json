@@ -559,7 +559,6 @@
     "modelLabel": "モデル",
     "modelDefault": "デフォルト",
     "modelDefaultHint": "コンピューター側の Worker 既定モデルを使います",
-    "modelReset": "デフォルトモデルに戻す",
     "permissionLabel": "権限モード",
     "permissionAuto": "自動承認",
     "permissionFull": "フルアクセス",

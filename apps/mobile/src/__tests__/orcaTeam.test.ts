@@ -2,16 +2,18 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { i18n } from '@/i18n';
 import {
   buildOrcaEnableOptions,
+  convergeOrcaWorkerModel,
   createOrcaWorker,
-  defaultOrcaWorkerForm,
   describeOrcaError,
   enableOrcaTeam,
   isOrcaCollabEligible,
+  orcaWorkerFormFromPrefs,
   readOrcaCollabEntryStatus,
   rememberOrcaStartFailure,
   takeOrcaStartFailure,
 } from '@/session/orcaTeam';
 import type { MobileMakerTransport } from '@/device-link/mobileMakerTransport';
+import { defaultOrcaWorkerCreationPrefs } from '@/session/orcaWorkerPrefs';
 
 beforeAll(async () => {
   await i18n.changeLanguage('zh-CN');
@@ -87,7 +89,12 @@ describe('mobile Orca collaboration entry', () => {
 });
 
 describe('mobile Orca collaboration mutations', () => {
-  const form = { ...defaultOrcaWorkerForm('codex', 'auto'), role: 'Reviewer', initialTask: 'check tests' };
+  const form = {
+    ...orcaWorkerFormFromPrefs({ ...defaultOrcaWorkerCreationPrefs(), workerPermissionMode: 'auto' }, 'codex'),
+    model: null,
+    role: 'Reviewer',
+    initialTask: 'check tests',
+  };
 
   it('builds enable options with a derived label and only the chosen model fields', () => {
     expect(buildOrcaEnableOptions(form, 'task')).toEqual({
@@ -110,7 +117,33 @@ describe('mobile Orca collaboration mutations', () => {
       providerId: 'openai',
       workerPermissionMode: 'auto',
     });
-    expect(defaultOrcaWorkerForm('pi', null).permissionMode).toBe('bypassPermissions');
+  });
+
+  it('restores the remembered Worker choice like the desktop create panel', () => {
+    const prefs = defaultOrcaWorkerCreationPrefs();
+    expect(orcaWorkerFormFromPrefs(prefs, prefs.lastAgent)).toEqual({
+      role: 'developer',
+      agent: 'codex',
+      model: { id: 'codex/gpt-5.5', providerId: null, effort: 'high', fast: false },
+      permissionMode: 'bypassPermissions',
+      initialTask: '',
+    });
+  });
+
+  it('converges a remembered model to what the computer can run', () => {
+    const capabilities = {
+      hasFastMode: true,
+      availableModels: [{
+        id: 'gpt-5.5', label: 'GPT', efforts: ['low', 'medium'], effortDisplayNames: {},
+        defaultEffort: 'medium', supportsFastMode: false,
+      }],
+    };
+    expect(convergeOrcaWorkerModel({ id: 'gone', providerId: null, effort: 'high', fast: false }, capabilities)).toBeNull();
+    expect(convergeOrcaWorkerModel({ id: 'gpt-5.5', providerId: null, effort: 'high', fast: true }, capabilities))
+      .toEqual({ id: 'gpt-5.5', providerId: null, effort: 'medium', fast: false });
+    const kept = { id: 'x', providerId: null, effort: 'high', fast: true };
+    expect(convergeOrcaWorkerModel(kept, null)).toBe(kept);
+    expect(convergeOrcaWorkerModel(null, capabilities)).toBeNull();
   });
 
   it('re-checks capabilities before enabling and refuses on downgraded hosts', async () => {

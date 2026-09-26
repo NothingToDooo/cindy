@@ -559,7 +559,6 @@
     "modelLabel": "模型",
     "modelDefault": "預設",
     "modelDefaultHint": "沿用電腦端的 Worker 預設模型",
-    "modelReset": "恢復預設模型",
     "permissionLabel": "權限模式",
     "permissionAuto": "自動審批",
     "permissionFull": "完全存取",

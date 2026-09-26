@@ -10,7 +10,6 @@
  *  - 团队列表以被控端为准:`maker:orca:worker-changed` 推送或写操作完成后整表重拉。
  */
 import {
-  DEFAULT_ORCA_WORKER_PERMISSION_MODE,
   createWorkerLabel,
   parseOrcaTeamWorkers,
   readOrcaCollabPolicy,
@@ -28,6 +27,8 @@ import type {
   MobileOrcaEnableOptions,
 } from '@/device-link/mobileMakerTransport';
 import type { RemoteSession } from '@/session/types';
+import type { MobileAgentCapabilities } from '@/session/agentCapabilities';
+import type { OrcaWorkerCreationPrefs } from '@/session/orcaWorkerPrefs';
 
 export type { OrcaTeamWorker, OrcaCollaborationSettings, OrcaWorkerAgentKind, OrcaWorkerPermissionMode };
 
@@ -45,16 +46,40 @@ export function orcaAgentKindForSession(session: Pick<RemoteSession, 'agentKind'
   return session.agentKind === 'codex' || session.agentKind === 'pi' ? session.agentKind : 'claude-code';
 }
 
-export function defaultOrcaWorkerForm(
+/** 由记忆构造表单:角色回到 developer,初始任务不记忆(与桌面一致)。 */
+export function orcaWorkerFormFromPrefs(
+  prefs: OrcaWorkerCreationPrefs,
   agent: OrcaWorkerAgentKind,
-  permissionMode: OrcaWorkerPermissionMode | null,
 ): OrcaWorkerFormValue {
+  const remembered = prefs.agents[agent];
   return {
     role: 'developer',
     agent,
-    model: null,
-    permissionMode: permissionMode ?? DEFAULT_ORCA_WORKER_PERMISSION_MODE,
+    model: { id: remembered.model, providerId: null, effort: remembered.effort, fast: remembered.fast },
+    permissionMode: prefs.workerPermissionMode,
     initialTask: '',
+  };
+}
+
+/**
+ * 按被控端能力收敛模型选择(对齐桌面「加载能力后把选择收敛到可用模型和 effort」):
+ * 模型不在该电脑的可用列表 → 回落「默认」(null,交给被控端解析);effort 不在档位表 →
+ * 该模型默认档;模型不支持 Fast → 关 Fast。能力未知(null)时保持原样。
+ */
+export function convergeOrcaWorkerModel(
+  model: OrcaWorkerFormValue['model'],
+  capabilities: Pick<MobileAgentCapabilities, 'availableModels' | 'hasFastMode'> | null,
+): OrcaWorkerFormValue['model'] {
+  if (!model || !capabilities) return model;
+  const option = capabilities.availableModels.find((item) => item.id === model.id);
+  if (!option) return null;
+  const effort = model.effort && option.efforts.includes(model.effort)
+    ? model.effort
+    : option.defaultEffort ?? option.efforts[0] ?? null;
+  return {
+    ...model,
+    effort,
+    fast: model.fast && option.supportsFastMode && capabilities.hasFastMode,
   };
 }
 

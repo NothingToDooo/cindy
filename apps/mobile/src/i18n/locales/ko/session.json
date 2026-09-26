@@ -555,7 +555,6 @@
     "modelLabel": "모델",
     "modelDefault": "기본값",
     "modelDefaultHint": "컴퓨터의 Worker 기본 모델을 사용합니다",
-    "modelReset": "기본 모델로 되돌리기",
     "permissionLabel": "권한 모드",
     "permissionAuto": "자동 승인",
     "permissionFull": "전체 액세스",

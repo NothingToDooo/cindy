@@ -2044,6 +2044,7 @@ export default function SessionScreen() {
     deviceId: deviceId || null,
     sessionId,
     session: currentSession,
+    prefsScope: auth.user?.id ?? null,
     enabled: !isSharedTaskPeer(deviceId) && !sessionManagedByHost,
     sheetView: contextSheetView === 'collab' || contextSheetView === 'collab-create' ? contextSheetView : null,
     sheetOpen: contextSheetOpen,
@@ -9116,6 +9117,7 @@ export default function SessionScreen() {
               error={collab.error}
               form={collab.workerForm.form}
               notice={contextSheetView === 'collab' ? collab.entryHint : null}
+              onAgentChange={collab.workerForm.changeAgent}
               onChange={collab.workerForm.patch}
               onCustomRoleModeChange={collab.workerForm.setCustomRoleMode}
               onPermissionChange={(mode) => void collab.workerForm.changePermission(mode)}

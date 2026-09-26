@@ -555,7 +555,6 @@
     "modelLabel": "模型",
     "modelDefault": "默认",
     "modelDefaultHint": "跟随电脑端的 Worker 默认模型",
-    "modelReset": "恢复默认模型",
     "permissionLabel": "权限模式",
     "permissionAuto": "自动审批",
     "permissionFull": "完全访问",

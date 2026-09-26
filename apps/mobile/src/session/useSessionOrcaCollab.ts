@@ -14,13 +14,14 @@ import type { AgentKind } from '@cindy/model-providers/types';
 import { confirmFullAccessChange } from '@/session/fullAccessConfirmation';
 import {
   buildOrcaEnableOptions,
+  convergeOrcaWorkerModel,
   createOrcaWorker,
-  defaultOrcaWorkerForm,
   describeOrcaError,
   enableOrcaTeam,
   isOrcaCollabEligible,
   orcaAgentKindForSession,
   orcaCollabEntryHint,
+  orcaWorkerFormFromPrefs,
   orcaWorkerDisplayName,
   orcaWorkerStatusLabel,
   readOrcaCollabEntryStatus,
@@ -33,13 +34,19 @@ import {
 import {
   DEFAULT_ORCA_COLLABORATION_SETTINGS,
   parseOrcaCollaborationSettings,
-  parseOrcaPermissionMode,
   parseOrcaTeamWorkers,
   readOrcaTeamLeadSessionId,
   type OrcaCollaborationSettings,
 } from '@cindy/maker-shared/orca-team';
 import { subscribeRemoteOrcaWorkerChanged } from '@/device-link/DeviceLinkContext';
 import { canSubmitOrcaWorkerForm } from '@/session/ContextSheetCollabView';
+import { normalizeMobileAgentCapabilities } from '@/session/agentCapabilities';
+import {
+  defaultOrcaWorkerCreationPrefs,
+  readOrcaWorkerCreationPrefs,
+  saveOrcaWorkerCreationPrefs,
+  type OrcaWorkerCreationPrefs,
+} from '@/session/orcaWorkerPrefs';
 import { remoteSessionStore } from '@/session/remoteSessionStore';
 import { i18n } from '@/i18n';
 import type { MobileMakerTransport } from '@/device-link/mobileMakerTransport';
@@ -150,23 +157,35 @@ export function useOrcaWorkerLeadSessionId(params: {
 
 
 /**
- * Worker 表单状态。`active` 为真(面板展示协同视图)时读一次被控端可用 Agent;
+ * Worker 表单状态(与桌面 CreateWorkerPopover 同一套记忆规则,见 orcaWorkerPrefs):
+ * 打开表单时恢复上次的 Agent 与该 Agent 的模型 / 推理强度 / Fast、权限;切 Agent 时带出
+ * 该 Agent 上次的选择;提交成功后调用 remember() 写回。记住的模型在当前电脑上不可用时
+ * 回落「默认」(交给被控端解析)。
+ *
  * 模型选择器与 + 面板是两个 sheet(iOS 原生 sheet 不能叠开):选模型前收起面板,
  * 选择器完全收起后再展开面板回到表单。
  */
 export function useOrcaWorkerForm(params: {
   maker: MobileMakerTransport;
+  /** 记忆按登录账号隔离;null = 未登录,不读写记忆(用首次默认值)。 */
+  prefsScope: string | null;
   active: boolean;
-  defaultAgent: OrcaWorkerAgentKind;
   setSheetOpen(open: boolean): void;
 }) {
-  const { maker, active, defaultAgent, setSheetOpen } = params;
-  const [form, setForm] = useState<OrcaWorkerFormValue>(() => defaultOrcaWorkerForm(defaultAgent, null));
+  const { maker, prefsScope, active, setSheetOpen } = params;
+  const [form, setForm] = useState<OrcaWorkerFormValue>(() => {
+    const defaults = defaultOrcaWorkerCreationPrefs();
+    return orcaWorkerFormFromPrefs(defaults, defaults.lastAgent);
+  });
   const [customRoleMode, setCustomRoleMode] = useState(false);
   const [agents, setAgents] = useState<readonly OrcaWorkerAgentKind[]>(ALL_AGENTS);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const makerRef = useRef(maker);
   makerRef.current = maker;
+  const prefsRef = useRef<OrcaWorkerCreationPrefs>(defaultOrcaWorkerCreationPrefs());
+  const agentsRef = useRef(agents);
+  agentsRef.current = agents;
+  const generationRef = useRef(0);
 
   useEffect(() => {
     if (!active) return undefined;
@@ -181,17 +200,71 @@ export function useOrcaWorkerForm(params: {
     return () => { cancelled = true; };
   }, [active, maker]);
 
-  /** 复位为默认值;权限先用已知偏好,再异步读被控端记住的 Worker 权限偏好覆盖。 */
-  const reset = useCallback((agent: OrcaWorkerAgentKind, knownPermission: OrcaWorkerPermissionMode | null) => {
-    setForm(defaultOrcaWorkerForm(agent, knownPermission));
-    setCustomRoleMode(false);
-    makerRef.current.orca.getCollaborationSettings()
+  /** 按被控端能力收敛模型选择;能力读不到时保留原选择(提交时由被控端裁决)。 */
+  const converge = useCallback((agent: OrcaWorkerAgentKind, generation: number) => {
+    makerRef.current.getCapabilities(agent)
       .then((raw) => {
-        const mode = parseOrcaPermissionMode((raw as { workerPermissionMode?: unknown } | null)?.workerPermissionMode);
-        if (mode) setForm((current) => ({ ...current, permissionMode: mode }));
+        if (generation !== generationRef.current) return;
+        const capabilities = normalizeMobileAgentCapabilities(raw);
+        setForm((current) => (current.agent === agent
+          ? { ...current, model: convergeOrcaWorkerModel(current.model, capabilities) }
+          : current));
       })
       .catch(() => undefined);
   }, []);
+
+  /** 恢复记忆(上次的 Agent 不在当前电脑上时取第一个可用 Agent)。初始任务不记忆。 */
+  const reset = useCallback(() => {
+    const generation = ++generationRef.current;
+    setCustomRoleMode(false);
+    const apply = (prefs: OrcaWorkerCreationPrefs) => {
+      if (generation !== generationRef.current) return;
+      prefsRef.current = prefs;
+      const available = agentsRef.current;
+      const agent = available.includes(prefs.lastAgent) ? prefs.lastAgent : available[0] ?? prefs.lastAgent;
+      setForm(orcaWorkerFormFromPrefs(prefs, agent));
+      converge(agent, generation);
+    };
+    if (!prefsScope) {
+      apply(defaultOrcaWorkerCreationPrefs());
+      return;
+    }
+    void readOrcaWorkerCreationPrefs(prefsScope).then(apply);
+  }, [converge, prefsScope]);
+
+  /** 切 Agent:带出该 Agent 上次的模型 / 推理强度 / Fast(对齐桌面)。 */
+  const changeAgent = useCallback((agent: OrcaWorkerAgentKind) => {
+    const generation = ++generationRef.current;
+    const remembered = prefsRef.current.agents[agent];
+    setForm((current) => ({
+      ...current,
+      agent,
+      model: { id: remembered.model, providerId: null, effort: remembered.effort, fast: remembered.fast },
+    }));
+    converge(agent, generation);
+  }, [converge]);
+
+  /** 提交成功后写回记忆(与桌面一样只在提交时记)。 */
+  const remember = useCallback((submitted: OrcaWorkerFormValue) => {
+    const previous = prefsRef.current;
+    const next: OrcaWorkerCreationPrefs = {
+      ...previous,
+      lastAgent: submitted.agent,
+      workerPermissionMode: submitted.permissionMode,
+      agents: submitted.model
+        ? {
+          ...previous.agents,
+          [submitted.agent]: {
+            model: submitted.model.id,
+            effort: submitted.model.effort ?? previous.agents[submitted.agent].effort,
+            fast: submitted.model.fast,
+          },
+        }
+        : previous.agents,
+    };
+    prefsRef.current = next;
+    if (prefsScope) saveOrcaWorkerCreationPrefs(prefsScope, next);
+  }, [prefsScope]);
 
   const patch = useCallback((next: Partial<OrcaWorkerFormValue>) => {
     setForm((current) => ({ ...current, ...next }));
@@ -210,6 +283,7 @@ export function useOrcaWorkerForm(params: {
   const closed = useCallback(() => setSheetOpen(true), [setSheetOpen]);
   const select = useCallback(async (config: MobileModelConfiguration): Promise<boolean> => {
     if (!ALL_AGENTS.includes(config.agent as OrcaWorkerAgentKind)) return false;
+    generationRef.current += 1;
     setForm((current) => ({
       ...current,
       agent: config.agent as OrcaWorkerAgentKind,
@@ -231,11 +305,13 @@ export function useOrcaWorkerForm(params: {
     customRoleMode,
     setCustomRoleMode,
     patch,
+    changeAgent,
     changePermission,
     agents,
     pickerAgents,
     valid: canSubmitOrcaWorkerForm(form, customRoleMode),
     reset,
+    remember,
     modelPicker: { open: modelPickerOpen, openPicker, close, closed, select },
   };
 }
@@ -245,6 +321,8 @@ export function useSessionOrcaCollab(params: {
   deviceId: string | null;
   sessionId: string;
   session: RemoteSession | null;
+  /** Worker 创建偏好的记忆范围(登录账号);null = 不记忆。 */
+  prefsScope: string | null;
   /** 共享任务访客 / 宿主托管任务不提供协同编排(不拉团队、不挂入口)。 */
   enabled: boolean;
   /** + 面板当前是否展示协同视图。 */
@@ -254,18 +332,17 @@ export function useSessionOrcaCollab(params: {
   setSheetOpen(open: boolean): void;
   openSession(sessionId: string): void;
 }) {
-  const { maker, deviceId, sessionId, session, enabled, sheetView, sheetOpen, setSheetView, setSheetOpen, openSession } = params;
+  const { maker, deviceId, sessionId, session, prefsScope, enabled, sheetView, sheetOpen, setSheetView, setSheetOpen, openSession } = params;
   const role = enabled ? session?.orcaRole ?? null : null;
   const isLead = role === 'lead';
   const isWorker = role === 'worker';
   const eligible = enabled && (isLead || isOrcaCollabEligible(session));
-  const sessionAgent = session ? orcaAgentKindForSession(session) : 'claude-code';
   const team = useOrcaTeam({ maker, deviceId, leadSessionId: isLead ? sessionId : null });
   const workerLeadSessionId = useOrcaWorkerLeadSessionId({ maker, workerSessionId: isWorker ? sessionId : null });
   const workerForm = useOrcaWorkerForm({
     maker,
+    prefsScope,
     active: sheetOpen && sheetView !== null,
-    defaultAgent: sessionAgent,
     setSheetOpen,
   });
 
@@ -302,18 +379,19 @@ export function useSessionOrcaCollab(params: {
   }, [sheetOpen, sheetView, isLead, refreshTeam]);
 
   const resetWorkerForm = workerForm.reset;
+  const rememberWorkerForm = workerForm.remember;
   /** + 面板主视图的「协同模式」行:Lead 进团队面板,其它进开启表单。 */
   const openFromMain = useCallback(() => {
     setError(null);
-    if (!isLead) resetWorkerForm(sessionAgent, team.settings.workerPermissionMode);
+    if (!isLead) resetWorkerForm();
     setSheetView('collab');
-  }, [isLead, resetWorkerForm, sessionAgent, setSheetView, team.settings.workerPermissionMode]);
+  }, [isLead, resetWorkerForm, setSheetView]);
 
   const openCreateWorker = useCallback(() => {
     setError(null);
-    resetWorkerForm(sessionAgent, team.settings.workerPermissionMode);
+    resetWorkerForm();
     setSheetView('collab-create');
-  }, [resetWorkerForm, sessionAgent, setSheetView, team.settings.workerPermissionMode]);
+  }, [resetWorkerForm, setSheetView]);
 
   const form = workerForm.form;
   const formValid = workerForm.valid;
@@ -324,6 +402,7 @@ export function useSessionOrcaCollab(params: {
     setError(null);
     try {
       await enableOrcaTeam(makerRef.current, sessionId, buildOrcaEnableOptions(form, form.initialTask));
+      rememberWorkerForm(form);
       remoteSessionStore.applySessionPatch(deviceId, sessionId, { orcaRole: 'lead' });
       setSheetView('collab');
       void refreshTeam();
@@ -332,7 +411,7 @@ export function useSessionOrcaCollab(params: {
     } finally {
       setBusy(false);
     }
-  }, [busy, deviceId, form, formValid, refreshTeam, sessionId, setSheetView]);
+  }, [busy, deviceId, form, formValid, refreshTeam, rememberWorkerForm, sessionId, setSheetView]);
 
   const submitCreate = useCallback(async () => {
     if (!formValid || busy) return;
@@ -340,6 +419,7 @@ export function useSessionOrcaCollab(params: {
     setError(null);
     try {
       await createOrcaWorker(makerRef.current, sessionId, form, team.workers);
+      rememberWorkerForm(form);
       setSheetView('collab');
       void refreshTeam();
     } catch (err) {
@@ -347,7 +427,7 @@ export function useSessionOrcaCollab(params: {
     } finally {
       setBusy(false);
     }
-  }, [busy, form, formValid, refreshTeam, sessionId, setSheetView, team.workers]);
+  }, [busy, form, formValid, refreshTeam, rememberWorkerForm, sessionId, setSheetView, team.workers]);
 
   const runTeamAction = useCallback(async (action: () => Promise<unknown>, fallbackKey: string) => {
     setBusy(true);

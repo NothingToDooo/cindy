@@ -60,6 +60,8 @@ export interface OrcaWorkerFormViewProps {
   customRoleMode: boolean;
   onCustomRoleModeChange(next: boolean): void;
   onChange(patch: Partial<OrcaWorkerFormValue>): void;
+  /** 切 Agent 交给页面:带出该 Agent 上次记住的模型 / 推理强度 / Fast。 */
+  onAgentChange(agent: OrcaWorkerAgentKind): void;
   /** 权限切换交给页面:进入完全访问前需要确认。 */
   onPermissionChange(mode: OrcaWorkerPermissionMode): void;
   agents: readonly OrcaWorkerAgentKind[];
@@ -74,6 +76,7 @@ export function OrcaWorkerFormView({
   customRoleMode,
   onCustomRoleModeChange,
   onChange,
+  onAgentChange,
   onPermissionChange,
   agents,
   onPickModel,
@@ -125,7 +128,7 @@ export function OrcaWorkerFormView({
         <ContextSheetChoiceRow
           disabled={busy || agents.length < 2}
           label={t('session.collab.agentLabel')}
-          onChange={(agent) => onChange({ agent, model: null })}
+          onChange={onAgentChange}
           options={agents.map((agent) => ({ id: agent, label: orcaAgentLabel(agent) }))}
           testID="collab.agentOptions"
           value={form.agent}
@@ -145,15 +148,6 @@ export function OrcaWorkerFormView({
             </Text>
           )}
         />
-        {form.model ? (
-          <ContextSheetRow
-            disabled={busy}
-            icon={<View style={{ width: iconSize.lg }} />}
-            label={t('session.collab.modelReset')}
-            onPress={() => onChange({ model: null })}
-            testID="collab.modelResetRow"
-          />
-        ) : null}
       </ContextSheetGroup>
       <ContextSheetGroup label={t('session.collab.permissionLabel')}>
         <ContextSheetChoiceRow

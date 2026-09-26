@@ -568,8 +568,8 @@ export default function NewRemoteSessionScreen() {
   const [collabEntryStatus, setCollabEntryStatus] = useState<OrcaCollabEntryStatus>('loading');
   const collabForm = useOrcaWorkerForm({
     maker,
+    prefsScope: auth.user?.id ?? null,
     active: contextSheetOpen && contextSheetView === 'collab',
-    defaultAgent: draft.agentKind,
     setSheetOpen: setContextSheetOpen,
   });
   const collabTarget = useMemo(() => ({
@@ -595,10 +595,10 @@ export default function NewRemoteSessionScreen() {
     if (collabDraft) {
       collabForm.setForm(collabDraft);
     } else {
-      collabForm.reset(draft.agentKind, null);
+      collabForm.reset();
     }
     setContextSheetView('collab');
-  }, [collabDraft, collabForm, draft.agentKind]);
+  }, [collabDraft, collabForm]);
   // 目标模式(对齐桌面 NewMakerDraftRoute.handleCreateGoal):填完表单直接建会话 + setGoal,
   // 被控端落目标消息并自动开跑第一轮,成功后跳转会话页。
   const [goalBusy, setGoalBusy] = useState(false);
@@ -6260,6 +6260,8 @@ export default function NewRemoteSessionScreen() {
             disabled={!collabForm.valid || collabEntryStatus !== 'ready' || creating}
             label={t('session.collab.draftSubmit')}
             onPress={() => {
+              // 与桌面新建任务一样:确认协同草稿即记住这次的 Worker 选择。
+              collabForm.remember(collabForm.form);
               setCollabDraft(collabForm.form);
               setContextSheetView('main');
               setContextSheetOpen(false);
@@ -6356,6 +6358,7 @@ export default function NewRemoteSessionScreen() {
               customRoleMode={collabForm.customRoleMode}
               form={collabForm.form}
               notice={orcaCollabEntryHint(collabEntryStatus)}
+              onAgentChange={collabForm.changeAgent}
               onChange={collabForm.patch}
               onCustomRoleModeChange={collabForm.setCustomRoleMode}
               onPermissionChange={(mode) => void collabForm.changePermission(mode)}

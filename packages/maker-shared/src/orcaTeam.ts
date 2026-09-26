@@ -16,6 +16,19 @@ export type OrcaWorkerPermissionMode = 'auto' | 'bypassPermissions';
 export type OrcaWorkerStatus = 'idle' | 'running' | 'done' | 'error';
 
 /**
+ * 「创建 Worker」的首次默认值(没有记忆时):桌面 workerCreationPrefs 与手机同一份。
+ * 之后每次创建都记住 Agent、该 Agent 的模型 / 推理强度 / Fast 与权限,下次带出。
+ */
+export const DEFAULT_ORCA_WORKER_AGENT: OrcaWorkerAgentKind = 'codex';
+export const DEFAULT_ORCA_WORKER_EFFORT = 'high';
+export const DEFAULT_ORCA_WORKER_MODELS: Readonly<Record<OrcaWorkerAgentKind, string>> = {
+  codex: 'codex/gpt-5.5',
+  'claude-code': 'claude-opus-4-7',
+  // 与被控端 orcaWorkerCreationService 的 pi 默认一致。
+  pi: 'claude-sonnet-4-6',
+};
+
+/**
  * 按角色派生 Worker label(被控端要求 /^[a-z0-9_-]+$/i、≤32、团队内唯一)。
  * 重名时追加 `-2`、`-3`…;极端情况下用时间戳后缀兜底。
  */
@@ -87,15 +100,12 @@ export interface OrcaCollaborationSettings {
   workerSoftLimit: number;
   workerHardLimit: number;
   workerIdleReleaseMinutes: number;
-  /** 被控端记住的 Worker 权限偏好;老被控端不回该字段 → null(调用方按产品默认处理)。 */
-  workerPermissionMode: OrcaWorkerPermissionMode | null;
 }
 
 export const DEFAULT_ORCA_COLLABORATION_SETTINGS: OrcaCollaborationSettings = {
   workerSoftLimit: 5,
   workerHardLimit: 8,
   workerIdleReleaseMinutes: 0,
-  workerPermissionMode: null,
 };
 
 /** 没有保存过偏好时的产品默认(与桌面 workerCreationPrefs 一致):Full access。 */
@@ -161,7 +171,6 @@ export function parseOrcaCollaborationSettings(value: unknown): OrcaCollaboratio
     workerSoftLimit: positiveInt(row.workerSoftLimit, defaults.workerSoftLimit),
     workerHardLimit: positiveInt(row.workerHardLimit, defaults.workerHardLimit),
     workerIdleReleaseMinutes: positiveInt(row.workerIdleReleaseMinutes, defaults.workerIdleReleaseMinutes),
-    workerPermissionMode: parseOrcaPermissionMode(row.workerPermissionMode),
   };
 }
 
