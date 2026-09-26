@@ -214,6 +214,8 @@ export function orcaCollabEntryHint(status: OrcaCollabEntryStatus): string | nul
 
 const TIMEOUT_RECOVERY_ATTEMPTS = 4;
 const TIMEOUT_RECOVERY_DELAY_MS = 3000;
+/** 回查的总时限:探针自身可能各走满隧道超时,只限次数不限时会把恢复窗口拖到分钟级。 */
+const TIMEOUT_RECOVERY_DEADLINE_MS = 30_000;
 
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -241,8 +243,10 @@ async function probeCommittedWorker(
   leadSessionId: string,
   predicate: (worker: OrcaTeamWorker) => boolean,
 ): Promise<OrcaTeamWorker | null> {
+  const deadline = Date.now() + TIMEOUT_RECOVERY_DEADLINE_MS;
   for (let attempt = 0; attempt < TIMEOUT_RECOVERY_ATTEMPTS; attempt += 1) {
     if (attempt > 0) await delay(TIMEOUT_RECOVERY_DELAY_MS);
+    if (Date.now() >= deadline) return null;
     try {
       const match = parseOrcaTeamWorkers(await maker.orca.listWorkers(leadSessionId)).find(predicate);
       if (match) return match;
@@ -323,10 +327,18 @@ export async function createOrcaWorker(
 
 // ─── 新建任务开启协同失败的跨页提示 ──────────────────────────────────────────
 // 新建页在后台管线里开启协同;失败时任务照单任务继续,提示要在跳转后的会话页出现。
+// 会话页通常在失败发生前就已挂载,所以既要能在挂载时取走,也要能在失败时推给已挂载的页面。
 const orcaStartFailures = new Map<string, string>();
+const orcaStartFailureListeners = new Set<(sessionId: string) => void>();
 
 export function rememberOrcaStartFailure(sessionId: string, message: string): void {
   orcaStartFailures.set(sessionId, message);
+  for (const listener of orcaStartFailureListeners) listener(sessionId);
+}
+
+export function subscribeOrcaStartFailure(listener: (sessionId: string) => void): () => void {
+  orcaStartFailureListeners.add(listener);
+  return () => { orcaStartFailureListeners.delete(listener); };
 }
 
 export function takeOrcaStartFailure(sessionId: string): string | null {

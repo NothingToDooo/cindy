@@ -261,7 +261,7 @@ import {
 } from '@/session/ContextSheet';
 import { OrcaTeamPanelView, OrcaWorkerFormView } from '@/session/ContextSheetCollabView';
 import { useSessionOrcaCollab } from '@/session/useSessionOrcaCollab';
-import { takeOrcaStartFailure } from '@/session/orcaTeam';
+import { subscribeOrcaStartFailure, takeOrcaStartFailure } from '@/session/orcaTeam';
 import { RecentPhotosStrip } from '@/session/ContextSheetMediaViews';
 import { ContextSheetGoalView, goalStatusLabel } from '@/session/ContextSheetGoalView';
 import { parseGoalLimitsRouteParam } from '@/session/goalLimitsRouteParam';
@@ -2058,8 +2058,14 @@ export default function SessionScreen() {
   );
   // 新建任务页在后台开启协同失败时任务照单任务继续,提示在这里(跳转后的会话页)出现。
   useEffect(() => {
-    const reason = takeOrcaStartFailure(sessionId);
-    if (reason) setError(t('session.collab.startFailedContinue', { reason }));
+    const show = () => {
+      const reason = takeOrcaStartFailure(sessionId);
+      if (reason) setError(t('session.collab.startFailedContinue', { reason }));
+    };
+    show();
+    return subscribeOrcaStartFailure((failedSessionId) => {
+      if (failedSessionId === sessionId) show();
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
   const accountProvider = composerDeviceProviders.ready

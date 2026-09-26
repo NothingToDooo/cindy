@@ -28,6 +28,7 @@ describe('mobile Orca collaboration wiring', () => {
     expect(source).toContain('testID="session.collabBar"');
     expect(source).toContain('collab.openLead();');
     expect(source).toContain('takeOrcaStartFailure(sessionId)');
+    expect(source).toContain('return subscribeOrcaStartFailure((failedSessionId) => {');
   });
 
   it('keeps Worker lifecycle on the Orca path instead of the generic task menu', () => {

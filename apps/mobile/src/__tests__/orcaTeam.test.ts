@@ -10,6 +10,7 @@ import {
   orcaWorkerFormFromPrefs,
   readOrcaCollabEntryStatus,
   rememberOrcaStartFailure,
+  subscribeOrcaStartFailure,
   takeOrcaStartFailure,
 } from '@/session/orcaTeam';
 import type { MobileMakerTransport } from '@/device-link/mobileMakerTransport';
@@ -255,9 +256,31 @@ describe('mobile Orca collaboration mutations', () => {
     expect(describeOrcaError(new Error('boom'), 'session.collab.errors.startFailed')).toContain('开启协同失败。');
   });
 
-  it('hands a new-task start failure to the session page exactly once', () => {
+  it('hands a new-task start failure to the session page exactly once, including late failures', () => {
     rememberOrcaStartFailure('s-1', 'reason');
     expect(takeOrcaStartFailure('s-1')).toBe('reason');
     expect(takeOrcaStartFailure('s-1')).toBeNull();
+
+    const seen: string[] = [];
+    const unsubscribe = subscribeOrcaStartFailure((sessionId) => seen.push(sessionId));
+    rememberOrcaStartFailure('s-2', 'late');
+    unsubscribe();
+    rememberOrcaStartFailure('s-3', 'after');
+    expect(seen).toEqual(['s-2']);
+  });
+
+  it('bounds the timeout probe by an overall deadline', async () => {
+    vi.useFakeTimers();
+    const listWorkers = vi.fn(() => new Promise((resolve) => setTimeout(() => resolve([]), 20_000)));
+    const maker = fakeMaker({
+      orca: { enable: vi.fn(async () => { throw new Error('[INVOKE_TIMEOUT] timed out'); }), listWorkers },
+    });
+    const pending = enableOrcaTeam(maker, 'lead-1', buildOrcaEnableOptions(form));
+    const assertion = expect(pending).rejects.toThrow('INVOKE_TIMEOUT');
+    await vi.runAllTimersAsync();
+    await assertion;
+    vi.useRealTimers();
+    // 20s 一次的探针在 30s 总时限内只来得及两次,不会跑满四次。
+    expect(listWorkers.mock.calls.length).toBeLessThanOrEqual(2);
   });
 });
