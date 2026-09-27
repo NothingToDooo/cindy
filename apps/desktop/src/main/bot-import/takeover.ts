@@ -68,6 +68,7 @@ export async function changeSourceAutomationState(source: ImportSource, item: Im
     // The persisted pausing-source phase remains for same-owner reconciliation.
     const result = await runImportedProcess({ command: cli.interpreter ?? cli.executable,
       args: cli.interpreter ? ['/d', '/s', '/c', `""${cli.executable}" ${args.join(' ')}"`] : args,
+      windowsVerbatimArguments: !!cli.interpreter,
       cwd: source.root, env, timeoutMs: 30_000, signal: new AbortController().signal, assertOwner });
     commandFailed = result.exitCode !== 0;
   } catch { commandFailed = true; }

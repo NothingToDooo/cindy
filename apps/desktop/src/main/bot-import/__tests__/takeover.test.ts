@@ -6,9 +6,9 @@ import { discoverImportSources, inspectImportSource } from '../sources.js';
 import { changeSourceAutomationState, resolveSourceCli } from '../takeover.js';
 let root: string | undefined;
 afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllEnvs(); if (root) await fs.rm(root, { recursive: true, force: true }); });
-it.skipIf(process.platform === 'win32').each(['hermes', 'openclaw'] as const)('uses native %s pause/resume with only the selected environment', async kind => {
+it.each(['hermes', 'openclaw'] as const)('uses native %s pause/resume with only the selected environment', async kind => {
   root = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-import-takeover-test-'));
-  const state = path.join(root, `.${kind}`); const bin = path.join(root, 'host-bin');
+  const state = path.join(root, `.${kind}`); const bin = path.join(root, 'host bin');
   await fs.mkdir(path.join(state, 'cron'), { recursive: true }); await fs.mkdir(bin, { recursive: true });
   await fs.writeFile(path.join(state, kind === 'hermes' ? 'config.yaml' : 'openclaw.json'), kind === 'hermes' ? 'name: Fixture' : JSON.stringify({ agents: { list: [{ id: 'main', name: 'Fixture', workspace: state }] } }));
   const file = path.join(state, 'cron/jobs.json');
@@ -21,7 +21,7 @@ it.skipIf(process.platform === 'win32').each(['hermes', 'openclaw'] as const)('u
   await fs.mkdir(sourceBin);
   await fs.writeFile(path.join(sourceBin, kind), `#!${process.execPath}\nprocess.exit(99);`, { mode: 0o700 });
   const selected = { PATH: sourceBin, COMSPEC: path.join(sourceBin, 'fake-cmd.exe'), SOURCE_API_KEY: 'fake-selected-source-key', HTTPS_PROXY: 'https://fake-selected-proxy.invalid' };
-  await fs.writeFile(path.join(bin, kind), `#!${process.execPath}
+  const script = `#!${process.execPath}
 const fs = require('node:fs'), path = require('node:path');
 if (process.env.CINDY_UNRELATED_PAT || process.env.HTTP_PROXY || process.env.SOURCE_API_KEY !== 'fake-selected-source-key'
   || process.env.HTTPS_PROXY !== 'https://fake-selected-proxy.invalid' || process.env.PATH !== ${JSON.stringify(sourceBin)}
@@ -34,7 +34,13 @@ const job = data.jobs.find(job => job.id === process.argv[4]);
 if (process.argv[2] !== 'cron' || !job) process.exit(2);
 job.enabled = ['resume', 'enable'].includes(process.argv[3]);
 fs.writeFileSync(file, JSON.stringify(data));
-`, { mode: 0o700 });
+`;
+  if (process.platform === 'win32') {
+    await fs.writeFile(path.join(bin, `${kind}.cjs`), script);
+    await fs.writeFile(path.join(bin, `${kind}.cmd`), `@echo off\r\n"${process.execPath}" "%~dp0${kind}.cjs" %*\r\n`);
+  } else {
+    await fs.writeFile(path.join(bin, kind), script, { mode: 0o700 });
+  }
   const readers = { home: root, env: { ...process.env, PATH: bin }, readCronDatabase: async () => [] };
   const [source] = await discoverImportSources(readers);
   const snapshot = await inspectImportSource(source!, readers); const item = snapshot.items.find(item => item.automation)!;

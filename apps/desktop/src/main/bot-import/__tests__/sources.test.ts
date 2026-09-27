@@ -284,7 +284,7 @@ it('shares discovery config/include reads with name masking and charges all Herm
   await metadata.readName(sources[0]!);
   await expect(metadata.readName(sources[1]!)).rejects.toThrow('SOURCE_SNAPSHOT_TOO_LARGE');
   for (const id of ['a', 'b', 'c']) for (const name of ['config.yaml', 'included.yaml']) {
-    expect(opened.mock.calls.filter(([file]) => String(file).endsWith(`/profiles/${id}/${name}`))).toHaveLength(1);
+    expect(opened.mock.calls.filter(([file]) => String(file).endsWith(path.join('profiles', id, name)))).toHaveLength(1);
   }
   expect(reader.readCronDatabase).not.toHaveBeenCalled();
 });

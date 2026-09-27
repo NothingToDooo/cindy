@@ -16,13 +16,15 @@ export function importedProcessEnvironment(selected: NodeJS.ProcessEnv = {}, hos
 /** Imported commands get a private subprocess environment; the host environment is never mutated. */
 export function runImportedProcess(input: {
   command: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv; timeoutMs: number;
+  windowsVerbatimArguments?: boolean;
   signal: AbortSignal; assertOwner(): void;
 }): Promise<{ stdout: string; exitCode: number }> {
   input.assertOwner();
   if (input.signal.aborted) return Promise.reject(new CompanionImportError('AUTOMATION_CANCELLED'));
   return new Promise((resolve, reject) => {
     const child = spawn(input.command, input.args, { cwd: input.cwd, env: input.env,
-      detached: process.platform !== 'win32', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      detached: process.platform !== 'win32', windowsHide: true, windowsVerbatimArguments: input.windowsVerbatimArguments,
+      stdio: ['ignore', 'pipe', 'pipe'] });
     let bytes = 0; const chunks: Buffer[] = [];
     let failure: string | undefined; let settled = false;
     let forced: ReturnType<typeof setTimeout> | undefined;

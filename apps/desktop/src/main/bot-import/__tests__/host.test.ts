@@ -441,8 +441,8 @@ it.each([false, true])('publishes masked skills and runs original scripts/resour
   const token = 'fake-selected-source-token'; const native = 'fake-native-resource-token';
   const excluded = 'fake-deselected-skill-token';
   const files = [
-    { name: 'SKILL.md', bytes: Buffer.from(`---\nname: report\ndescription: Query using ${token}\n---\nUse scripts/report.cjs; 原来的谈吐。`), executable: false },
-    { name: 'scripts/report.cjs', bytes: Buffer.from(`const fs = require('node:fs'); const helper = require('./helper.cjs'); if (${nativeOnly ? 'false' : `process.env.SOURCE_TOKEN !== '${token}'`} || helper.token !== '${native}' || process.env.DISCARDED) process.exit(1); fs.writeFileSync('report.txt', 'query succeeded'); console.log('query succeeded', helper.token, '${token}', '${excluded}');`), executable: true },
+    { name: 'SKILL.md', bytes: Buffer.from(`---\nname: report\ndescription: Query using ${token}\n---\nUse scripts/report task.cjs; 原来的谈吐。`), executable: false },
+    { name: 'scripts/report task.cjs', bytes: Buffer.from(`const fs = require('node:fs'); const helper = require('./helper.cjs'); if (${nativeOnly ? 'false' : `process.env.SOURCE_TOKEN !== '${token}'`} || helper.token !== '${native}' || process.env.DISCARDED || process.argv[2] !== 'query & report') process.exit(1); fs.writeFileSync('report.txt', 'query succeeded'); console.log('query succeeded', helper.token, '${token}', '${excluded}');`), executable: true },
     { name: 'scripts/helper.cjs', bytes: Buffer.from('module.exports = require("./data/query.json");'), executable: false },
     { name: 'scripts/data/query.json', bytes: Buffer.from(JSON.stringify({ token: native })), executable: false },
     { name: 'references/guide.md', bytes: Buffer.from(`使用原接口。${native}\r\n`), executable: false },
@@ -492,7 +492,7 @@ it.each([false, true])('publishes masked skills and runs original scripts/resour
   const mkdir = vi.spyOn(fs, 'mkdtemp');
   try {
     const prefix = process.platform === 'win32' ? '%CINDY_IMPORTED_SKILLS%' : '$CINDY_IMPORTED_SKILLS';
-    const output = await client.callTool({ name: 'run_command', arguments: { command: `"${process.execPath}" "${prefix}/report/scripts/report.cjs"` } });
+    const output = await client.callTool({ name: 'run_command', arguments: { command: `"${process.execPath}" "${prefix}/report/scripts/report task.cjs" "query & report"` } });
     expect(output.isError).toBe(false);
     expect(JSON.stringify(output)).toContain('query succeeded');
     expect(JSON.stringify(output)).not.toContain(token); expect(JSON.stringify(output)).not.toContain(native);
