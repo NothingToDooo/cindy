@@ -33,6 +33,10 @@ function bindingPath(userData: string, botId: string): string {
   return path.join(userData, 'bots', botId, 'environment.json');
 }
 export const companionEnvironmentKey = (botId: string): string => `bot_environment_${fingerprint(botId)}`;
+function removalPath(userData: string, botId: string): string {
+  bindingPath(userData, botId); // Apply the same host-owned ID validation.
+  return path.join(userData, 'companion-import-cleanups', `${botId}.json`);
+}
 
 /** A companion owns its binding; secret bytes use the existing account-scoped encrypted store. */
 export function createCompanionEnvironmentStore(io: CompanionSecretIo) {
@@ -67,6 +71,39 @@ export function createCompanionEnvironmentStore(io: CompanionSecretIo) {
     },
     remove(botId: string): void {
       if (!io.remove(companionEnvironmentKey(botId))) throw new CompanionImportError('CREDENTIAL_STORAGE_FAILED');
+    },
+    /** Non-secret intent survives a crash between the DB commit and vault cleanup. */
+    async stageRemoval(userData: string, botId: string, assertOwner: () => void): Promise<void> {
+      assertOwner();
+      const file = removalPath(userData, botId);
+      await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+      assertOwner();
+      atomicWriteFileSync(file, JSON.stringify({ version: 1, botId }));
+    },
+    async finishRemoval(userData: string, botId: string, assertOwner: () => void): Promise<void> {
+      assertOwner();
+      const file = removalPath(userData, botId);
+      if (readAtomicFileSync(file) === null) return;
+      store.remove(botId);
+      assertOwner();
+      await fs.rm(`${file}.bak`, { force: true });
+      await fs.rm(file, { force: true });
+    },
+    async recoverRemovals(userData: string, assertOwner: () => void, profileExists: (botId: string) => Promise<boolean>): Promise<void> {
+      assertOwner();
+      let names: string[];
+      try { names = await fs.readdir(path.join(userData, 'companion-import-cleanups')); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
+      const ids = new Set(names.flatMap(name => /^([a-z0-9][a-z0-9_-]{0,127})\.json(?:\.bak)?$/.exec(name)?.[1] ?? []));
+      for (const botId of ids) {
+        assertOwner();
+        try {
+          const exists = await profileExists(botId);
+          assertOwner();
+          // A failed DB deletion leaves the profile AND its credentials intact.
+          if (!exists) await store.finishRemoval(userData, botId, assertOwner);
+        } catch { assertOwner(); /* Keep the marker for the next owner recovery. */ }
+      }
     },
     async update(userData: string, botId: string, assertOwner: () => void, mutate: (environment: CompanionEnvironment) => void): Promise<void> {
       const key = `${userData}:${botId}`;

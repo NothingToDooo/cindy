@@ -213,6 +213,27 @@ describe('Bot lifecycle coordinator', () => {
     expect(h.broadcastRemoteResourceChanged).toHaveBeenCalledWith('bot-1');
   });
 
+  it('keeps imported secrets when the database deletion fails, and cleans them only after a successful retry', async () => {
+    const onDeleted = vi.fn(async () => {
+      expect(row(sqlite, 'bot_profiles', 'bot-1')).toBeUndefined();
+    });
+    const lifecycle = service({ onDeleted });
+    const request = { botId: 'bot-1', action: 'delete' as const, confirmName: 'Helper' };
+    deleteProfileAndDetachSessions.mockRejectedValueOnce(new Error('fixture SQLite write failure'));
+    await expect(lifecycle.run(request)).rejects.toThrow('fixture SQLite write failure');
+    expect(row(sqlite, 'bot_profiles', 'bot-1')).toBeDefined();
+    expect(onDeleted).not.toHaveBeenCalled();
+    await expect(lifecycle.run(request)).resolves.toMatchObject({ status: 'deleted' });
+    expect(onDeleted).toHaveBeenCalledOnce();
+  });
+
+  it('reports committed deletion truthfully when post-commit secret cleanup needs retry', async () => {
+    const onDeleted = vi.fn(async () => { throw new Error('fixture vault unavailable'); });
+    const result = await service({ onDeleted }).run({ botId: 'bot-1', action: 'delete', confirmName: 'Helper' });
+    expect(row(sqlite, 'bot_profiles', 'bot-1')).toBeUndefined();
+    expect(result).toMatchObject({ status: 'deleted', warnings: ['IMPORTED_ENVIRONMENT_CLEANUP_PENDING'] });
+  });
+
   it('uses the canonical registry even when the compatibility mirror disagrees', async () => {
     sqlite.prepare(
       "UPDATE bot_profiles SET canonical_session_id = 'stale-mirror' WHERE id = 'bot-1'",

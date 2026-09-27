@@ -88,6 +88,17 @@ describe('desktop Claude read-only allowlist', () => {
 });
 
 describe('desktop MCP approval policy', () => {
+  it('never lets import discovery grant reusable approval to start a migration', () => {
+    for (const operation of ['sources', 'preview', 'status', 'start', undefined]) {
+      for (const toolName of ['import_agent', undefined]) {
+        expect(getDesktopMcpToolApprovalPolicy({ serverName: 'companion_import', toolName,
+          toolParams: { operation, selection: { takeover: true } },
+        })).toBe('prompt-each-time');
+      }
+    }
+    expect(getDesktopClaudeReadOnlyAllowedTools()).not.toContain('mcp__companion_import__import_agent');
+  });
+
   it('does not let a server grant authorize later imported credential-bearing commands', () => {
     for (const command of ['python scripts/report.py', 'printf "$TOKEN" | base64', 'env > credentials.txt']) {
       expect(getDesktopMcpToolApprovalPolicy({ serverName: 'companion_connections', toolName: 'run_command', toolParams: { command } })).toBe('prompt-each-time');

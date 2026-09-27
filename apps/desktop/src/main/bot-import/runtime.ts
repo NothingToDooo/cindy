@@ -13,6 +13,20 @@ export const companionEnvironmentStore = createCompanionEnvironmentStore({
   remove: key => botEnvironmentSecretIo.remove(key),
 });
 
+export async function recoverCompanionEnvironmentRemovals(): Promise<void> {
+  const owner = activeOwnerScopeKey();
+  const root = ownerScopedUserDataPath();
+  const assertOwner = () => {
+    if (isAppSessionBoundaryPending() || activeOwnerScopeKey() !== owner) throw new CompanionImportError('OWNER_CHANGED');
+  };
+  assertOwner();
+  const db = getDbClient().drizzle;
+  await companionEnvironmentStore.recoverRemovals(root, assertOwner, async botId => {
+    const [profile] = await db.select({ id: botProfiles.id }).from(botProfiles).where(eq(botProfiles.id, botId)).limit(1);
+    return !!profile;
+  });
+}
+
 /** Resolve from the main-owned session link, never from a renderer-supplied Bot ID or path. */
 export async function readCompanionSessionEnvironment(sessionId: string) {
   const owner = activeOwnerScopeKey();

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, it } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -26,4 +26,43 @@ it('does not publish a usable manifest when secure storage rejects credentials',
   const store = createCompanionEnvironmentStore({ read: () => null, write: () => false, remove: () => true });
   await expect(store.write(root, 'fixture', { version: 1, env: { KEY: 'fake' }, mcp: [], credentials: [] }, () => {})).rejects.toThrow('CREDENTIAL_STORAGE_FAILED');
   await expect(fs.access(path.join(root, 'bots/fixture/environment.json'))).rejects.toThrow();
+});
+
+it('retains credentials before deletion commits and retries failed cleanup after restart', async () => {
+  const values = new Map<string, string>();
+  const remove = vi.fn((key: string) => { values.delete(key); return true; });
+  const io = { read: (key: string) => values.get(key) ?? null, write: (key: string, value: string) => { values.set(key, value); return true; }, remove };
+  const store = createCompanionEnvironmentStore(io);
+  const environment = { version: 1 as const, env: { TOKEN: 'fixture-secret' }, mcp: [], credentials: [] };
+  await store.write(root, 'fixture', environment, () => {});
+  await store.stageRemoval(root, 'fixture', () => {});
+  const marker = path.join(root, 'companion-import-cleanups/fixture.json');
+  expect(await fs.readFile(marker, 'utf8')).not.toContain('fixture-secret');
+  // A prepared deletion that rolled back in SQLite must leave the vault usable.
+  await createCompanionEnvironmentStore(io).recoverRemovals(root, () => {}, async () => true);
+  expect(await store.read(root, 'fixture', () => {})).toEqual(environment);
+  expect(remove).not.toHaveBeenCalled();
+  // The profile and folder are now gone, but the vault cannot be updated yet.
+  await fs.rm(path.join(root, 'bots/fixture'), { recursive: true });
+  remove.mockReturnValueOnce(false);
+  await expect(store.finishRemoval(root, 'fixture', () => {})).rejects.toThrow('CREDENTIAL_STORAGE_FAILED');
+  expect(values.size).toBe(1);
+  expect(await fs.readFile(marker, 'utf8')).toContain('fixture');
+  const restarted = createCompanionEnvironmentStore(io);
+  await restarted.recoverRemovals(root, () => {}, async () => false);
+  expect(values.size).toBe(0);
+  await expect(fs.access(marker)).rejects.toThrow();
+  await restarted.recoverRemovals(root, () => {}, async () => false);
+  expect(remove).toHaveBeenCalledTimes(2);
+});
+
+it('retains pending cleanup if ownership changes while checking the committed profile state', async () => {
+  const remove = vi.fn(() => true);
+  const store = createCompanionEnvironmentStore({ read: () => null, write: () => true, remove });
+  await store.stageRemoval(root, 'fixture', () => {});
+  let current = true;
+  const assertOwner = () => { if (!current) throw new Error('owner changed'); };
+  await expect(store.recoverRemovals(root, assertOwner, async () => { current = false; return false; })).rejects.toThrow('owner changed');
+  expect(remove).not.toHaveBeenCalled();
+  await expect(fs.access(path.join(root, 'companion-import-cleanups/fixture.json'))).resolves.toBeUndefined();
 });

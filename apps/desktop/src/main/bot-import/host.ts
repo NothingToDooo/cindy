@@ -17,8 +17,8 @@ import { getRoutineEngine, routineTools } from '../routines/service.js';
 import { selectedImportEnvironment } from './environmentSelection.js';
 import { discoverImportSources, inspectImportSource, type SourceReaderDeps } from './sources.js';
 import { readOpenClawCronDatabase } from './openclawCron.js';
-import { companionEnvironmentStore } from './runtime.js';
-import { fingerprint } from './files.js';
+import { companionEnvironmentStore, recoverCompanionEnvironmentRemovals } from './runtime.js';
+import { deserializeImportSnapshot, fingerprint, serializeImportSnapshot } from './files.js';
 import { transferCompanion, validateImportSelection, type ImportReceipt, type TransferDeps } from './transfer.js';
 import { CompanionImportError, type ImportSnapshot, type ImportSource } from './types.js';
 import { changeSourceAutomationState } from './takeover.js';
@@ -86,6 +86,8 @@ function receiptFile(root: string, requestId: string) {
 /** Reconcile only previously authorized, unfinished requests in the currently signed-in account. */
 export async function recoverCompanionImports(): Promise<void> {
   const scope = owner();
+  await recoverCompanionEnvironmentRemovals();
+  scope.assert();
   let files: string[];
   try { files = await fs.readdir(path.join(scope.root, 'companion-imports')); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
@@ -125,10 +127,7 @@ export async function getCompanionImportResult(requestId: string): Promise<Compa
     const environment = await companionEnvironmentStore.read(scope.root, receipt.result.botId, scope.assert);
     const pending = environment?.pendingImport;
     if (pending && pending.selection.requestId === requestId) {
-      const snapshot = JSON.parse(pending.snapshotJson, (_key, value: unknown) => {
-        const record = value as { type?: string; data?: unknown } | null;
-        return record?.type === 'Buffer' && Array.isArray(record.data) ? Buffer.from(record.data) : value;
-      }) as ImportSnapshot;
+      const snapshot = deserializeImportSnapshot(pending.snapshotJson);
       const controller = `recovery:${scope.scope}`;
       previews.set(pending.selection.previewId, { owner: scope.scope, controller, value: snapshot, createdAt: Date.now() });
       return startCompanionImport(pending.selection, controller);
@@ -152,10 +151,7 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
     const pending = receipt ? (await companionEnvironmentStore.read(scope.root, receipt.result.botId, scope.assert))?.pendingImport : undefined;
     const intentKey = (value: CompanionImportSelection) => fingerprint({ ...value, entryIds: [...value.entryIds].sort() });
     if (!pending || !Array.isArray(selection.entryIds) || intentKey(pending.selection) !== intentKey(selection)) throw error;
-    snapshot = JSON.parse(pending.snapshotJson, (_key, value: unknown) => {
-      const record = value as { type?: string; data?: unknown } | null;
-      return record?.type === 'Buffer' && Array.isArray(record.data) ? Buffer.from(record.data) : value;
-    }) as ImportSnapshot;
+    snapshot = deserializeImportSnapshot(pending.snapshotJson);
   }
   const selected = validateImportSelection(selection, snapshot);
   for (const role of ['identity', 'user', 'instructions'] as const) {
@@ -194,7 +190,7 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
     },
     async saveCheckpoint(botId, items) {
       const previous = await companionEnvironmentStore.read(scope.root, botId, scope.assert);
-      const pendingImport = { selection, snapshotJson: JSON.stringify({ ...snapshot, avatarImageBase64: selection.avatarImageBase64, items }) };
+      const pendingImport = { selection, snapshotJson: serializeImportSnapshot({ ...snapshot, avatarImageBase64: selection.avatarImageBase64, items }) };
       if (previous) await companionEnvironmentStore.update(scope.root, botId, scope.assert, environment => { environment.pendingImport = pendingImport; });
       else await companionEnvironmentStore.write(scope.root, botId, { version: 1, env: {}, mcp: [], credentials: [], pendingImport }, scope.assert);
     },
@@ -217,7 +213,7 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
         credentials: items.flatMap(item => item.credential && !item.view.dependsOn?.some(id => !chosen.has(id)) && (!item.view.issues?.length || item.credential.format !== 'telegram') ? [{ id: item.view.id, ...item.credential, ...(item.credential.format === 'telegram' ? { value: resolveReferences(item.credential.value) } : {}) }] : []),
         files: Object.fromEntries(items.flatMap(item => item.asset ? [[item.asset.name, item.asset.bytes.toString('base64')]] : [])),
         sourceAutomations: items.flatMap(item => item.automation ? [{ entryId: item.view.id, kind: snapshot.source.kind, original: item.automation.original }] : []),
-        pendingImport: { selection, snapshotJson: JSON.stringify({ ...snapshot, avatarImageBase64: selection.avatarImageBase64, items }) },
+        pendingImport: { selection, snapshotJson: serializeImportSnapshot({ ...snapshot, avatarImageBase64: selection.avatarImageBase64, items }) },
         automations: previous?.automations ?? {},
       }, scope.assert);
       const roleText = (role: 'identity' | 'user' | 'instructions') => items.filter(item => item.role === role).map(item => item.text).join('\n\n');

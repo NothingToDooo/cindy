@@ -5,12 +5,37 @@ import path from 'node:path';
 import { discoverImportSources, inspectImportSource } from '../sources.js';
 import { validateImportSelection } from '../transfer.js';
 import { selectedImportEnvironment } from '../environmentSelection.js';
+import { createImportBudget } from '../files.js';
 
 let home: string;
 beforeEach(async () => { home = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-import-source-test-')); });
 afterEach(async () => { await fs.rm(home, { recursive: true, force: true }); });
 async function write(name: string, text: string) { const file = path.join(home, name); await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, text); }
 const deps = () => ({ home, env: {}, readCronDatabase: vi.fn(async () => []) });
+
+it('shares one byte budget across referenced skill trees without truncating a snapshot', async () => {
+  await write('.hermes/config.yaml', 'name: Ada\n');
+  for (const name of ['first', 'second']) {
+    await write(`.hermes/skills/${name}/SKILL.md`, `---\nname: ${name}\n---\nRead data.txt`);
+    await write(`.hermes/skills/${name}/data.txt`, 'x'.repeat(2048));
+  }
+  const jobs = (skills: string[]) => JSON.stringify([{ id: 'read', skills, prompt: 'Read resources', schedule: { kind: 'interval', minutes: 5 } }]);
+  await write('.hermes/cron/jobs.json', jobs(['first']));
+  const reader = deps(); const [source] = await discoverImportSources(reader);
+  const snapshot = await inspectImportSource(source!, reader, createImportBudget(3000));
+  expect(snapshot.items.find(item => item.view.name === 'first')?.files?.find(file => file.name === 'data.txt')?.bytes.length).toBe(2048);
+  expect(snapshot.items.find(item => item.view.name === 'second')?.files).toHaveLength(1);
+  await write('.hermes/cron/jobs.json', jobs(['first', 'second']));
+  await expect(inspectImportSource(source!, reader, createImportBudget(3000))).rejects.toThrow('SOURCE_SNAPSHOT_TOO_LARGE');
+});
+
+it('counts configuration includes and memory against the same source budget', async () => {
+  await write('.openclaw/openclaw.json', '{"$include":"extra.json"}');
+  await write('.openclaw/extra.json', JSON.stringify({ name: 'x'.repeat(1000) }));
+  await write('.openclaw/workspace/MEMORY.md', 'x'.repeat(1000));
+  const reader = deps(); const [source] = await discoverImportSources(reader);
+  await expect(inspectImportSource(source!, reader, createImportBudget(1500))).rejects.toThrow('SOURCE_SNAPSHOT_TOO_LARGE');
+});
 
 describe('installed agent imports', () => {
   it('keeps secret references unexpanded until the final env and connection selection', async () => {

@@ -5,7 +5,7 @@ import { importedScriptName } from './scripts.js';
 import JSON5 from 'json5';
 import yaml from 'js-yaml';
 import { parse as parseEnv } from 'dotenv';
-import { fingerprint, optionalText, readImportFile, readImportTree } from './files.js';
+import { createImportBudget, fingerprint, optionalText, readImportFile, readImportTree, snapshotFingerprint, type ImportReadBudget } from './files.js';
 import { normalizeAutomation } from './sourceAutomations.js';
 import { CompanionImportError, object, string, type ImportItem, type ImportSnapshot, type ImportSource } from './types.js';
 
@@ -24,9 +24,9 @@ function sourcePath(home: string, value: string, relativeTo: string): string {
   return value === '~' ? home : value.startsWith('~/') ? path.join(home, value.slice(2)) : path.resolve(relativeTo, value);
 }
 
-async function config(root: string, file: string, ancestors: string[] = []): Promise<Record<string, unknown>> {
+async function config(root: string, file: string, budget = createImportBudget(), ancestors: string[] = []): Promise<Record<string, unknown>> {
   if (ancestors.includes(file) || ancestors.length > 8) throw new CompanionImportError('SOURCE_CONFIG_INCLUDE_CYCLE');
-  const text = await optionalText(root, file);
+  const text = await optionalText(root, file, budget);
   if (text === undefined) return {};
   try {
     const resolve = async (value: unknown): Promise<unknown> => {
@@ -37,14 +37,14 @@ async function config(root: string, file: string, ancestors: string[] = []): Pro
       let result: Record<string, unknown> = {};
       for (const include of includes) {
         if (typeof include !== 'string') throw new Error('Invalid include');
-        result = mergeConfig(result, await config(root, path.resolve(path.dirname(file), include), [...ancestors, file]));
+        result = mergeConfig(result, await config(root, path.resolve(path.dirname(file), include), budget, [...ancestors, file]));
       }
       for (const [key, child] of Object.entries(record)) if (key !== '$include' && !['__proto__', 'constructor', 'prototype'].includes(key)) result = mergeConfig(result, { [key]: await resolve(child) });
       return result;
     };
     return object(await resolve(/\.ya?ml$/i.test(file) ? yaml.load(text) : JSON5.parse(text)));
   }
-  catch { throw new CompanionImportError('SOURCE_CONFIG_INVALID'); }
+  catch (error) { if (error instanceof CompanionImportError) throw error; throw new CompanionImportError('SOURCE_CONFIG_INVALID'); }
 }
 
 function mergeConfig(base: Record<string, unknown>, next: Record<string, unknown>): Record<string, unknown> {
@@ -98,15 +98,15 @@ export async function discoverImportSources(deps: SourceReaderDeps): Promise<Imp
 
 function entryId(prefix: string, name: string): string { return `${prefix}-${fingerprint(name).slice(0, 20)}`; }
 
-async function document(items: ImportItem[], root: string, name: string, role: ImportItem['role'], category: 'personality' | 'memory') {
-  const text = await optionalText(root, path.join(root, name));
+async function document(items: ImportItem[], root: string, name: string, role: ImportItem['role'], category: 'personality' | 'memory', budget: ImportReadBudget) {
+  const text = await optionalText(root, path.join(root, name), budget);
   if (!text?.trim()) return;
   items.push({ view: { id: entryId(category, name), category, name, selected: true }, text, role });
 }
 
-async function memoryDocuments(items: ImportItem[], root: string, prefix: string) {
+async function memoryDocuments(items: ImportItem[], root: string, prefix: string, budget: ImportReadBudget) {
   if (!(await directories(root)).includes(prefix)) return;
-  const files = await readImportTree(path.join(root, prefix), name => /\.md$/i.test(name));
+  const files = await readImportTree(path.join(root, prefix), name => /\.md$/i.test(name), budget);
   for (const file of files.filter(file => /\.md$/i.test(file.name))) {
     items.push({ view: { id: entryId('memory', `${prefix}/${file.name}`), category: 'memory', name: file.name, selected: true },
       text: file.bytes.toString('utf8'), role: /(^|\/)USER\.md$/i.test(file.name) ? 'user' : undefined });
@@ -118,8 +118,8 @@ function scalarEnv(value: unknown): Record<string, string> {
     /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(entry[0]) && !['__proto__', 'prototype', 'constructor'].includes(entry[0]) && typeof entry[1] === 'string'));
 }
 
-async function connections(items: ImportItem[], source: ImportSource, values: Record<string, unknown>, deps: SourceReaderDeps) {
-  const dotenv = parseEnv(await optionalText(source.root, path.join(source.root, '.env')) ?? '');
+async function connections(items: ImportItem[], source: ImportSource, values: Record<string, unknown>, deps: SourceReaderDeps, budget: ImportReadBudget) {
+  const dotenv = parseEnv(await optionalText(source.root, path.join(source.root, '.env'), budget) ?? '');
   const envConfig = object(values.env);
   const env = { ...dotenv, ...scalarEnv(envConfig), ...scalarEnv(envConfig.vars) };
   for (const [name, value] of Object.entries(env)) {
@@ -161,7 +161,7 @@ async function connections(items: ImportItem[], source: ImportSource, values: Re
     }
     if (!token && typeof settings.tokenFile === 'string') {
       const file = sourcePath(deps.home, settings.tokenFile, source.root);
-      token = (await optionalText(path.dirname(file), file))?.trim() ?? '';
+      token = (await optionalText(path.dirname(file), file, budget))?.trim() ?? '';
     }
     if (token) items.push({ view: { id: entryId('telegram', account), name: `Telegram · ${account}`, category: 'connections', selected: true, dependsOn: references.map(key => entryId('env', key)) }, envDependencies: { names: references, entries: [] }, credential: { format: 'telegram', value: { token, account } } });
   }
@@ -169,7 +169,7 @@ async function connections(items: ImportItem[], source: ImportSource, values: Re
   // API keys have a direct environment equivalent; provider OAuth needs its native refresh adapter.
   const authFiles = source.kind === 'hermes' ? ['auth.json'] : [`agents/${source.agentId}/agent/auth-profiles.json`];
   for (const name of authFiles) {
-    const raw = await optionalText(source.root, path.join(source.root, name));
+    const raw = await optionalText(source.root, path.join(source.root, name), budget);
     if (!raw) continue;
     let value: Record<string, unknown>;
     try { value = object(JSON.parse(raw)); } catch { throw new CompanionImportError('SOURCE_CREDENTIAL_INVALID'); }
@@ -191,13 +191,16 @@ function scalarEnvHeaders(value: unknown): Record<string, string> {
   return Object.fromEntries(Object.entries(object(value)).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
 }
 
-async function skills(items: ImportItem[], roots: string[], used: Set<string>) {
+async function skills(items: ImportItem[], roots: string[], used: Set<string>, budget: ImportReadBudget) {
   const names = new Set<string>();
   for (const root of roots) {
     for (const slug of await directories(root)) {
       if (names.has(slug)) continue;
       const dir = path.join(root, slug);
-      const text = await optionalText(dir, path.join(dir, 'SKILL.md'));
+      let manifest;
+      try { manifest = await readImportFile(dir, path.join(dir, 'SKILL.md'), budget); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
+      const text = manifest.bytes.toString('utf8');
       if (!text) continue;
       names.add(slug);
       let info: Record<string, unknown> = {};
@@ -206,38 +209,38 @@ async function skills(items: ImportItem[], roots: string[], used: Set<string>) {
       const name = string(info.name) || slug;
       const referenced = used.has(slug) || used.has(name);
       items.push({ view: { id: entryId('skill', slug), category: 'skills', name, description: string(info.description).slice(0, 280), selected: referenced },
-        sourceDirectory: dir, files: referenced ? await readImportTree(dir) : [await readImportFile(dir, path.join(dir, 'SKILL.md'))], filesComplete: referenced });
+        sourceDirectory: dir, files: referenced ? [manifest, ...await readImportTree(dir, name => name !== 'SKILL.md', budget)] : [manifest], filesComplete: referenced });
     }
   }
 }
 
 /** Snapshot immutable bytes once, then give the client only a safe selection projection. */
-export async function inspectImportSource(source: ImportSource, deps: SourceReaderDeps): Promise<ImportSnapshot> {
-  const values = await config(path.dirname(source.configFile), source.configFile);
+export async function inspectImportSource(source: ImportSource, deps: SourceReaderDeps, budget = createImportBudget()): Promise<ImportSnapshot> {
+  const values = await config(path.dirname(source.configFile), source.configFile, budget);
   const items: ImportItem[] = [];
   const workspace = source.workspace;
   let jobs: Record<string, unknown>[];
   if (source.kind === 'hermes') {
-    await document(items, source.root, 'SOUL.md', 'identity', 'personality');
-    await document(items, source.root, 'USER.md', 'user', 'memory');
+    await document(items, source.root, 'SOUL.md', 'identity', 'personality', budget);
+    await document(items, source.root, 'USER.md', 'user', 'memory', budget);
     // Hermes-specific context files take precedence, rather than concatenating conflicting files.
     for (const filename of ['.hermes.md', 'HERMES.md']) {
       const before = items.length;
-      await document(items, workspace, filename, 'instructions', 'personality');
+      await document(items, workspace, filename, 'instructions', 'personality', budget);
       if (items.length !== before) break;
     }
-    await memoryDocuments(items, source.root, 'memories');
-    const raw = await optionalText(source.root, path.join(source.root, 'cron', 'jobs.json'));
+    await memoryDocuments(items, source.root, 'memories', budget);
+    const raw = await optionalText(source.root, path.join(source.root, 'cron', 'jobs.json'), budget);
     let decoded: unknown;
     try { decoded = raw ? JSON.parse(raw) : []; } catch { throw new CompanionImportError('SOURCE_AUTOMATIONS_INVALID'); }
     jobs = (Array.isArray(decoded) ? decoded : Array.isArray(object(decoded).jobs) ? object(decoded).jobs as unknown[] : []).map(object);
   } else {
-    await document(items, workspace, 'SOUL.md', 'identity', 'personality');
-    await document(items, workspace, 'IDENTITY.md', 'identity', 'personality');
-    for (const file of ['AGENTS.md', 'TOOLS.md']) await document(items, workspace, file, 'instructions', 'personality');
-    await document(items, workspace, 'USER.md', 'user', 'memory');
-    await document(items, workspace, 'MEMORY.md', undefined, 'memory');
-    await memoryDocuments(items, workspace, 'memory');
+    await document(items, workspace, 'SOUL.md', 'identity', 'personality', budget);
+    await document(items, workspace, 'IDENTITY.md', 'identity', 'personality', budget);
+    for (const file of ['AGENTS.md', 'TOOLS.md']) await document(items, workspace, file, 'instructions', 'personality', budget);
+    await document(items, workspace, 'USER.md', 'user', 'memory', budget);
+    await document(items, workspace, 'MEMORY.md', undefined, 'memory', budget);
+    await memoryDocuments(items, workspace, 'memory', budget);
     const rows = agentRows(values);
     const defaultAgent = (rows.find(row => row.default === true) ?? rows[0])?.id === source.agentId;
     const storeKey = sourcePath(deps.home, string(object(values.cron).store) || path.join(source.root, 'cron', 'jobs.json'), source.root);
@@ -246,9 +249,10 @@ export async function inspectImportSource(source: ImportSource, deps: SourceRead
       await fs.access(database);
       // If the current DB is unreadable, do not fall back to a stale JSON backup.
       jobs = await deps.readCronDatabase({ database, storeKey, agentId: source.agentId, defaultAgent });
+      budget.reserve(Buffer.byteLength(JSON.stringify(jobs)));
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-      const raw = await optionalText(path.dirname(storeKey), storeKey);
+      const raw = await optionalText(path.dirname(storeKey), storeKey, budget);
       let data: Record<string, unknown>;
       try { data = object(raw ? JSON.parse(raw) : {}); } catch { throw new CompanionImportError('SOURCE_AUTOMATIONS_INVALID'); }
       jobs = (Array.isArray(data.jobs) ? data.jobs : []).map(object).filter(job => (job.agentId ?? (defaultAgent ? source.agentId : undefined)) === source.agentId);
@@ -256,7 +260,7 @@ export async function inspectImportSource(source: ImportSource, deps: SourceRead
   }
   const usedSkills = new Set(jobs.flatMap(job => [string(job.skill), ...(Array.isArray(job.skills) ? job.skills.map(string) : [])]).filter(Boolean));
   const skillRoots = source.kind === 'hermes' ? [path.join(source.root, 'skills')] : [path.join(workspace, 'skills'), path.join(source.root, 'skills')];
-  await skills(items, skillRoots, usedSkills);
+  await skills(items, skillRoots, usedSkills, budget);
   for (const item of items.filter(item => item.view.category === 'skills')) {
     const slug = path.basename(item.sourceDirectory!);
     const settings = object(object(object(values.skills).entries)[slug]);
@@ -269,13 +273,13 @@ export async function inspectImportSource(source: ImportSource, deps: SourceRead
     if (typeof settings.apiKey === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(primaryEnv)) item.env = { ...item.env, [primaryEnv]: settings.apiKey };
     else if (settings.apiKey) item.view.issues = ['MISSING_ENVIRONMENT_REFERENCE'];
   }
-  await connections(items, source, values, deps);
+  await connections(items, source, values, deps, budget);
   if (source.kind === 'hermes' && (await directories(source.root)).includes('scripts')) {
     const usedScripts = new Set(jobs.flatMap(job => [string(job.script), string(job.monitor_script)]).filter(Boolean).flatMap(file => {
       try { return [importedScriptName(source.root, sourcePath(deps.home, file, path.join(source.root, 'scripts')))]; }
       catch { return []; }
     }));
-    for (const file of await readImportTree(path.join(source.root, 'scripts'))) items.push({ view: { id: entryId('script', file.name), category: 'connections', name: `scripts/${file.name}`, selected: usedScripts.has(`scripts/${file.name}`) }, asset: { name: `scripts/${file.name}`, bytes: file.bytes } });
+    for (const file of await readImportTree(path.join(source.root, 'scripts'), undefined, budget)) items.push({ view: { id: entryId('script', file.name), category: 'connections', name: `scripts/${file.name}`, selected: usedScripts.has(`scripts/${file.name}`) }, asset: { name: `scripts/${file.name}`, bytes: file.bytes } });
   }
   const row = source.kind === 'openclaw' ? agentRows(values).find(row => row.id === source.agentId) ?? {} : values;
   const tools = source.kind === 'openclaw' ? { ...(values.tools ? { global: values.tools } : {}), ...(row.tools ? { agent: row.tools } : {}) } : object(values.tools);
@@ -284,7 +288,7 @@ export async function inspectImportSource(source: ImportSource, deps: SourceRead
   if (nativeModel) items.push({ view: { id: entryId('configuration', 'model'), name: 'model', category: 'connections', selected: true, issues: ['AUTOMATION_MODEL_NEEDS_MAPPING'] }, credential: { format: 'source-model', value: nativeModel } });
   const heartbeat = source.kind === 'openclaw' ? object(row.heartbeat ?? object(object(values.agents).defaults).heartbeat) : object(values.heartbeat);
   if (Object.keys(heartbeat).length) {
-    const heartbeatText = await optionalText(workspace, path.join(workspace, 'HEARTBEAT.md'));
+    const heartbeatText = await optionalText(workspace, path.join(workspace, 'HEARTBEAT.md'), budget);
     items.push({ view: { id: entryId('automation', 'heartbeat'), name: 'Heartbeat', category: 'automations', selected: true, enabled: heartbeat.enabled !== false && heartbeat.every !== '0s', issues: ['AUTOMATION_TRIGGER_NEEDS_ADAPTER'] }, automation: { sourceId: 'heartbeat', original: { ...heartbeat, ...(heartbeatText ? { prompt: heartbeatText } : {}) }, fingerprint: fingerprint(heartbeat) } });
   }
   for (const job of jobs) items.push(normalizeAutomation(source, job, items, string(values.timezone) || deps.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone));
@@ -296,11 +300,14 @@ export async function inspectImportSource(source: ImportSource, deps: SourceRead
   else if (avatar && !/^[a-z][a-z0-9+.-]*:/i.test(avatar)) {
     const file = sourcePath(deps.home, avatar, workspace);
     try {
-      const bytes = (await readImportFile(path.dirname(file), file)).bytes;
+      const bytes = (await readImportFile(path.dirname(file), file, budget)).bytes;
       if (bytes.length < 1_500_000 && (/\.(png|jpe?g|webp)$/i.test(file))) avatarImageBase64 = bytes.toString('base64');
-    } catch { /* A stale source portrait falls back to the existing portrait picker. */ }
+    } catch (error) {
+      if (error instanceof CompanionImportError && ['SOURCE_SNAPSHOT_TOO_LARGE', 'SOURCE_TOO_MANY_FILES'].includes(error.code)) throw error;
+      // A stale source portrait falls back to the existing portrait picker.
+    }
   }
   markImportEnvironmentChoices(items);
   const resolved = resolveImportEnvironmentDependencies(items, items.filter(item => item.view.selected));
-  return { source, items: resolved, ...(avatarImageBase64 ? { avatarImageBase64 } : {}), fingerprint: fingerprint(resolved) };
+  return { source, items: resolved, ...(avatarImageBase64 ? { avatarImageBase64 } : {}), fingerprint: snapshotFingerprint(resolved) };
 }

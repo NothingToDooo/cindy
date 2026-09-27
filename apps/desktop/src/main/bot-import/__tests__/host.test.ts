@@ -25,7 +25,7 @@ vi.mock('../sources.js', () => ({ discoverImportSources: async () => [h.snapshot
 vi.mock('../openclawCron.js', () => ({ readOpenClawCronDatabase: vi.fn() }));
 vi.mock('../verification.js', () => ({ verifyImportedAutomation: async () => ({ verified: h.verified, reason: 'AUTOMATION_DATA_READ_FAILED' }) }));
 vi.mock('../takeover.js', () => ({ changeSourceAutomationState: async (_source: unknown, _item: unknown, enabled: boolean, _readers: unknown, _owner: unknown, _resume: boolean, env: Record<string, string>) => { h.pause(enabled); h.sourceEnabled = enabled; h.sourceEnvironment = env; } }));
-vi.mock('../runtime.js', () => ({ companionEnvironmentStore: {
+vi.mock('../runtime.js', () => ({ recoverCompanionEnvironmentRemovals: vi.fn(async () => {}), companionEnvironmentStore: {
   read: (...args: Parameters<typeof h.store.read>) => h.store.read(...args),
   write: (...args: Parameters<typeof h.store.write>) => h.store.write(...args),
   update: (...args: Parameters<typeof h.store.update>) => h.store.update(...args),

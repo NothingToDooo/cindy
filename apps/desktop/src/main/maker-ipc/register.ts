@@ -103,6 +103,7 @@ import {
   getActiveAppSession,
   getActiveDataOwnerPushStamp,
   isAppSessionBoundaryPending,
+  ownerScopedUserDataPath,
 } from '../appSessionState.js';
 import { upsertRecentWorkdir } from '../localDb/ipc/recentWorkdirs.js';
 import { isRetainableProjectSession } from '../../shared/sessionSource.js';
@@ -9933,9 +9934,13 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     onBeforeDelete: async (botId) => {
       const owner = activeOwnerScopeKey();
       await updateBotRoutineLifecycle(botId, 'delete');
-      if (isAppSessionBoundaryPending() || activeOwnerScopeKey() !== owner) throw new Error('Bot account changed during deletion');
-      companionEnvironmentStore.remove(botId);
+      const assertOwner = () => {
+        if (isAppSessionBoundaryPending() || activeOwnerScopeKey() !== owner) throw new Error('Bot account changed during deletion');
+      };
+      assertOwner();
+      await companionEnvironmentStore.stageRemoval(ownerScopedUserDataPath(), botId, assertOwner);
     },
+    onDeleted: (botId, assertOwner) => companionEnvironmentStore.finishRemoval(ownerScopedUserDataPath(), botId, assertOwner),
   });
   const delegationForRestore = botDelegationServiceHolder;
   void restoreBotRuntimeForCurrentOwner();

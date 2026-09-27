@@ -1,14 +1,64 @@
 import { createHash } from 'node:crypto';
 import { constants, promises as fs } from 'node:fs';
 import path from 'node:path';
-import { CompanionImportError, type ImportFile } from './types.js';
+import { CompanionImportError, type ImportFile, type ImportItem, type ImportSnapshot } from './types.js';
 
 const MAX_FILE_BYTES = 16 * 1024 * 1024;
 const MAX_ITEM_BYTES = 128 * 1024 * 1024;
 const MAX_FILES = 4096;
+export const MAX_SNAPSHOT_BYTES = 128 * 1024 * 1024;
+
+/** Shared by every read contributing to one snapshot, before allocating bytes. */
+export function createImportBudget(limit = MAX_SNAPSHOT_BYTES) {
+  let remaining = limit;
+  let files = 0;
+  const reserve = (size: number) => {
+    if (!Number.isSafeInteger(size) || size < 0 || size > remaining) throw new CompanionImportError('SOURCE_SNAPSHOT_TOO_LARGE');
+    remaining -= size;
+  };
+  return { reserve, reserveFile(size: number) {
+    if (++files > MAX_FILES) throw new CompanionImportError('SOURCE_TOO_MANY_FILES');
+    reserve(size);
+  } };
+}
+export type ImportReadBudget = ReturnType<typeof createImportBudget>;
 
 export function fingerprint(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
+}
+
+/** Hash raw file bytes without Buffer.toJSON expanding them to numeric arrays. */
+export function snapshotFingerprint(items: ImportItem[]): string {
+  const digest = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
+  return fingerprint(mapItemBytes(items, digest));
+}
+
+function mapItemBytes(items: ImportItem[], encode: (bytes: Buffer) => unknown) {
+  return items.map(item => ({ ...item,
+    ...(item.files ? { files: item.files.map(file => ({ ...file, bytes: encode(file.bytes) })) } : {}),
+    ...(item.asset ? { asset: { ...item.asset, bytes: encode(item.asset.bytes) } } : {}),
+  }));
+}
+
+export function reserveSnapshotItems(items: ImportItem[], budget: ImportReadBudget): void {
+  const metadata = mapItemBytes(items, bytes => { budget.reserveFile(bytes.length); return null; });
+  budget.reserve(Buffer.byteLength(JSON.stringify(metadata)));
+}
+
+/** Checkpoints use compact binary encoding; old numeric-array checkpoints still resume. */
+export function serializeImportSnapshot(snapshot: ImportSnapshot): string {
+  return JSON.stringify({ ...snapshot, items: mapItemBytes(snapshot.items,
+    bytes => ({ type: 'Buffer', encoding: 'base64', data: bytes.toString('base64') })) });
+}
+export function deserializeImportSnapshot(text: string): ImportSnapshot {
+  return JSON.parse(text, (_key, value: unknown) => {
+    const record = value as { type?: string; encoding?: string; data?: unknown } | null;
+    if (record?.type === 'Buffer') {
+      if (Array.isArray(record.data)) return Buffer.from(record.data);
+      if (record.encoding === 'base64' && typeof record.data === 'string') return Buffer.from(record.data, 'base64');
+    }
+    return value;
+  }) as ImportSnapshot;
 }
 
 export function inside(root: string, candidate: string): boolean {
@@ -17,7 +67,7 @@ export function inside(root: string, candidate: string): boolean {
 }
 
 /** Refuse symlink escapes and special files before reading any bytes. */
-export async function readImportFile(root: string, file: string): Promise<ImportFile> {
+export async function readImportFile(root: string, file: string, budget?: ImportReadBudget): Promise<ImportFile> {
   const realRoot = await fs.realpath(root);
   const realFile = await fs.realpath(file);
   if (!inside(realRoot, realFile)) throw new CompanionImportError('SOURCE_LINK_OUTSIDE_FOLDER');
@@ -26,6 +76,7 @@ export async function readImportFile(root: string, file: string): Promise<Import
     const stat = await handle.stat();
     if (!stat.isFile()) throw new CompanionImportError('SOURCE_NOT_REGULAR_FILE');
     if (stat.size > MAX_FILE_BYTES) throw new CompanionImportError('SOURCE_FILE_TOO_LARGE');
+    budget?.reserveFile(stat.size);
     // A bounded read also handles files growing after fstat.
     const bytes = Buffer.alloc(Math.min(stat.size + 1, MAX_FILE_BYTES + 1));
     let size = 0;
@@ -39,8 +90,8 @@ export async function readImportFile(root: string, file: string): Promise<Import
   } finally { await handle.close(); }
 }
 
-export async function optionalText(root: string, file: string): Promise<string | undefined> {
-  try { return (await readImportFile(root, file)).bytes.toString('utf8'); }
+export async function optionalText(root: string, file: string, budget?: ImportReadBudget): Promise<string | undefined> {
+  try { return (await readImportFile(root, file, budget)).bytes.toString('utf8'); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
     throw error;
@@ -48,7 +99,7 @@ export async function optionalText(root: string, file: string): Promise<string |
 }
 
 /** Only traverses the selected skill/document subtree; never copies a whole Agent home. */
-export async function readImportTree(root: string, include: (name: string) => boolean = () => true): Promise<ImportFile[]> {
+export async function readImportTree(root: string, include: (name: string) => boolean = () => true, budget?: ImportReadBudget): Promise<ImportFile[]> {
   const result: ImportFile[] = [];
   const visited = new Set<string>();
   let size = 0;
@@ -63,8 +114,8 @@ export async function readImportTree(root: string, include: (name: string) => bo
       const file = path.join(dir, entry.name);
       const target = entry.isSymbolicLink() ? await fs.stat(file) : entry;
       if (target.isDirectory()) await visit(file);
-      else if (include(path.relative(root, file))) {
-        const item = await readImportFile(root, file);
+      else if (include(path.relative(root, file).split(path.sep).join('/'))) {
+        const item = await readImportFile(root, file, budget);
         size += item.bytes.length;
         if (size > MAX_ITEM_BYTES || result.length >= MAX_FILES) throw new CompanionImportError('SOURCE_ITEM_TOO_LARGE');
         result.push(item);

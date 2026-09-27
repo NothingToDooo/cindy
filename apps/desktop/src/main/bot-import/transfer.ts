@@ -1,6 +1,6 @@
 import type { CompanionImportResult, CompanionImportSelection } from '@cindy/maker-shared/companion-import';
 import type { RoutineInput } from '@cindy/maker-scheduler';
-import { fingerprint, readImportTree } from './files.js';
+import { createImportBudget, fingerprint, readImportTree, reserveSnapshotItems } from './files.js';
 import { CompanionImportError, type ImportItem, type ImportSnapshot } from './types.js';
 import { resolveImportEnvironmentDependencies, selectedImportEnvironment } from './environmentSelection.js';
 
@@ -64,9 +64,13 @@ export async function transferCompanion(snapshot: ImportSnapshot, selection: Com
   // Capture only selected resources, then publish a non-secret request index
   // before storing credentials. Acceptance still waits for the full checkpoint.
   if (!receipt.checkpointSaved) {
+    const budget = createImportBudget();
+    reserveSnapshotItems(snapshot.items, budget);
     for (const item of items) {
       if (item.sourceDirectory && !item.filesComplete) {
-        item.files = await readImportTree(item.sourceDirectory);
+        const captured = item.files ?? [];
+        const names = new Set(captured.map(file => file.name));
+        item.files = [...captured, ...await readImportTree(item.sourceDirectory, name => !names.has(name), budget)];
         item.filesComplete = true;
         deps.assertOwner();
       }

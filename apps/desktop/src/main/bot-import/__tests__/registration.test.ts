@@ -9,7 +9,7 @@ import { registerRemoteResourcesIpc } from '../../device-link/remoteResourcesIpc
 import { CompanionImportError } from '../types.js';
 beforeAll(() => { registerCompanionImport(); registerRemoteResourcesIpc(); });
 const invoke = () => h.handlers.get('maker:remote-resources:invoke')!({}, { collectionId: 'companion-import', resourceRef: { collectionId: 'companion-import', kind: 'import', id: 'preview:source' }, actionId: 'import', input: {}, client: { protocolVersion: 1, primitives: ['companion-import'] } });
-it.each(['IMPORT_NAME_EXISTS', 'INVALID_SELECTION', 'PROFILE_TEXT_TOO_LARGE'])('preserves %s through the actual remote provider and IPC boundary', async code => {
+it.each(['IMPORT_NAME_EXISTS', 'INVALID_SELECTION', 'PROFILE_TEXT_TOO_LARGE', 'SOURCE_SNAPSHOT_TOO_LARGE', 'SOURCE_TOO_MANY_FILES'])('preserves %s through the actual remote provider and IPC boundary', async code => {
   h.start.mockRejectedValueOnce(new CompanionImportError(code));
   await expect(invoke()).rejects.toThrow(`[INVALID_PARAMS] ${code}`);
 });

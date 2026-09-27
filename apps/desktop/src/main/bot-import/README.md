@@ -5,6 +5,9 @@ Remote Resource transport, and the `companion_import.import_agent` command.
 The command has `sources`, `preview`, `start`, and `status` operations. Callers
 retain one `requestId` across reconnects and retries. Previews expose selectable
 metadata, never source paths, environment values or credential contents.
+All command operations use the existing per-call approval policy. Discovery never
+persists a native tool/server grant that could authorize a later `start` operation.
+Auto still reviews the actual invocation; Full Access retains its normal behavior.
 
 The creation UI reuses the existing teammate dialog/sheet and portrait picker.
 After creation, personality, memory, skills and model management use the existing
@@ -26,6 +29,13 @@ theme tokens. No new native Mobile dependencies or fingerprint inputs are added.
   real scripts, templates, executable bits and `SKILL.md`.
   Automation references match both the source directory slug and skill display
   name; referenced skill scripts contribute their environment dependencies.
+  A shared 128 MiB / 4096-file read budget bounds each source snapshot, including
+  config includes, documents, credentials, scripts and all referenced skill trees.
+  Additional selected skill resources use the same cumulative limit before any
+  import writes. Exceeding it fails explicitly without truncation; the existing
+  form unlocks on a definitive pre-import limit rejection. Fingerprints hash raw
+  file bytes, and encrypted checkpoints use base64 while still reading legacy
+  numeric-array checkpoints.
 - Selected variables, MCP env/headers, source credentials and automation assets
   use the existing account encrypted credential store. The teammate folder has
   a non-secret `environment.json` binding. Cancellation of a variable does not
@@ -36,6 +46,11 @@ theme tokens. No new native Mobile dependencies or fingerprint inputs are added.
   The host also rejects conflicting selections before creating a receipt. Variable
   dependencies resolve to the selected provider, so unchecking another account does
   not block takeover. Identical duplicate values remain compatible.
+  Deleting a companion stages a non-secret owner-scoped cleanup record before the
+  database deletion, then removes credentials only after the deletion succeeds.
+  If SQLite fails, the surviving profile retains its environment. If vault cleanup
+  fails or the app exits after commit, the record survives outside the deleted
+  companion folder; owner recovery checks that the profile is absent before retrying.
 - Claude Code, Codex and Pi use the shared `companion_connections` bridge for
   imported skills, commands and data queries. Only those host-owned subprocesses
   and connections receive imported variables; the model harness does not inherit

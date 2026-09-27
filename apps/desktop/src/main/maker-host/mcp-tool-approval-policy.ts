@@ -234,6 +234,9 @@ export function getDesktopMcpToolApprovalPolicy(
   // tools/connections. Use the existing per-call policy, including when Codex
   // omits toolName; Auto and Full Access retain their normal mode semantics.
   if (serverName === 'companion_connections') return 'prompt-each-time';
+  // sources/preview/start share one native tool identity. Never persist a grant
+  // from discovery that could bypass the policy callback for a later import.
+  if (serverName === 'companion_import') return 'prompt-each-time';
   if (serverName === 'cindy_contacts') {
     return canAutoApproveContactsMcpTool({ toolName, toolParams })
       ? 'auto-approve'

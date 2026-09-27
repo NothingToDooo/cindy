@@ -45,7 +45,7 @@ it('uses the existing portrait picker and sends only the remaining selections th
 });
 
 
-it.each(['IMPORT_NAME_EXISTS', 'INVALID_SELECTION', 'PROFILE_TEXT_TOO_LARGE', 'INTERNAL'])('unlocks only definitive %s errors and preserves an ambiguous request', async code => {
+it.each(['IMPORT_NAME_EXISTS', 'INVALID_SELECTION', 'PROFILE_TEXT_TOO_LARGE', 'SOURCE_SNAPSHOT_TOO_LARGE', 'SOURCE_TOO_MANY_FILES', 'INTERNAL'])('unlocks only definitive %s errors and preserves an ambiguous request', async code => {
   h.uuid.mockReturnValueOnce('fixture-request-original').mockReturnValue('fixture-request-corrected');
   h.invoke.mockImplementation(async (_host: string, _channel: string, args: any[]) => {
     const id = args[0].ref.id;
