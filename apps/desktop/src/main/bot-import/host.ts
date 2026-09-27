@@ -128,6 +128,22 @@ async function saveReceipt(root: string, receipt: ImportReceipt) {
   atomicWriteFileSync(file, JSON.stringify(receipt));
 }
 
+/** A definite DB rejection must not strand credentials without a deletable profile. */
+async function cleanRejectedCreation(root: string, receipt: ImportReceipt, assertOwner: () => void): Promise<never> {
+  assertOwner();
+  try {
+    await getBotRemoteResourceSource(receipt.result.botId);
+    // Never erase credentials if creation actually committed (or its outcome is
+    // unknown). The rejection marker is written only after a confirmed absence.
+    throw new CompanionImportError('REQUEST_ALREADY_USED');
+  } catch (error) { if (!(error instanceof Error) || !error.message.includes('[NOT_FOUND]')) throw error; }
+  assertOwner();
+  await companionEnvironmentStore.stageRemoval(root, receipt.result.botId, assertOwner);
+  await companionEnvironmentStore.finishRemoval(root, receipt.result.botId, assertOwner);
+  assertOwner();
+  throw new CompanionImportError(receipt.creationRejected!);
+}
+
 /** Called inside the lifecycle profile lock, after the active transfer pass has joined. */
 export async function cancelCompanionImportsForDeletion(botId: string): Promise<void> {
   const scope = owner();
@@ -169,7 +185,9 @@ export async function cancelCompanionImportsForDeletion(botId: string): Promise<
 export async function getCompanionImportResult(requestId: string): Promise<CompanionImportResult | undefined> {
   const scope = owner();
   let receipt = await readReceipt(scope.root, requestId); scope.assert();
-  if (jobs.has(`${scope.scope}:${requestId}`)) return receipt?.result;
+  const running = jobs.get(`${scope.scope}:${requestId}`);
+  if (running) return receipt?.companionCreated || receipt?.environmentSaved ? receipt.result : running;
+  if (receipt?.creationRejected) return withBotProfileLocks([receipt.result.botId], () => cleanRejectedCreation(scope.root, receipt!, scope.assert));
   // Upgrade earlier import bindings only from a durable successful receipt.
   // Failed/skipped active-source handovers must never become executable here.
   if (receipt && !receipt.cancelled && !receipt.handoverMarkers) await withBotProfileLocks([receipt.result.botId], async () => {
@@ -240,6 +258,8 @@ export async function ensureImportedAutomationReady(root: string, botId: string,
 export async function startCompanionImport(selection: CompanionImportSelection, controller: string, reconcileOnly = false): Promise<CompanionImportResult> {
   const scope = owner();
   if (!selection || typeof selection.previewId !== 'string') throw new CompanionImportError('INVALID_SELECTION');
+  const rejected = await readReceipt(scope.root, selection.requestId); scope.assert();
+  if (rejected?.creationRejected) return withBotProfileLocks([rejected.result.botId], () => cleanRejectedCreation(scope.root, rejected, scope.assert));
   let snapshot: ImportSnapshot;
   try { snapshot = owned(previews, selection.previewId, controller); }
   catch (error) {
@@ -292,7 +312,17 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
         return;
       }
       catch (error) { if (!(error instanceof Error) || !error.message.includes('[NOT_FOUND]')) throw error; }
-      await createBotProfile({ id: botId, name: input.name, description: '', avatarImageBase64: input.avatarImageBase64, prepareInvitation: false });
+      try {
+        await createBotProfile({ id: botId, name: input.name, description: '', avatarImageBase64: input.avatarImageBase64, prepareInvitation: false });
+      } catch (error) {
+        // Only a definite uniqueness conflict is retractable. Re-read the exact
+        // ID first so a committed create with a lost acknowledgement is preserved.
+        if (!(error instanceof Error) || !error.message.includes('[ALREADY_EXISTS]')) throw error;
+        try { await getBotRemoteResourceSource(botId); scope.assert(); return; }
+        catch (lookupError) { if (!(lookupError instanceof Error) || !lookupError.message.includes('[NOT_FOUND]')) throw lookupError; }
+        scope.assert();
+        throw new CompanionImportError('IMPORT_NAME_EXISTS');
+      }
     },
     async importItem(botId, item) {
       if (item.view.category === 'skills') {
@@ -440,7 +470,9 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
       if (receipt) {
         receipt.result.status = 'needs-attention';
         receipt.result.checks.push({ entryId: 'import', status: 'needs-attention', message: error instanceof CompanionImportError ? error.code : 'IMPORT_FAILED' });
+        if (!receipt.companionCreated && error instanceof CompanionImportError && error.code === 'IMPORT_NAME_EXISTS') receipt.creationRejected = error.code;
         await saveReceipt(scope.root, receipt);
+        if (receipt.creationRejected) return cleanRejectedCreation(scope.root, receipt, scope.assert);
         return receipt.result;
       }
       throw error;
@@ -451,14 +483,14 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
 }
 
 async function accepted(task: Promise<CompanionImportResult>, root: string, requestId: string): Promise<CompanionImportResult> {
-  // An index alone cannot recover the selection. Accept after the checkpoint is
-  // acknowledged; completion keeps running on the host.
+  // Acceptance requires a recoverable selection AND a created profile. Before
+  // that point definitive name conflicts must reject/unlock the existing form.
   let finished = false;
   void task.then(() => { finished = true; }, () => { finished = true; });
   const receipt = (async () => {
     while (!finished) {
       const value = await readReceipt(root, requestId);
-      if (value && (value.checkpointSaved || value.environmentSaved)) return value.result;
+      if (value && (value.companionCreated || value.environmentSaved)) return value.result;
       await new Promise(resolve => setTimeout(resolve, 40));
     }
     return task;

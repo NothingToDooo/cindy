@@ -118,6 +118,11 @@ export function createCompanionEnvironmentStore(io: CompanionSecretIo) {
       assertOwner();
       store.remove(botId);
       assertOwner();
+      // Rejected pre-profile imports have no profile-folder deletion step.
+      // Remove the binding only after the private data is successfully removed.
+      await fs.rm(`${bindingPath(userData, botId)}.bak`, { force: true });
+      await fs.rm(bindingPath(userData, botId), { force: true });
+      assertOwner();
       await fs.rm(`${file}.bak`, { force: true });
       await fs.rm(file, { force: true });
     },

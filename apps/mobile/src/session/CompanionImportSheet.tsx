@@ -40,9 +40,12 @@ export function CompanionImportSheet({ visible, onClose, onClosed, deviceId, dev
     if (lock.current || !online) return;
     lock.current = true; setBusy(true); setError(false);
     try { await fn(); } catch (cause) {
-      // Only definitive preflight rejections unlock editing. An ambiguous ACK
+      // Only definitive creation/preflight rejections unlock editing. An ambiguous ACK
       // keeps the same request ID and is reconciled before any retry.
-      if (cause instanceof Error && /INVALID_SELECTION|PROFILE_TEXT_TOO_LARGE|IMPORT_NAME_EXISTS|SOURCE_SNAPSHOT_TOO_LARGE|SOURCE_TOO_MANY_FILES/.test(cause.message)) intent.current = undefined;
+      if (cause instanceof Error && /INVALID_SELECTION|PROFILE_TEXT_TOO_LARGE|IMPORT_NAME_EXISTS|SOURCE_SNAPSHOT_TOO_LARGE|SOURCE_TOO_MANY_FILES/.test(cause.message)) {
+        intent.current = undefined;
+        if (alive.current) setResult(undefined);
+      }
       if (cause instanceof Error && /PREVIEW_EXPIRED|SELECTION_CHANGED/.test(cause.message)) {
         intent.current = undefined;
         if (alive.current) { setPreview(undefined); setResult(undefined); }

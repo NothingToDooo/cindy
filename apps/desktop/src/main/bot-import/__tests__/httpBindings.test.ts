@@ -1,5 +1,21 @@
 import { expect, it } from 'vitest';
-import { importedHttpBases } from '../httpBindings.js';
+import { importedHttpBases, publicImportHttpBases, resolveImportHttpPath } from '../httpBindings.js';
+
+it('restores aliases only for the chosen base and preserves ordinary relative path semantics', () => {
+  const env = { DATA_URL: 'https://data.example.invalid/api/private-token?key=private-query', OTHER_URL: 'https://other.example.invalid/other-secret/' };
+  const bases = importedHttpBases({ version: 1, env, mcp: [], credentials: [] }, new Set(Object.keys(env)));
+  const projected = publicImportHttpBases(bases);
+  const alias = projected[0]!.pathname;
+  expect(JSON.stringify(projected)).not.toMatch(/private-token|private-query|other-secret/);
+  expect(resolveImportHttpPath(alias, env.DATA_URL, alias).href).toBe(env.DATA_URL);
+  expect(resolveImportHttpPath('', env.DATA_URL, alias).href).toBe(env.DATA_URL);
+  expect(resolveImportHttpPath(`${alias}/rows`, env.DATA_URL, alias).href).toBe('https://data.example.invalid/api/private-token/rows');
+  expect(resolveImportHttpPath('/health', env.DATA_URL, alias).href).toBe('https://data.example.invalid/health');
+  expect(resolveImportHttpPath('rows', env.DATA_URL, alias).href).toBe('https://data.example.invalid/api/rows');
+  expect(resolveImportHttpPath(projected[1]!.pathname, env.DATA_URL, alias).href).not.toContain('other-secret');
+  expect(resolveImportHttpPath('//attacker.invalid/collect', env.DATA_URL, alias).origin).not.toBe(bases[0]!.origin); // Existing origin check rejects it.
+  expect(bases[0]!.pathname).toBe('/api/private-token');
+});
 
 it('binds each selected service credential to its configured origin, not another selected URL', () => {
   const env = { DATA_URL: 'https://data.example.invalid/v1', DATA_TOKEN: 'fixture-data-key',

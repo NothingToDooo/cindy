@@ -6,7 +6,9 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { Routine, RoutineInput } from '@cindy/maker-scheduler';
-import { createCompanionEnvironmentStore } from '../environment.js';
+import { companionEnvironmentKey, createCompanionEnvironmentStore } from '../environment.js';
+import { fingerprint } from '../files.js';
+import { createBotProfile, getBotRemoteResourceSource } from '../../localDb/ipc/bots.js';
 import type { ImportSnapshot } from '../types.js';
 import { CompanionImportError } from '../types.js';
 import { previewImportRedactions } from '../environmentSelection.js';
@@ -15,14 +17,14 @@ import { redactEnvironmentValues } from '../process.js';
 const h = vi.hoisted(() => ({ root: '', botId: '', created: false, verified: false, sourceEnabled: true, failReadyWrite: false, boundary: false,
   snapshot: null as unknown as ImportSnapshot, store: null as unknown as ReturnType<typeof createCompanionEnvironmentStore>,
   routines: [] as Routine[], pause: vi.fn(), sourceEnvironment: {} as Record<string, string>,
-  writeProfile: vi.fn(), importDocument: vi.fn(), readName: vi.fn(),
+  writeProfile: vi.fn(), importDocument: vi.fn(), readName: vi.fn(), secretValues: new Map<string, string>(),
 }));
 vi.mock('electron', () => ({ app: { getPath: () => h.root } }));
 vi.mock('../../appSessionState.js', () => ({ activeOwnerScopeKey: () => h.root, ownerScopedUserDataPath: () => h.root, getActiveAppSession: () => ({ dataOwnerId: 'fixture-owner' }), isAppSessionBoundaryPending: () => h.boundary }));
 vi.mock('../../localDb/ipc/bots.js', () => ({
   listBotRemoteResourceSources: async () => [],
-  getBotRemoteResourceSource: async () => { if (!h.created) throw new Error('[NOT_FOUND]'); return { canonicalSessionId: 'chat' }; },
-  createBotProfile: async (input: { id: string }) => { h.created = true; h.botId = input.id; }, createBotCanonicalSession: async () => ({ canonicalSessionId: 'chat' }),
+  getBotRemoteResourceSource: vi.fn(),
+  createBotProfile: vi.fn(), createBotCanonicalSession: async () => ({ canonicalSessionId: 'chat' }),
   getBotMemoryService: () => ({ importDocument: h.importDocument }), reconcileBotProfileFolder: async () => {},
 }));
 vi.mock('../../localDb/ipc/botAvatarSelection.js', () => ({ validateBotAvatarBuffer: vi.fn(), decodeBotAvatarImage: vi.fn() }));
@@ -40,6 +42,8 @@ vi.mock('../runtime.js', () => ({ recoverCompanionEnvironmentRemovals: vi.fn(asy
   read: (...args: Parameters<typeof h.store.read>) => h.store.read(...args),
   write: (...args: Parameters<typeof h.store.write>) => h.store.write(...args),
   update: (...args: Parameters<typeof h.store.update>) => h.store.update(...args),
+  stageRemoval: (...args: Parameters<typeof h.store.stageRemoval>) => h.store.stageRemoval(...args),
+  finishRemoval: (...args: Parameters<typeof h.store.finishRemoval>) => h.store.finishRemoval(...args),
 } }));
 vi.mock('../../localDb/ipc/messages.js', () => ({ createMessage: vi.fn() }));
 vi.mock('../../routines/service.js', () => ({
@@ -69,23 +73,107 @@ beforeEach(async () => {
   h.root = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-import-host-test-'));
   h.created = false; h.verified = false; h.sourceEnabled = true; h.failReadyWrite = false; h.boundary = false; h.routines = []; h.pause.mockReset(); h.sourceEnvironment = {};
   vi.mocked(verifyImportedAutomation).mockClear();
+  vi.mocked(getBotRemoteResourceSource).mockReset().mockImplementation(async () => { if (!h.created) throw new Error('[NOT_FOUND]'); return { canonicalSessionId: 'chat' } as never; });
+  vi.mocked(createBotProfile).mockReset().mockImplementation(async input => { h.created = true; h.botId = (input as { id: string }).id; return {} as never; });
   h.writeProfile.mockReset().mockResolvedValue(undefined); h.importDocument.mockReset().mockResolvedValue(undefined);
   vi.mocked(decodeBotAvatarImage).mockReset();
   vi.mocked(discoverImportSources).mockReset().mockImplementation(async () => [h.snapshot.source]);
   vi.mocked(inspectImportSource).mockReset().mockImplementation(async () => h.snapshot);
   vi.mocked(createImportSourceNameReader).mockReset().mockImplementation(() => h.readName);
   h.readName.mockReset().mockImplementation(async source => redactEnvironmentValues(source.name, previewImportRedactions(h.snapshot.items)));
-  const values = new Map<string, string>();
+  const values = h.secretValues; values.clear();
   h.store = createCompanionEnvironmentStore({ read: key => values.get(key) ?? null, write: (key, value) => {
     if (h.failReadyWrite && Object.values<{ handover?: string }>(JSON.parse(value).automations ?? {}).some(binding => binding.handover === 'ready')) { h.failReadyWrite = false; return false; }
     values.set(key, value); return true;
-  }, remove: key => values.delete(key) });
+  }, remove: key => { values.delete(key); return true; } });
   h.snapshot = { source: { kind: 'hermes', agentId: 'default', name: 'Ada', root: h.root, workspace: h.root, configFile: path.join(h.root, 'config.yaml') }, fingerprint: 'fixture', items: [{
     view: { id: 'task', category: 'automations', name: 'Report', enabled: true, selected: true },
     automation: { sourceId: 'task', fingerprint: 'fixture', original: { enabled: true }, input: { name: 'Report', prompt: 'Read data', enabled: false, triggers: [{ id: 'tick', kind: 'interval', intervalMs: 60000 }] } },
   }] };
 });
 afterEach(async () => { vi.restoreAllMocks(); await fs.rm(h.root, { recursive: true, force: true }); });
+
+it('rejects a simultaneous normalized-name conflict, removes only the loser checkpoint, and accepts a renamed request', async () => {
+  h.snapshot.items = [{ view: { id: 'env', name: 'Key', category: 'connections', selected: true }, env: { API_KEY: 'fixture-private-key' } }];
+  const profiles = new Map<string, string>();
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  vi.mocked(getBotRemoteResourceSource).mockImplementation(async id => {
+    if (!profiles.has(id)) throw new Error('[NOT_FOUND]');
+    return { canonicalSessionId: 'chat' } as never;
+  });
+  vi.mocked(createBotProfile).mockImplementation(async input => {
+    await gate;
+    const profile = input as { name: string; id: string };
+    const name = profile.name.normalize('NFKC').trim().toLowerCase();
+    if ([...profiles.values()].includes(name)) throw new Error('[ALREADY_EXISTS] 同名伙伴');
+    profiles.set(profile.id, name);
+    return {} as never;
+  });
+  const [source] = await listCompanionImportSources('fixture');
+  const preview = await previewCompanionImport(source!.id, 'fixture');
+  const selections = ['Ada', 'Ａｄａ'].map((name, index) => ({ requestId: `name-race-request-${index}`, previewId: preview.id, name, entryIds: ['env'], takeover: false }));
+  let settled = false;
+  const pending = Promise.allSettled(selections.map(selection => startCompanionImport(selection, 'fixture'))).then(results => { settled = true; return results; });
+  await vi.waitFor(() => expect(createBotProfile).toHaveBeenCalledTimes(2));
+  // A durable checkpoint is not yet a created companion; do not acknowledge it.
+  await new Promise(resolve => setTimeout(resolve, 60));
+  expect(settled).toBe(false);
+  release();
+  const results = await pending;
+  expect(results.filter(result => result.status === 'rejected')).toHaveLength(1);
+  const rejectedIndex = results.findIndex(result => result.status === 'rejected');
+  const rejected = selections[rejectedIndex]!;
+  const botId = `import_${fingerprint(rejected.requestId).slice(0, 24)}`;
+  expect((results[rejectedIndex] as PromiseRejectedResult).reason.message).toContain('IMPORT_NAME_EXISTS');
+  expect(h.secretValues.has(companionEnvironmentKey(botId))).toBe(false);
+  expect(await h.store.read(h.root, botId, () => {})).toBeUndefined();
+  const winner = selections[1 - rejectedIndex]!;
+  await vi.waitFor(async () => expect((await getCompanionImportResult(winner.requestId))?.status).toBe('complete'));
+  expect(h.secretValues.size).toBe(1);
+  const receiptText = await fs.readFile(path.join(h.root, 'companion-imports', `${rejected.requestId}.json`), 'utf8');
+  expect(receiptText).not.toContain('fixture-private-key');
+  expect(JSON.parse(receiptText).creationRejected).toBe('IMPORT_NAME_EXISTS');
+  await expect(getCompanionImportResult(rejected.requestId)).rejects.toThrow('IMPORT_NAME_EXISTS');
+  await expect(startCompanionImport({ ...rejected, previewId: 'expired-preview' }, 'other-controller')).rejects.toThrow('IMPORT_NAME_EXISTS');
+  await startCompanionImport({ ...rejected, name: 'Grace', requestId: 'name-race-renamed-request' }, 'fixture');
+  await vi.waitFor(async () => expect((await getCompanionImportResult('name-race-renamed-request'))?.status).toBe('complete'));
+  expect(profiles.size).toBe(2);
+  expect(h.secretValues.size).toBe(2);
+  expect(h.pause).not.toHaveBeenCalled();
+});
+
+it('recovers rejected creation cleanup after a storage failure without retrying the impossible create', async () => {
+  vi.mocked(createBotProfile).mockRejectedValue(new Error('[ALREADY_EXISTS] 同名伙伴'));
+  const finish = vi.spyOn(h.store, 'finishRemoval').mockRejectedValueOnce(new CompanionImportError('CREDENTIAL_STORAGE_FAILED'));
+  const [source] = await listCompanionImportSources('fixture');
+  const preview = await previewCompanionImport(source!.id, 'fixture');
+  const selection = { requestId: 'name-rejection-recovery', previewId: preview.id, name: 'Ada', entryIds: ['task'], takeover: true };
+  await expect(startCompanionImport(selection, 'fixture')).rejects.toThrow('CREDENTIAL_STORAGE_FAILED');
+  expect(h.secretValues.size).toBe(1);
+  await recoverCompanionImports();
+  expect(h.secretValues.size).toBe(0);
+  expect(finish).toHaveBeenCalledTimes(2);
+  expect(createBotProfile).toHaveBeenCalledOnce();
+  await expect(getCompanionImportResult(selection.requestId)).rejects.toThrow('IMPORT_NAME_EXISTS');
+  expect(h.pause).not.toHaveBeenCalled();
+  expect(verifyImportedAutomation).not.toHaveBeenCalled();
+});
+
+it('retains a committed profile and credentials when a create conflict acknowledgement is misleading', async () => {
+  vi.mocked(createBotProfile).mockImplementation(async input => {
+    h.created = true; h.botId = (input as { id: string }).id;
+    throw new Error('[ALREADY_EXISTS] lost original create acknowledgement');
+  });
+  const [source] = await listCompanionImportSources('fixture');
+  const preview = await previewCompanionImport(source!.id, 'fixture');
+  const selection = { requestId: 'name-committed-acknowledgement', previewId: preview.id, name: 'Ada', entryIds: ['task'], takeover: false };
+  await startCompanionImport(selection, 'fixture');
+  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('complete'));
+  expect(h.created).toBe(true);
+  expect(h.secretValues.size).toBe(1);
+  expect(await h.store.read(h.root, h.botId, () => {})).toBeDefined();
+});
 
 it('bounds background handover reconciliation and does not restart it on status polling or startup', async () => {
   h.verified = true;

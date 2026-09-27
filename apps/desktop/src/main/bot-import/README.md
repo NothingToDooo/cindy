@@ -202,7 +202,7 @@ omitting it retains normal companion defaults, and a rejected request can be cor
 Copying and field conversion do not call a model. The optional takeover check
 uses the teammate's current model to plan bounded read-only probes, then the
 host executes real MCP/HTTP reads and validates response data. The planner sees
-variable names and redacted task/script text, not credential values. HTTP checks
+variable names and redacted task/script text and Skill/file identifiers, not credential values. HTTP checks
 reject redirects; Telegram checks read identity/destination without test sends.
 The MCP server's `readOnlyHint` only filters planning candidates; it does not
 authorize execution. Each planned MCP/HTTP call and literal monitor GET uses the companion's existing
@@ -232,6 +232,10 @@ mentioning a credential and a URL in the same skill does not pair them. Ambiguou
 or unknown bindings cannot send a private header; their selected values remain
 stored and the existing result reports an unverified read. The planner receives
 only the bound variable names and cannot move the credential to another origin.
+HTTP base paths are opaque aliases in the plan. The host restores only the chosen
+base's path prefix; using the alias unchanged preserves the configured URL and
+query, while appended resources and ordinary relative paths remain supported.
+Approval metadata masks encoded/decoded URL path and query credentials too.
 Literal monitor_url dependencies always receive a separate host-owned GET of the
 exact source URL before planning, with the runtime's 30-second / 2 MiB bounds and
 no redirects. Text/HTML monitors are valid; unrelated reads cannot substitute for
@@ -261,6 +265,13 @@ before the request is acknowledged or an item is copied. If the process stops af
 the checkpoint but before its acknowledgement, startup scanning and same-request
 retry discover it through that index. The durable receipt records item copies and
 each automation's handover phase.
+Acceptance also waits for profile creation. A definite creation-name conflict is
+rechecked against the target ID before discarding its encrypted checkpoint and
+manifest. A non-secret terminal receipt preserves the stable error across lost
+acknowledgements; cleanup failures remain recoverable at startup or on retry.
+Desktop and Mobile clear their immutable request/result on that rejection so the
+existing name field can submit a corrected new request. A committed profile or
+an uncertain database outcome never triggers this cleanup.
 The target routine starts disabled. Actual target reads must pass before the
 source's native CLI pauses its task; only then is the target enabled. Source
 configuration changes invalidate handover. In-flight source execution is allowed

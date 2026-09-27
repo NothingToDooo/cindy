@@ -44,6 +44,28 @@ it('preserves an imported portrait instead of replacing it with a gallery defaul
   expect(portraits.load).not.toHaveBeenCalled();
 });
 
+it('clears a previous receipt after a definitive name conflict so the user can rename and submit a new request', async () => {
+  const api: CompanionImportApi = { sources: async () => [{ id: 'source', name: 'Ada', kind: 'hermes' }],
+    preview: async () => ({ id: 'preview', name: 'Ada', source: { id: 'source', name: 'Ada', kind: 'hermes' }, entries: [] }), status: async () => undefined,
+    start: vi.fn<CompanionImportApi['start']>()
+      .mockImplementationOnce(async input => ({ requestId: input.requestId, botId: 'bot', status: 'needs-attention', checks: [] }))
+      .mockRejectedValueOnce(new Error('IMPORT_NAME_EXISTS'))
+      .mockImplementation(async input => ({ requestId: input.requestId, botId: 'new-bot', status: 'complete', checks: [] })) };
+  render(<BotImportForm api={api} onCreated={() => {}} onBack={() => {}} onBusy={() => {}} />);
+  fireEvent.click(await screen.findByRole('button', { name: /Ada.*Hermes/ }));
+  fireEvent.click(await screen.findByRole('button', { name: 'bots.import.submit' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'bots.import.retry' }));
+  await screen.findByRole('button', { name: 'bots.import.submit' });
+  expect((screen.getByRole('textbox') as HTMLInputElement).disabled).toBe(false);
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Grace' } });
+  fireEvent.click(screen.getByRole('button', { name: 'bots.import.submit' }));
+  await waitFor(() => expect(api.start).toHaveBeenCalledTimes(3));
+  const requests = vi.mocked(api.start).mock.calls.map(call => call[0]);
+  expect(requests[1]!.requestId).toBe(requests[0]!.requestId);
+  expect(requests[2]!.requestId).not.toBe(requests[0]!.requestId);
+  expect(requests[2]!.name).toBe('Grace');
+});
+
 it.each(['PREVIEW_EXPIRED', 'SELECTION_CHANGED'])('returns to fresh sources after %s and submits a new editable preview', async code => {
   let attempt = 0;
   const api: CompanionImportApi = { sources: vi.fn(async () => [{ id: `source-${++attempt}`, name: 'Ada', kind: 'hermes' as const }]),

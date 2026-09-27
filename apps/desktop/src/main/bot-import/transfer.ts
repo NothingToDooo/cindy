@@ -10,6 +10,9 @@ export interface ImportReceipt {
   copied: string[];
   environmentSaved?: boolean;
   checkpointSaved?: boolean;
+  companionCreated?: true;
+  /** Terminal, non-secret rejection; retained so lost acknowledgements unlock callers. */
+  creationRejected?: 'IMPORT_NAME_EXISTS';
   /** Current bindings carry explicit handover markers; old receipts upgrade once. */
   handoverMarkers?: true;
   /** Durable fence: a deleted companion's old preview/request must never recreate it. */
@@ -54,6 +57,7 @@ export async function transferCompanion(snapshot: ImportSnapshot, selection: Com
   const existing = await deps.readReceipt(selection.requestId);
   deps.assertOwner();
   if (existing && existing.selectionHash !== selectionHash) throw new CompanionImportError('REQUEST_ALREADY_USED');
+  if (existing?.creationRejected) throw new CompanionImportError(existing.creationRejected);
   if (existing?.cancelled) return existing.result;
   if (existing?.result.status === 'complete') return existing.result;
   const receipt: ImportReceipt = existing ?? { selectionHash, handoverMarkers: true, copied: [], routines: {}, result: {
@@ -88,6 +92,8 @@ export async function transferCompanion(snapshot: ImportSnapshot, selection: Com
   await save();
   await deps.createCompanion(botId, selection);
   deps.assertOwner();
+  receipt.companionCreated = true;
+  await save();
   // Each selected item is a separate checkpoint. Retrying never copies unselected source files.
   for (const item of items.filter(item => item.view.category !== 'automations' && item.view.category !== 'connections')) {
     if (receipt.copied.includes(item.view.id)) continue;

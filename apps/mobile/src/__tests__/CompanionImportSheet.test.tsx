@@ -101,3 +101,33 @@ it.each(['PREVIEW_EXPIRED', 'SELECTION_CHANGED'])('refreshes source IDs and allo
     expect.objectContaining({ requestId: 'fixture-new-request', previewId: 'preview-2' }),
   ]);
 });
+
+it('clears an earlier receipt after a name conflict and uses the existing editable form for a new request', async () => {
+  h.uuid.mockReturnValueOnce('fixture-original-request').mockReturnValue('fixture-renamed-request');
+  let hasReceipt = false;
+  h.invoke.mockImplementation(async (_host: string, _channel: string, args: any[]) => {
+    const id = args[0].ref.id;
+    return { blocks: [{ primitive: 'companion-import', data: id === 'sources' ? { sources: [{ id: 'source', name: 'Ada', kind: 'hermes' }] }
+      : id.startsWith('preview:') ? { preview: { id: 'preview', name: 'Ada', source: { id: 'source', name: 'Ada', kind: 'hermes' }, entries: [] } }
+      : { result: hasReceipt ? { requestId: 'fixture-original-request', botId: 'bot', status: 'needs-attention', checks: [] } : null } }] };
+  });
+  h.submit.mockReset().mockImplementationOnce(async () => { hasReceipt = true; return { effects: [] }; })
+    .mockImplementation(async () => { hasReceipt = false; throw new Error('[INVALID_PARAMS] IMPORT_NAME_EXISTS'); });
+  const container = document.createElement('div'); root = createRoot(container);
+  await act(async () => root!.render(createElement(CompanionImportSheet, { visible: true, deviceId: 'host', deviceName: 'Mac', online: true, onClose() {}, onCreated: h.created })));
+  const click = async (text: string) => { await act(async () => { const button = [...container.querySelectorAll('button')].find(button => button.textContent === text); expect(button).toBeDefined(); button!.click(); }); };
+  await click('Ada · Hermes');
+  await click('devices.companionImport.submit');
+  await click('devices.companionImport.retry');
+  const input = container.querySelector('input:not([type="checkbox"])') as HTMLInputElement;
+  expect(input.disabled).toBe(false);
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'Grace');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await click('devices.companionImport.submit');
+  const requests = h.submit.mock.calls.map(call => call[2].input);
+  expect(requests).toHaveLength(3);
+  expect(requests[1].requestId).toBe(requests[0].requestId);
+  expect(requests[2]).toMatchObject({ requestId: 'fixture-renamed-request', name: 'Grace' });
+});

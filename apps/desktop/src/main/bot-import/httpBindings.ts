@@ -1,10 +1,25 @@
 import type { CompanionEnvironment } from './environment.js';
+import { fingerprint } from './files.js';
 
 export interface ImportHttpBase {
   variable: string;
   origin: string;
   pathname: string;
   authVariables: string[];
+}
+
+/** Path segments can be credentials. The planner receives only a base-scoped alias. */
+export function publicImportHttpBases(bases: ImportHttpBase[]): ImportHttpBase[] {
+  return bases.map(base => ({ ...base, pathname: `/__import_base_${fingerprint(base.variable).slice(0, 20)}__` }));
+}
+
+/** Resolve only this base's prefix, never substitute arbitrary credential aliases. */
+export function resolveImportHttpPath(value: string, rawBase: string, alias: string): URL {
+  const base = new URL(rawBase);
+  if (value === alias) return base; // Includes the original query, if any.
+  const suffix = value.startsWith(alias) ? value.slice(alias.length) : undefined;
+  if (suffix && /^[/?#]/.test(suffix)) return new URL(`${base.pathname.replace(/\/$/, '')}${suffix}`, base);
+  return new URL(value, base);
 }
 
 function httpUrl(value: string): URL | undefined {
