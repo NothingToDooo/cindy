@@ -13,6 +13,7 @@ import { resolveImportEnvironmentDependencies } from '../environmentSelection.js
 import type { ImportItem, ImportSource } from '../types.js';
 import * as connectionModule from '../connections.js';
 import { setImportProbeConfirmation } from '../probeAuthorization.js';
+import { transferCompanion, type ImportReceipt } from '../transfer.js';
 const confirmProbe = vi.fn(async () => ({ kind: 'permission' as const, behavior: 'allow' as const }));
 beforeEach(() => { confirmProbe.mockReset().mockResolvedValue({ kind: 'permission', behavior: 'allow' }); setImportProbeConfirmation(confirmProbe); });
 let server: Server | undefined;
@@ -230,6 +231,93 @@ it('isolates failed optional catalogs during takeover, but rejects missing plann
     expect(callTool).toHaveBeenCalledOnce();
     imported.mockImplementationOnce(async () => { ownerChanged = true; throw new Error('Disconnected'); });
     await expect(verifyImportedAutomation('/fixture', 'bot', item, assertOwner)).rejects.toThrow('OWNER_CHANGED');
+  } finally { imported.mockRestore(); }
+});
+
+it.each(['unavailable', 'omitted', 'bad-evidence', 'complete'] as const)('requires both skill-referenced MCP sources before pausing the source (%s)', async mode => {
+  const servers = ['sales', 'ledger'].map(name => ({ name, url: `https://${name}.example.invalid/mcp`, headers: { Authorization: 'Bearer fixture-shared-key' } }));
+  const selected: ImportItem[] = [
+    { view: { id: 'key', name: 'SHARED_KEY', category: 'connections', selected: true }, env: { SHARED_KEY: 'fixture-shared-key' } },
+    ...servers.map(mcp => ({ view: { id: mcp.name, name: mcp.name, category: 'connections' as const, selected: true, dependsOn: ['key'] }, mcp })),
+    { view: { id: 'skill', name: 'Report', category: 'skills', selected: true, dependsOn: ['sales', 'ledger'] }, files: [] },
+  ];
+  const item: ImportItem = { view: { id: 'job', name: 'Daily', category: 'automations', selected: true, enabled: true, dependsOn: ['skill'] },
+    automation: { sourceId: 'job', original: {}, fingerprint: 'fixture', input: { name: 'Daily', prompt: 'Combine sales and ledger', enabled: false, triggers: [{ id: 'tick', kind: 'interval', intervalMs: 60000 }] } } };
+  vi.mocked(companionEnvironmentStore.read).mockResolvedValue({ version: 1, env: selected[0]!.env!, mcp: servers, credentials: [] });
+  const calls: string[] = [];
+  const imported = vi.spyOn(connectionModule, 'withImportedConnection').mockImplementation(async (server, _env, _assert, run) => {
+    if (server.name === 'ledger' && mode === 'unavailable') throw new Error('Offline');
+    return run({ listTools: async () => ({ tools: [{ name: 'read', inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } }] }),
+      callTool: async () => { calls.push(server.name); return { structuredContent: server.name === 'ledger' && mode === 'bad-evidence' ? { error: 'unavailable' } : { rows: [1] } }; },
+    } as never);
+  });
+  const oneShot = vi.fn(async (_agent, prompt: string) => {
+    const context = JSON.parse(prompt.slice(prompt.lastIndexOf('\n') + 1));
+    expect(context.requiredConnections).toEqual(['sales', 'ledger']);
+    expect(prompt).not.toContain('fixture-shared-key');
+    return JSON.stringify({ reads: (mode === 'unavailable' || mode === 'omitted' ? ['sales'] : ['sales', 'ledger'])
+      .map(connection => ({ kind: 'mcp', connection, tool: 'read', arguments: {}, pointer: '/rows', array: true })),
+    // Planner claims are not evidence for the omitted connection.
+    coveredDependencies: ['sales', 'ledger', 'SHARED_KEY'] });
+  });
+  vi.mocked(getMakerIfReady).mockReturnValue({ oneShot, getSession: vi.fn(), getSessionMeta: vi.fn().mockResolvedValue({ agentKind: 'pi', model: 'fixture-model' }) } as never);
+  vi.mocked(getBotRemoteResourceSource).mockResolvedValue({ canonicalSessionId: 'fixture-session' } as never);
+  const pause = vi.fn(async () => {}); const enable = vi.fn(async () => {});
+  let receipt: ImportReceipt | undefined;
+  try {
+    const result = await transferCompanion({ source: { kind: 'hermes', agentId: 'main', name: 'Ada', root: '/fixture', workspace: '/fixture', configFile: '/fixture/config' }, items: [...selected, item], fingerprint: 'fixture' },
+      { requestId: 'all-evidence-fixture', previewId: 'preview', name: 'Ada', entryIds: [...selected, item].map(entry => entry.view.id), takeover: true }, {
+        assertOwner() {}, readReceipt: async () => receipt, saveReceipt: async value => { receipt = structuredClone(value); },
+        createCompanion: async () => {}, importItem: async () => {}, saveEnvironment: async () => {}, saveCheckpoint: async () => {},
+        createConversation: async () => 'chat', createRoutine: async () => 'routine',
+        verifyAutomation: (botId, task) => verifyImportedAutomation('/fixture', botId, task, () => {}, selected),
+        pauseSource: pause, resumeSource: async () => {}, enableRoutine: enable,
+      });
+    expect(result.status).toBe(mode === 'complete' ? 'complete' : 'needs-attention');
+    expect(pause).toHaveBeenCalledTimes(mode === 'complete' ? 1 : 0);
+    expect(enable).toHaveBeenCalledTimes(mode === 'complete' ? 1 : 0);
+    expect(calls).toEqual(mode === 'unavailable' || mode === 'omitted' ? ['sales'] : ['sales', 'ledger']);
+  } finally { imported.mockRestore(); }
+});
+
+it('requires actual reads for every referenced HTTP base and credential, including dependencies used only in skill files', async () => {
+  const hits: string[] = [];
+  server = createServer((req, res) => {
+    hits.push(req.url!);
+    res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ rows: [1] }));
+  });
+  await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', resolve));
+  const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const env = { SALES_URL: `${origin}/sales`, SALES_TOKEN: 'fixture-sales-key', LEDGER_URL: `${origin}/ledger`, LEDGER_TOKEN: 'fixture-ledger-key', REGION: 'us', LANG: 'en' };
+  vi.mocked(companionEnvironmentStore.read).mockResolvedValue({ version: 1, env, mcp: [], credentials: [] });
+  const selected: ImportItem[] = [{ view: { id: 'skill', name: 'Report', category: 'skills', selected: true, dependsOn: ['region', 'lang'] }, files: [
+    { name: 'scripts/report.py', bytes: Buffer.from(Object.keys(env).map(key => `os.environ['${key}']`).join('\n')), executable: false },
+  ] }, { view: { id: 'region', name: 'REGION', category: 'connections', selected: true }, env: { REGION: env.REGION } },
+    { view: { id: 'lang', name: 'LANG', category: 'connections', selected: true }, env: { LANG: env.LANG } }];
+  const item: ImportItem = { view: { id: 'job', name: 'Daily', category: 'automations', selected: true, dependsOn: ['skill'] }, automation: { sourceId: 'job', original: {}, fingerprint: 'fixture' } };
+  const read = (prefix: string, auth = true) => ({ kind: 'http', baseVariable: `${prefix}_URL`, path: `/${prefix.toLowerCase()}`,
+    ...(auth ? { headers: { Authorization: { variable: `${prefix}_TOKEN`, prefix: 'Bearer ' } } } : {}), pointer: '/rows', array: true });
+  const oneShot = vi.fn();
+  vi.mocked(getMakerIfReady).mockReturnValue({ oneShot, getSession: vi.fn(), getSessionMeta: vi.fn().mockResolvedValue({ agentKind: 'pi', model: 'fixture-model' }) } as never);
+  vi.mocked(getBotRemoteResourceSource).mockResolvedValue({ canonicalSessionId: 'fixture-session' } as never);
+  for (const reads of [[read('SALES')], [read('SALES'), read('LEDGER', false)], [read('SALES'), read('LEDGER')]]) {
+    oneShot.mockResolvedValue(JSON.stringify({ reads }));
+    const result = await verifyImportedAutomation('/fixture', 'bot', item, () => {}, selected);
+    expect(result.verified).toBe(reads.length === 2 && !!reads[1]!.headers);
+  }
+  expect(hits).toEqual(['/sales', '/sales', '/ledger', '/sales', '/ledger']);
+  const context = JSON.parse((oneShot.mock.calls[0]![1] as string).split('\n').at(-1)!);
+  expect(context.requiredVariables).toEqual(['SALES_URL', 'SALES_TOKEN', 'LEDGER_URL', 'LEDGER_TOKEN']);
+  // A locale-shaped value used explicitly as auth is still a credential.
+  vi.mocked(companionEnvironmentStore.read).mockResolvedValue({ version: 1, env, credentials: [],
+    mcp: [{ name: 'configured', url: `${origin}/mcp`, headers: { 'X-Api-Key': env.LANG } }] });
+  const imported = vi.spyOn(connectionModule, 'withImportedConnection').mockImplementation(async (_server, _env, _assert, run) => run({ listTools: async () => ({ tools: [] }) } as never));
+  try {
+    oneShot.mockResolvedValue(JSON.stringify({ reads: [read('SALES'), read('LEDGER')] }));
+    expect((await verifyImportedAutomation('/fixture', 'bot', item, () => {}, selected)).verified).toBe(false);
+    const sales = read('SALES');
+    oneShot.mockResolvedValue(JSON.stringify({ reads: [{ ...sales, headers: { ...sales.headers, 'X-Api-Key': { variable: 'LANG' } } }, read('LEDGER')] }));
+    expect((await verifyImportedAutomation('/fixture', 'bot', item, () => {}, selected)).verified).toBe(true);
   } finally { imported.mockRestore(); }
 });
 

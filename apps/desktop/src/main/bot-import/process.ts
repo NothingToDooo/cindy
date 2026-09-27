@@ -51,12 +51,13 @@ export function runImportedProcess(input: {
 }
 
 /** Only bounded, recognisable locale/region settings are public configuration. */
+export function isPublicImportSetting(name: string, value: string): boolean {
+  return /^(LANG|LANGUAGE|LC_ALL|LC_CTYPE)$/i.test(name) && /^(?:C|POSIX|[a-z]{2,3}(?:[_-][a-z]{2})?)(?:\.UTF-?8)?$/i.test(value)
+    || /^(?:[A-Z0-9]+_)*REGION$/i.test(name) && /^(?:[a-z]{2}|global|[a-z]{2}(?:-[a-z]+)+-\d)$/i.test(value);
+}
+
 export function environmentRedactions(env: Record<string, string>): Record<string, string> {
-  return Object.fromEntries(Object.entries(env).filter(([name, value]) => {
-    if (/^(LANG|LANGUAGE|LC_ALL|LC_CTYPE)$/i.test(name) && /^(?:C|POSIX|[a-z]{2,3}(?:[_-][a-z]{2})?)(?:\.UTF-?8)?$/i.test(value)) return false;
-    if (/^(?:[A-Z0-9]+_)*REGION$/i.test(name) && /^(?:[a-z]{2}|global|[a-z]{2}(?:-[a-z]+)+-\d)$/i.test(value)) return false;
-    return value.length > 0;
-  }));
+  return Object.fromEntries(Object.entries(env).filter(([name, value]) => !isPublicImportSetting(name, value) && value.length > 0));
 }
 
 export function redactEnvironmentValues(text: string, env: Record<string, string>): string {

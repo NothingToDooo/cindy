@@ -18,6 +18,9 @@ reconnecting an open import preserves its current selection and request.
 Import adds category/item selection, including
 unselecting defaults; unused skills start unselected. Both platforms use semantic
 theme tokens. No new native Mobile dependencies or fingerprint inputs are added.
+Every supplied avatar uses the existing companion image validation before any
+receipt or credential checkpoint is written. An empty supplied image is invalid;
+omitting it retains normal companion defaults, and a rejected request can be corrected.
 
 ## Data and execution
 
@@ -141,6 +144,15 @@ Auto/Ask/Full Access policy with its exact connection, tool and arguments. Auto
 uses the shared permission reviewer with the host-owned takeover intent; Ask and
 unavailable Auto review use the existing Desktop/Mobile confirmation route.
 Neither remembered grants nor edited arguments are accepted for these probes.
+The host checks evidence against all discovered read dependencies, including
+transitive skill/MCP references. A successful MCP probe covers that connection
+and its declared environment dependencies; a successful HTTP probe covers its
+actual base variable and credential headers. Planner coverage claims and another
+healthy source cannot substitute for an omitted or unavailable required source.
+Only successful responses with the planned data shape count. Unreferenced optional
+connections remain optional; already verified delivery-only dependencies stay separate.
+Recognised ordinary locale/region settings do not need a separate read, unless
+the source explicitly binds them as connection credentials.
 Fresh companions can confirm before launching a harness. Account, task or
 permission changes cancel pending approval and execution. A denied probe leaves
 the source automation running and the imported routine disabled. This preserves

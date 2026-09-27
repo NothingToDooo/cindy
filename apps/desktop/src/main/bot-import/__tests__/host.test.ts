@@ -50,11 +50,13 @@ vi.mock('../../routines/service.js', () => ({
 import { listCompanionImportSources, previewCompanionImport, startCompanionImport, getCompanionImportResult, recoverCompanionImports, cancelCompanionImportsForDeletion } from '../host.js';
 import { withBotProfileLocks } from '../../maker-ipc/botProfileLock.js';
 import { assertImportedAutomationReady, prepareImportedAutomation } from '../automationRuntime.js';
+import { decodeBotAvatarImage } from '../../localDb/ipc/botAvatarSelection.js';
 
 beforeEach(async () => {
   h.root = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-import-host-test-'));
   h.created = false; h.verified = false; h.sourceEnabled = true; h.failReadyWrite = false; h.boundary = false; h.routines = []; h.pause.mockClear(); h.sourceEnvironment = {};
   h.writeProfile.mockReset().mockResolvedValue(undefined); h.importDocument.mockReset().mockResolvedValue(undefined);
+  vi.mocked(decodeBotAvatarImage).mockReset();
   const values = new Map<string, string>();
   h.store = createCompanionEnvironmentStore({ read: key => values.get(key) ?? null, write: (key, value) => {
     if (h.failReadyWrite && Object.values<{ handover?: string }>(JSON.parse(value).automations ?? {}).some(binding => binding.handover === 'ready')) { h.failReadyWrite = false; return false; }
@@ -66,6 +68,24 @@ beforeEach(async () => {
   }] };
 });
 afterEach(async () => { await fs.rm(h.root, { recursive: true, force: true }); });
+
+it.each(['', ' ', 'invalid-image'])('rejects avatar %j before persisting credentials and lets the same request be corrected', async avatarImageBase64 => {
+  h.snapshot.items = [{ view: { id: 'env', name: 'Key', category: 'connections', selected: true }, env: { KEY: 'fixture-private-key' } }];
+  const [source] = await listCompanionImportSources('fixture');
+  const preview = await previewCompanionImport(source!.id, 'fixture');
+  const writes = vi.spyOn(h.store, 'write');
+  vi.mocked(decodeBotAvatarImage).mockImplementation(() => { throw new Error('Invalid image'); });
+  const selection = { requestId: 'fixture-avatar-12345', previewId: preview.id, name: 'Ada', entryIds: ['env'], takeover: false };
+  await expect(startCompanionImport({ ...selection, avatarImageBase64 }, 'fixture')).rejects.toThrow('INVALID_SELECTION');
+  expect(h.created).toBe(false);
+  expect(writes).not.toHaveBeenCalled();
+  expect(await getCompanionImportResult(selection.requestId)).toBeUndefined();
+  expect(await fs.readdir(h.root)).toEqual([]);
+  // The omitted-avatar path still uses ordinary companion creation defaults.
+  await startCompanionImport(selection, 'fixture');
+  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('complete'));
+  expect(h.created).toBe(true);
+});
 
 it('redacts selected credentials from profile and memory copies while retaining original documents and usable secrets privately', async () => {
   const secrets = ['fake-env-key', 'fake-local-key', 'fake-header-token', 'fake/url+key', 'fake-access-token', 'fake-refresh-token', '123:fake-telegram-token'];

@@ -35,7 +35,7 @@ export interface TransferDeps {
 export function validateImportSelection(value: CompanionImportSelection, snapshot: ImportSnapshot): ImportItem[] {
   if (!value || typeof value.requestId !== 'string' || !/^[A-Za-z0-9_-]{16,100}$/.test(value.requestId) || typeof value.name !== 'string' || !value.name.trim() || value.name.length > 200 || typeof value.takeover !== 'boolean'
     || !Array.isArray(value.entryIds) || value.entryIds.some(id => typeof id !== 'string') || value.entryIds.length > 2000 || new Set(value.entryIds).size !== value.entryIds.length
-    || value.avatarImageBase64 !== undefined && (typeof value.avatarImageBase64 !== 'string' || value.avatarImageBase64.length > 2_000_000))
+    || value.avatarImageBase64 !== undefined && (typeof value.avatarImageBase64 !== 'string' || !value.avatarImageBase64.length || value.avatarImageBase64.length > 2_000_000))
     throw new CompanionImportError('INVALID_SELECTION');
   const selected = new Set(value.entryIds);
   const items = snapshot.items.filter(item => selected.has(item.view.id));

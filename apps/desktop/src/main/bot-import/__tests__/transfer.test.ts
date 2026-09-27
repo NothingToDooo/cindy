@@ -24,6 +24,17 @@ function harness() {
   return { deps, receipt: () => receipt };
 }
 
+it('rejects an explicitly empty avatar before creating any receipt or credential checkpoint', async () => {
+  const { deps, receipt } = harness();
+  await expect(transferCompanion(snapshot, { ...selection, avatarImageBase64: '' }, deps)).rejects.toThrow('INVALID_SELECTION');
+  expect(receipt()).toBeUndefined();
+  expect(deps.saveCheckpoint).not.toHaveBeenCalled();
+  expect(deps.saveEnvironment).not.toHaveBeenCalled();
+  expect(deps.createCompanion).not.toHaveBeenCalled();
+  // Omitting the optional avatar retains the normal companion default.
+  expect((await transferCompanion(snapshot, selection, deps)).status).toBe('complete');
+});
+
 it('keeps the source running when a script sibling or resource is deselected', async () => {
   const items = ['reports/main.py', 'reports/helper.py', 'reports/data/input.json'].map(name => ({
     view: { id: name, name, category: 'connections' as const, selected: true }, asset: { name: `scripts/${name}`, bytes: Buffer.from('fixture') },

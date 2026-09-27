@@ -181,6 +181,9 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
     snapshot = deserializeImportSnapshot(pending.snapshotJson);
   }
   const selected = validateImportSelection(selection, snapshot);
+  if (selection.avatarImageBase64 !== undefined) {
+    try { decodeBotAvatarImage(selection.avatarImageBase64); } catch { throw new CompanionImportError('INVALID_SELECTION'); }
+  }
   const contentSecrets = selectedImportRedactions(selected);
   const redactText = (text: string) => redactEnvironmentValues(text, contentSecrets);
   for (const role of ['identity', 'user', 'instructions'] as const) {
@@ -192,9 +195,6 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
   if (!prior) {
     const profiles = await listBotRemoteResourceSources(); scope.assert();
     if (profiles.some(profile => profile.status !== 'archived' && normalizeBotName(profile.name) === normalizeBotName(selection.name))) throw new CompanionImportError('IMPORT_NAME_EXISTS');
-    if (selection.avatarImageBase64) {
-      try { decodeBotAvatarImage(selection.avatarImageBase64); } catch { throw new CompanionImportError('INVALID_SELECTION'); }
-    }
   }
   const jobKey = `${scope.scope}:${selection.requestId}`;
   const running = jobs.get(jobKey);
