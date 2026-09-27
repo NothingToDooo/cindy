@@ -1,4 +1,6 @@
 import { importedProcessEnvironment } from './process.js';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
@@ -43,9 +45,16 @@ async function connectImportedConnection(
   assertOwner: () => void,
   evict: () => void,
 ): Promise<Connection> {
+  if (server.command && server.cwd !== undefined) {
+    try {
+      if (typeof server.cwd !== 'string' || !path.isAbsolute(server.cwd) || server.cwd.includes('\0') || !(await fs.stat(server.cwd)).isDirectory())
+        throw new Error('Invalid working directory');
+    } catch { throw new CompanionImportError('CONNECTION_FAILED'); }
+    assertOwner();
+  }
   const client = new Client({ name: 'cindy-companion', version: '1.0.0' });
   const transport = server.command
-    ? new StdioClientTransport({ command: server.command, args: server.args ?? [],
+    ? new StdioClientTransport({ command: server.command, args: server.args ?? [], cwd: server.cwd,
       env: importedProcessEnvironment({ ...environment, ...server.env }), stderr: 'ignore' })
     : server.transport === 'sse'
       ? new SSEClientTransport(new URL(server.url!), { requestInit: { headers: server.headers } })

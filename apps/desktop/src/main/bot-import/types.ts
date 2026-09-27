@@ -25,6 +25,8 @@ export interface ImportedMcpServer {
   enabled?: boolean;
   command?: string;
   args?: string[];
+  /** Host-only source working directory; references resolve after selection. */
+  cwd?: string;
   url?: string;
   transport?: 'stdio' | 'sse' | 'http';
   env?: Record<string, string>;

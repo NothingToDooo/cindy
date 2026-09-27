@@ -162,6 +162,24 @@ it('redacts selected credentials from profile and memory copies while retaining 
   expect(stored.pendingImport).toBeUndefined();
 });
 
+it.each(['absolute', 'relative'])('resolves a selected %s MCP cwd after environment choice without anchoring an absolute reference twice', async form => {
+  const expected = path.join(h.root, 'server files');
+  const value = form === 'absolute' ? expected : 'server files';
+  h.snapshot.items = [
+    { view: { id: 'cwd', name: 'MCP_DIR', category: 'connections', selected: true }, env: { MCP_DIR: value } },
+    { view: { id: 'mcp', name: 'Data', category: 'connections', selected: true, dependsOn: ['cwd'] }, mcp: { name: 'Data', command: process.execPath, args: ['./server.cjs'], cwd: '${MCP_DIR}' } },
+  ];
+  const [source] = await listCompanionImportSources('fixture');
+  const preview = await previewCompanionImport(source!.id, 'fixture');
+  const requestId = 'fixture-cwd-123456';
+  const result = await startCompanionImport({ requestId, previewId: preview.id, name: 'Ada', entryIds: ['cwd', 'mcp'], takeover: false }, 'fixture');
+  await vi.waitFor(async () => expect((await getCompanionImportResult(requestId))?.status).toBe('complete'));
+  const stored = (await h.store.read(h.root, result.botId, () => {}))!;
+  expect(stored.mcp[0]?.cwd).toBe(expected);
+  expect(stored.env.MCP_DIR).toBe(value);
+  expect(h.snapshot.items[1]?.mcp?.cwd).toBe('${MCP_DIR}');
+});
+
 it('joins an in-flight credential write before deletion and durably blocks old-preview and restart retries', async () => {
   h.snapshot.items = [{ view: { id: 'env', name: 'Key', category: 'connections', selected: true }, env: { KEY: 'fake-import-secret' } }];
   const [source] = await listCompanionImportSources('fixture');

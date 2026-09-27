@@ -4,6 +4,9 @@ import path from 'node:path';
 import os from 'node:os';
 import { listImportedTools, withImportedConnection } from '../connections.js';
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { discoverImportSources, inspectImportSource } from '../sources.js';
+import { createCompanionEnvironmentStore } from '../environment.js';
+import { deserializeImportSnapshot, serializeImportSnapshot } from '../files.js';
 let directory: string | undefined;
 afterEach(async () => { vi.unstubAllEnvs(); if (directory) await fs.rm(directory, { recursive: true, force: true }); });
 it('bounds paginated tool discovery and rejects incomplete catalogs instead of publishing a partial page', async () => {
@@ -58,6 +61,57 @@ readline.createInterface({input:process.stdin}).on('line', line => {
   }, { signal: controller.signal })).rejects.toThrow('CONNECTION_FAILED');
   expect(probePid).toBeGreaterThan(0);
   expect(() => process.kill(probePid, 0)).toThrow();
+});
+
+it.each(['hermes', 'openclaw'] as const)('keeps %s stdio working directories through snapshots, storage and real relative-command execution', async kind => {
+  directory = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-import-mcp-cwd-test-'));
+  const root = path.join(directory, `.${kind}`);
+  const workspace = path.join(root, 'workspace');
+  const custom = path.join(workspace, 'server files');
+  await fs.mkdir(custom, { recursive: true });
+  for (const cwd of [workspace, custom]) {
+    await fs.writeFile(path.join(cwd, 'data.txt'), path.basename(cwd));
+    await fs.writeFile(path.join(cwd, 'server.cjs'), `const readline = require('node:readline');
+readline.createInterface({input:process.stdin}).on('line', line => {
+ const r = JSON.parse(line); if (!('id' in r)) return;
+ const result = r.method === 'initialize' ? {protocolVersion:'2024-11-05',capabilities:{tools:{}},serverInfo:{name:'fixture',version:'1'}}
+ : r.method === 'tools/list' ? {tools:[{name:'read_data',inputSchema:{type:'object'},annotations:{readOnlyHint:true}}]}
+ : {content:[{type:'text',text:JSON.stringify({cwd:process.cwd(),data:require('node:fs').readFileSync('./data.txt','utf8'),authenticated:process.env.KEY === 'fixture-cwd-key'})}]};
+ process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:r.id,result})+'\\n');
+});`);
+  }
+  const secretValues = new Map<string, string>();
+  const secretIo = { read: (key: string) => secretValues.get(key) ?? null, write: (key: string, value: string) => { secretValues.set(key, value); return true; }, remove: (key: string) => secretValues.delete(key) };
+  for (const cwd of [undefined, 'server files', custom, `~/${path.relative(directory, custom).split(path.sep).join('/')}`]) {
+    const config = { workdir: workspace, agents: { defaults: { workspace } }, mcpServers: { fixture: { command: process.execPath, args: ['./server.cjs'], ...(cwd === undefined ? {} : { cwd }) } } };
+    await fs.writeFile(path.join(root, kind === 'hermes' ? 'config.yaml' : 'openclaw.json'), JSON.stringify(config));
+    const readers = { home: directory, env: {}, readCronDatabase: vi.fn(async () => []) };
+    const [source] = await discoverImportSources(readers);
+    const original = await inspectImportSource(source!, readers);
+    const snapshot = deserializeImportSnapshot(serializeImportSnapshot(original));
+    const server = snapshot.items.find(item => item.mcp)!.mcp!;
+    const expected = cwd === undefined ? workspace : custom;
+    expect(server.cwd).toBe(expected);
+    expect(JSON.stringify(snapshot.items.map(item => item.view))).not.toContain(expected);
+    await createCompanionEnvironmentStore(secretIo).write(directory, 'bot', { version: 1, env: { KEY: 'fixture-cwd-key' }, mcp: [server], credentials: [] }, () => {});
+    const restored = (await createCompanionEnvironmentStore(secretIo).read(directory, 'bot', () => {}))!;
+    await withImportedConnection(restored.mcp[0]!, restored.env, () => {}, async client => {
+      expect((await listImportedTools(client))[0]?.name).toBe('read_data');
+      const result = await client.callTool({ name: 'read_data', arguments: {} });
+      expect(JSON.parse((result.content as Array<{ text: string }>)[0]!.text)).toEqual({ cwd: await fs.realpath(expected), data: path.basename(expected), authenticated: true });
+    });
+  }
+});
+
+it('rejects invalid stdio working directories without falling back or exposing paths', async () => {
+  directory = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-import-mcp-invalid-cwd-test-'));
+  const file = path.join(directory, 'file.txt');
+  await fs.writeFile(file, 'not a directory');
+  const run = vi.fn();
+  for (const cwd of ['', 'relative', `${directory}\0`, path.join(directory, 'missing'), file]) {
+    await expect(withImportedConnection({ name: 'fixture', command: process.execPath, args: ['-e', 'process.exit(0)'], cwd }, {}, () => {}, run)).rejects.toMatchObject({ code: 'CONNECTION_FAILED', message: 'CONNECTION_FAILED' });
+  }
+  expect(run).not.toHaveBeenCalled();
 });
 
 it('terminates an idle credential subprocess after its owner changes and evicts it without affecting another owner', async () => {

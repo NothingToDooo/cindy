@@ -37,6 +37,24 @@ it('counts configuration includes and memory against the same source budget', as
   await expect(inspectImportSource(source!, reader, createImportBudget(1500))).rejects.toThrow('SOURCE_SNAPSHOT_TOO_LARGE');
 });
 
+it.each([123, '', ' ', 'invalid\0path'])('rejects malformed stdio cwd %j before import', async cwd => {
+  await write('.hermes/config.yaml', JSON.stringify({ mcpServers: { data: { command: 'node', args: ['./server.js'], cwd } } }));
+  const reader = deps(); const [source] = await discoverImportSources(reader);
+  await expect(inspectImportSource(source!, reader)).rejects.toThrow('SOURCE_CONFIG_INVALID');
+});
+
+it('retains cwd references and their selection dependency until import', async () => {
+  await write('.hermes/config.yaml', JSON.stringify({ mcpServers: { data: { command: 'node', args: ['./server.js'], cwd: '${MCP_DIR}' } } }));
+  await write('.hermes/.env', `MCP_DIR=${path.join(home, 'server files')}`);
+  const reader = deps(); const [source] = await discoverImportSources(reader);
+  const snapshot = await inspectImportSource(source!, reader);
+  const server = snapshot.items.find(item => item.mcp)!;
+  const variable = snapshot.items.find(item => item.env?.MCP_DIR)!;
+  expect(server.mcp?.cwd).toBe('${MCP_DIR}');
+  expect(server.view.dependsOn).toContain(variable.view.id);
+  expect(JSON.stringify(server.view)).not.toContain(home);
+});
+
 describe('installed agent imports', () => {
   it.each(['hermes', 'openclaw'] as const)('retains selected %s source OAuth privately without turning it into runtime API credentials', async kind => {
     const profile = { provider: 'anthropic', type: 'oauth', access: 'fixture-source-oauth-access', refresh: 'fixture-source-oauth-refresh' };

@@ -142,9 +142,20 @@ async function connections(items: ImportItem[], source: ImportSource, values: Re
     const record = object(raw);
     const enabled = record.enabled !== false && record.disabled !== true;
     const command = string(record.command), url = string(record.url);
+    let cwd: string | undefined;
+    if (command) {
+      if (record.cwd !== undefined && (typeof record.cwd !== 'string' || !record.cwd.trim() || record.cwd.includes('\0')))
+        throw new CompanionImportError('SOURCE_CONFIG_INVALID');
+      const rawCwd = string(record.cwd) || source.workspace;
+      // Do not expand an unselected env value into the private connection. A
+      // leading reference may become absolute, so anchor it only after selection.
+      cwd = rawCwd.includes('${')
+        ? rawCwd.startsWith('~/') ? path.join(deps.home, rawCwd.slice(2)) : rawCwd
+        : sourcePath(deps.home, rawCwd, source.workspace);
+    }
     items.push({ view: { id: entryId('mcp', name), category: 'connections', name, selected: enabled, enabled, dependsOn: [...references].map(key => entryId('env', key)) },
       envDependencies: { names: [...references], entries: [] },
-      mcp: { name, enabled, ...(command ? { command, args: Array.isArray(record.args) ? record.args.map(string) : [], transport: 'stdio' as const } : { url, transport: record.transport === 'sse' ? 'sse' as const : 'http' as const }),
+      mcp: { name, enabled, ...(command ? { command, args: Array.isArray(record.args) ? record.args.map(string) : [], cwd, transport: 'stdio' as const } : { url, transport: record.transport === 'sse' ? 'sse' as const : 'http' as const }),
         env: scalarEnv(record.env), headers: scalarEnvHeaders(record.headers) } });
   }
   const telegram = object(object(values.channels).telegram);

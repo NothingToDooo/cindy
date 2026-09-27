@@ -239,7 +239,15 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
       const resolveReferences = (value: unknown) => resolveImportReferences(value, env);
       await companionEnvironmentStore.write(scope.root, botId, { version: 1,
         env,
-        mcp: items.flatMap(item => item.mcp && !item.view.dependsOn?.some(id => !chosen.has(id)) && !item.view.issues?.length ? [resolveReferences(item.mcp) as NonNullable<typeof item.mcp>] : []),
+        mcp: items.flatMap(item => {
+          if (!item.mcp || item.view.dependsOn?.some(id => !chosen.has(id)) || item.view.issues?.length) return [];
+          const server = resolveReferences(item.mcp) as NonNullable<typeof item.mcp>;
+          if (server.command && server.cwd !== undefined) {
+            if (!server.cwd.trim() || server.cwd.includes('\0')) throw new CompanionImportError('SOURCE_CONFIG_INVALID');
+            server.cwd = path.resolve(snapshot.source.workspace, server.cwd);
+          }
+          return [server];
+        }),
         credentials: items.flatMap(item => item.credential && !item.view.dependsOn?.some(id => !chosen.has(id)) && (!item.view.issues?.length || item.credential.format !== 'telegram') ? [{ id: item.view.id, ...item.credential, ...(item.credential.format === 'telegram' ? { value: resolveReferences(item.credential.value) } : {}) }] : []),
         files: Object.fromEntries(items.flatMap(item => item.asset ? [[item.asset.name, item.asset.bytes.toString('base64')]] : [])),
         documents: Object.fromEntries(items.flatMap(item => item.text === undefined ? [] : [[item.view.id, item.text]])),

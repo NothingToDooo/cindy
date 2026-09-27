@@ -82,6 +82,13 @@ omitting it retains normal companion defaults, and a rejected request can be cor
   env). Unrelated launch tokens, proxy credentials and runtime injection variables
   are not implicitly inherited; selected proxy/runtime settings remain available.
   Codex hosts remain partitioned by companion environment identity.
+  Stdio MCPs retain their configured working directory in the private snapshot
+  and encrypted connection. Relative directories use the source Agent workspace;
+  an omitted directory also uses that workspace. Environment references resolve
+  only after selection, before anchoring relative paths. Discovery, takeover and
+  runtime use the same directory, which must exist before launching the process;
+  invalid directories never fall back to Cindy's launch directory. External MCP
+  installations remain at their configured locations; their trees are not copied.
   `run_command` remains an authorized general command facility, with the existing
   companion workspace as its cwd; relative files and outputs use the same directory
   as the companion session. It retains the existing
