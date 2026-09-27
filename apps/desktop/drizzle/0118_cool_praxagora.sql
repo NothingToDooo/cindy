@@ -1,1 +1,0 @@
-ALTER TABLE `sessions` ADD `im_default_route` text;
