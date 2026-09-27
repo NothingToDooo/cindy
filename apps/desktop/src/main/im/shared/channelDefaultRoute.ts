@@ -175,6 +175,24 @@ export type ImDefaultRouteDecision =
   | { kind: 'manual'; clearStalePending?: true };
 
 /**
+ * 记录里的待生效声称是否就是这一个在世意图 —— 本功能登记、尚未被用户顶掉。
+ * 注册表有修订号就必须逐号对上(用户重挑过哪怕同值也算用户的);
+ * 读不到修订号(测试最小 harness)才回落按值比较。
+ */
+export function recordClaimsPendingIntent(
+  record: ImDefaultRouteRecord | null | undefined,
+  pendingIntent: ImDefaultRoute | undefined,
+  pendingRev: number | undefined,
+  normalizeProvider?: (route: ImDefaultRoute) => string | null,
+): boolean {
+  if (!record || record.manual || !record.pendingRoute || !pendingIntent) return false;
+  return (
+    sameImDefaultRoute(pendingIntent, record.pendingRoute, normalizeProvider) &&
+    (pendingRev === undefined || record.pendingRev === pendingRev)
+  );
+}
+
+/**
  * `current` 取 DB 持久路由: 用户的选择要么已落库, 要么是待应用的切换意图;
  * 自动回退 / Agent 自选只在内存里生效, 与伙伴配置变更同口径 —— 渠道默认一改就覆盖它们。
  */
@@ -205,12 +223,7 @@ export function decideImDefaultRoute(input: {
     // 意图是不是本功能登记的那一次: 路由值相等还不够 —— 自动切换未生效时用户又
     // 明确挑了同样的模型/来源, 会顶掉登记、值却一模一样(greptile P1, PR #5155)。
     // 修订号每次 set/clear 都推进, 用户重新挑过就对不上; 对不上一律按用户选择。
-    const ours =
-      !!record.pendingRoute &&
-      same(pendingIntent, record.pendingRoute) &&
-      // 注册表有修订号就必须逐号对上(用户重挑过哪怕同值也算用户的);
-      // 读不到修订号(测试最小 harness)才回落按值比较。
-      (input.pendingRev === undefined || record.pendingRev === input.pendingRev);
+    const ours = recordClaimsPendingIntent(record, pendingIntent, input.pendingRev, input.normalizeProvider);
     if (!ours) {
       return record.pendingRoute ? { kind: 'manual', clearStalePending: true } : { kind: 'manual' };
     }

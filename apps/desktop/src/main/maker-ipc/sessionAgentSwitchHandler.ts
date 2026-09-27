@@ -769,6 +769,17 @@ export async function performSessionAgentSwitch(
  *    保留原有失败后继续发送的行为。resume 回落事务
  *    已进入 commit point 后若失败,则只重试其原子恢复尾段。
  */
+/** 墓碑写失败: 一律阻止发送并保留可重试状态 —— 不适用跨引擎的 fail-continue(PR #5155 review P2)。 */
+export class UserRouteSelectionMarkerError extends Error {
+  readonly cause: unknown;
+
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = 'UserRouteSelectionMarkerError';
+    this.cause = cause;
+  }
+}
+
 /**
  * 用户选择落地 → 给任务打「脱离跟随」标记。只认用户选择: 系统配置对齐
  * (configStaged)与 Agent 自选都由默认变化覆盖, 不得永久脱离。
@@ -789,7 +800,10 @@ async function noteLandedUserRouteSelection(
       sessionId,
       err: err instanceof Error ? err.message : String(err),
     });
-    throw err;
+    // 保留可重试状态: 切换事务内部的同引擎 no-op 收口可能已把意图清掉, 重新登记,
+    // 下一条消息重试立碑 —— 否则进程一退, 在世证据与落点双双丢失(PR #5155 review P2)。
+    if (!deps.pendingSwitches?.get(sessionId)) deps.pendingSwitches?.set(sessionId, intent);
+    throw new UserRouteSelectionMarkerError(err);
   }
 }
 
@@ -927,7 +941,15 @@ export function applyPendingAgentSwitchIfIdle(
         err: err instanceof Error ? err.message : String(err),
       });
       // Never send on the old model after the user's selected route failed preparation.
-      if (intent.sameAgentSelection || intent.runtimeSource === 'agent') throw err;
+      // 墓碑写失败同理: 跨引擎的 fail-continue 也必须挡住 —— 发送继续 + 进程退出会把
+      // 同值重选的唯一证据一起丢掉(PR #5155 review P2)。
+      if (
+        err instanceof UserRouteSelectionMarkerError ||
+        intent.sameAgentSelection ||
+        intent.runtimeSource === 'agent'
+      ) {
+        throw err;
+      }
     }
   })().finally(() => {
     if (pendingAgentSwitchApplyInFlight.get(sessionId) === run) {

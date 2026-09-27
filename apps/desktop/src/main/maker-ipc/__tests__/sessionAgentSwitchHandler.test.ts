@@ -1176,4 +1176,20 @@ describe('landed user route selection', () => {
     await expect(applyPendingAgentSwitchIfIdle(deps, 's1')).rejects.toThrow('db closed');
     expect(pending.get('s1')).toBeDefined();
   });
+
+  it('blocks the send for a cross-engine pick too when the marker cannot be persisted', async () => {
+    // 跨引擎用户意图的 fail-continue 不适用于墓碑失败: 发送继续 + 进程退出会把
+    // 同值重选的唯一证据一起丢掉(PR #5155 review P2)。
+    const pending = createPendingAgentSwitchRegistry();
+    const { deps } = makeDeps({
+      pendingSwitches: pending,
+      onUserRouteSelectionLanded: async () => {
+        throw new Error('db closed');
+      },
+    });
+    await performSessionAgentSwitch(deps, { ...validParams });
+
+    await expect(applyPendingAgentSwitchIfIdle(deps, 's1')).rejects.toThrow('db closed');
+    expect(pending.get('s1')).toBeDefined();
+  });
 });

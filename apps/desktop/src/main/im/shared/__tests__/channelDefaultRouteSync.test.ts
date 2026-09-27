@@ -166,6 +166,8 @@ beforeEach(() => {
   mocks.fingerprint.mockReturnValue('fp-new');
   mocks.rawDefault.mockReturnValue(OLD);
   mocks.readPendingRoute.mockReturnValue(undefined);
+  // clearAllMocks 不清实现: 默认实现必须每次重设, 否则单个用例的 mockResolvedValue 会泄漏。
+  mocks.listProviders.mockResolvedValue([]);
   mocks.resolveDefaults.mockResolvedValue({ ...NEW, permissionMode: 'auto', fastMode: false, fingerprint: 'fp-new' });
   mocks.applyRoute.mockImplementation(async (id: string, route: ImDefaultRoute) => {
     await setRoute(id, route);
@@ -318,6 +320,31 @@ describe('syncUnderLock', () => {
 
     expect(mocks.applyRoute).toHaveBeenCalledWith('t1', null, 'claude-code');
     expect((await rowOf('t1')).imDefaultRoute).toBe(buildImDefaultRouteRecord('fp-old', OLD));
+  });
+
+  it('defers the generic apply when the catalog is unreadable and a system claim is live', async () => {
+    // 上一条消息已把默认切换登记为 staged; 下一条消息目录暂不可读时不能丢「暂缓」
+    // 信号 —— 通用 apply 的忙判定只看 isTurnRunning(PR #5155 review P2)。
+    await insertTask('t1', OLD, {
+      record: buildImDefaultRouteRecord('fp-old', OLD, { route: NEW, fp: 'fp-new', rev: 5 }),
+    });
+    mocks.readPendingRoute.mockReturnValue({ ...NEW, rev: 5 });
+    mocks.listProviders.mockResolvedValueOnce(null);
+
+    await expect(sync().syncUnderLock('t1')).resolves.toBe(true);
+    expect(mocks.resolveDefaults).not.toHaveBeenCalled();
+    expect(mocks.applyRoute).not.toHaveBeenCalled();
+  });
+
+  it('does not defer on catalog failure when the live intent is not its own claim', async () => {
+    await insertTask('t1', OLD, {
+      record: buildImDefaultRouteRecord('fp-old', OLD, { route: NEW, fp: 'fp-new', rev: 5 }),
+    });
+    // 用户重挑的同值意图(修订号不同)—— 不挡通用应用。
+    mocks.readPendingRoute.mockReturnValue({ ...NEW, rev: 6 });
+    mocks.listProviders.mockResolvedValueOnce(null);
+
+    await expect(sync().syncUnderLock('t1')).resolves.toBe(false);
   });
 
   it('leaves a task the user changed alone', async () => {
@@ -539,7 +566,7 @@ describe('backfillLegacyImDefaultRoutes', () => {
     // 返回 0 会被调用方当成「补完了」照常提交新默认, 还停在旧默认上的老任务之后只
     // 能按新默认匹配, 永久失去跟随资格 —— 必须抛错让本次保存失败重试(PR #5155 P2)。
     await insertTask('legacy-default', OLD, { record: null });
-    mocks.listProviders.mockResolvedValue(null);
+    mocks.listProviders.mockResolvedValueOnce(null);
 
     await expect(backfillLegacyImDefaultRoutes('feishu', CONFIG)).rejects.toThrow(/provider catalog unavailable/);
     expect((await rowOf('legacy-default')).imDefaultRoute).toBeNull();
@@ -547,7 +574,7 @@ describe('backfillLegacyImDefaultRoutes', () => {
 
   it('does not need the catalog when no legacy task is left', async () => {
     await insertTask('recorded', OLD);
-    mocks.listProviders.mockResolvedValue(null);
+    mocks.listProviders.mockResolvedValueOnce(null);
 
     await expect(backfillLegacyImDefaultRoutes('feishu', CONFIG)).resolves.toBe(0);
   });

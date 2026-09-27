@@ -32,6 +32,7 @@ import {
   decideImDefaultRoute,
   imDefaultRouteMayNeedSync,
   parseImDefaultRouteRecord,
+  recordClaimsPendingIntent,
   sameImDefaultRoute,
   serializeImDefaultRouteRecord,
   type ImDefaultRoute,
@@ -165,7 +166,7 @@ export function createImChannelDefaultRouteSync(deps: {
 }): ImChannelDefaultRouteSync {
   const { source, config } = deps;
 
-  async function evaluate(sessionId: string): Promise<Evaluation | null> {
+  async function evaluate(sessionId: string): Promise<Evaluation | 'defer-unknown' | null> {
     const row = await readSessionRouteRow(sessionId);
     if (!row || !isChannelOwnedRow(row, source)) return null;
     const record = parseImDefaultRouteRecord(row.imDefaultRoute);
@@ -173,8 +174,9 @@ export function createImChannelDefaultRouteSync(deps: {
     if (record?.manual) return null;
     if (!imDefaultRouteMayNeedSync(record, readImDefaultSettingsFingerprint(source))) return null;
     const providers = await listProviders();
-    // 目录拿不到就无法可靠比对来源, 本条消息先按原路由走。
-    if (!providers) return null;
+    // 目录拿不到就无法可靠比对来源, 本条消息先按原路由走 —— 但若记录仍认领着在世
+    // 的系统意图, 调用方必须暂缓通用意图应用(PR #5155 review P2)。
+    if (!providers) return 'defer-unknown';
     const defaults = await resolveImSessionDefaults(config, providers, source);
     const target: ImDefaultRoute = {
       agentKind: defaults.agentKind,
@@ -338,7 +340,7 @@ export function createImChannelDefaultRouteSync(deps: {
   async function previewSwitchTarget(sessionId: string): Promise<ImDefaultRoute | null> {
     try {
       const e = await evaluate(sessionId);
-      if (!e) return null;
+      if (!e || e === 'defer-unknown') return null;
       if (e.decision.kind !== 'switch' && e.decision.kind !== 'staged') return null;
       return (await deps.isRouteUsable(e.target)) ? e.target : null;
     } catch (err) {
@@ -347,9 +349,41 @@ export function createImChannelDefaultRouteSync(deps: {
     }
   }
 
+  /**
+   * 目录暂不可读、无法判定要不要跟随时, 记录仍认领着在世系统意图 ⇒ 本次暂缓通用
+   * 意图应用(返回 true): 那里的忙判定只看 isTurnRunning, 会把刚登记的意图应用到
+   * 仍在承载后台工作/交互的会话上(PR #5155 review P2)。认不出是自己的意图就不挡。
+   */
+  async function followClaimStillPending(sessionId: string): Promise<boolean> {
+    try {
+      const row = await readSessionRouteRow(sessionId);
+      if (!row || !isChannelOwnedRow(row, source)) return false;
+      const pending = readPendingAgentSwitchRoute(sessionId);
+      return recordClaimsPendingIntent(
+        parseImDefaultRouteRecord(row.imDefaultRoute),
+        pending
+          ? {
+              agentKind: pending.agentKind,
+              model: pending.model,
+              providerId: pending.providerId,
+              effort: pending.effort ?? null,
+            }
+          : undefined,
+        pending?.rev,
+      );
+    } catch (err) {
+      log.warn(
+        `default route pending-claim check failed (non-fatal) session=...${sessionId.slice(-8)}: ` +
+          (err instanceof Error ? err.message : String(err)),
+      );
+      return false;
+    }
+  }
+
   async function syncUnderLock(sessionId: string): Promise<boolean> {
     try {
       const e = await evaluate(sessionId);
+      if (e === 'defer-unknown') return await followClaimStillPending(sessionId);
       if (!e) return false;
       switch (e.decision.kind) {
         case 'adopt':
