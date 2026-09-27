@@ -6151,7 +6151,7 @@ export default function NewRemoteSessionScreen() {
                     }
                   }}
                   placeholder={voiceIsListening ? '' : composerPlaceholder}
-                  placeholderTextColor={colors.textTertiary}
+                  placeholderTextColor={colors.textPlaceholder}
                   resizeHandle={composerCardActive ? renderComposerResizeHandle() : null}
                   scrollEnabled={composerInputScrollEnabled}
                   selection={firstMessageSelection}
@@ -6759,6 +6759,7 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     color: colors.textTertiary,
     flex: 1,
     fontSize: typeScale.micro,
+    lineHeight: lineHeight.micro,
     marginHorizontal: spacing.md,
     textAlign: 'right',
     fontVariant: ['tabular-nums'],
@@ -6783,10 +6784,10 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     minHeight: 42,
   },
   selectorText: {
-    color: colors.textTertiary,
+    color: colors.textSecondary,
     flexShrink: 1,
     fontSize: typeScale.body,
-    fontWeight: fontWeight.medium,
+    fontWeight: fontWeight.regular,
     lineHeight: lineHeight.body,
     minWidth: 0,
   },
@@ -6895,6 +6896,7 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     color: colors.textPrimary,
     flex: 1,
     fontSize: typeScale.body,
+    lineHeight: lineHeight.body,
     fontWeight: fontWeight.medium,
     minWidth: 0,
   },
@@ -6914,16 +6916,19 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   workspaceProjectTitle: {
     color: colors.textPrimary,
     fontSize: typeScale.body,
+    lineHeight: lineHeight.body,
     fontWeight: fontWeight.medium,
   },
   workspaceProjectPath: {
     color: colors.textTertiary,
     fontSize: typeScale.caption,
+    lineHeight: lineHeight.caption,
     marginTop: 1,
   },
   workspaceEmptyText: {
     color: colors.textTertiary,
     fontSize: typeScale.caption,
+    lineHeight: lineHeight.caption,
     paddingHorizontal: spacing.sm,
     paddingVertical: spacing.sm,
   },
@@ -6976,10 +6981,10 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     paddingRight: spacing.xs,
   },
   worktreeBranchLabel: {
-    color: colors.textTertiary,
+    color: colors.textSecondary,
     flexShrink: 1,
     fontSize: typeScale.footnote,
-    fontWeight: fontWeight.medium,
+    fontWeight: fontWeight.regular,
     lineHeight: lineHeight.caption,
     minWidth: 0,
   },
@@ -7011,10 +7016,10 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     borderColor: colors.cta,
   },
   worktreeToggleLabel: {
-    color: colors.textTertiary,
+    color: colors.textSecondary,
     flexShrink: 1,
     fontSize: typeScale.footnote,
-    fontWeight: fontWeight.medium,
+    fontWeight: fontWeight.regular,
     lineHeight: lineHeight.caption,
     minWidth: 0,
   },
@@ -7036,13 +7041,14 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     color: colors.textSecondary,
     flex: 1,
     fontSize: typeScale.body,
-    fontWeight: fontWeight.medium,
+    lineHeight: lineHeight.body,
+    fontWeight: fontWeight.regular,
   },
-  hint: { color: colors.textSecondary, fontSize: typeScale.caption, lineHeight: lineHeight.caption },
+  hint: { color: colors.textSecondary, fontSize: typeScale.footnote, lineHeight: lineHeight.caption },
   errorText: {
     color: colors.textSecondary,
-    fontSize: typeScale.caption,
-    fontWeight: fontWeight.medium,
+    fontSize: typeScale.footnote,
+    fontWeight: fontWeight.regular,
     lineHeight: lineHeight.caption,
     paddingHorizontal: spacing.md,
   },
@@ -7063,7 +7069,7 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     color: colors.textSecondary,
     flex: 1,
     fontSize: typeScale.caption,
-    fontWeight: fontWeight.medium,
+    fontWeight: fontWeight.regular,
     lineHeight: lineHeight.caption,
     minWidth: 0,
   },
@@ -7081,6 +7087,7 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   workspaceQuickPickText: {
     color: colors.textPrimary,
     fontSize: typeScale.caption,
+    lineHeight: lineHeight.caption,
     fontWeight: fontWeight.medium,
   },
   browseActions: {
@@ -7099,6 +7106,7 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   browseActionText: {
     color: colors.textSecondary,
     fontSize: typeScale.caption,
+    lineHeight: lineHeight.caption,
     fontWeight: fontWeight.medium,
   },
   browseDriveRow: {
@@ -7109,7 +7117,8 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   browseDriveLabel: {
     color: colors.textSecondary,
     fontSize: typeScale.caption,
-    fontWeight: fontWeight.medium,
+    lineHeight: lineHeight.caption,
+    fontWeight: fontWeight.regular,
   },
   browseDriveOptions: {
     alignItems: 'center',
@@ -7154,7 +7163,8 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   browseHiddenLabel: {
     color: colors.textSecondary,
     fontSize: typeScale.caption,
-    fontWeight: fontWeight.medium,
+    lineHeight: lineHeight.caption,
+    fontWeight: fontWeight.regular,
   },
   browseList: { maxHeight: 200 },
   browseListContent: { gap: spacing.sm },
@@ -7168,8 +7178,8 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     flex: 1,
     minWidth: 0,
   },
-  browseEntryName: { color: colors.textPrimary, fontSize: typeScale.caption, fontWeight: fontWeight.medium },
-  browseEntryPath: { color: colors.textTertiary, fontSize: typeScale.micro, marginTop: 2 },
+  browseEntryName: { color: colors.textPrimary, fontSize: typeScale.caption, lineHeight: lineHeight.caption, fontWeight: fontWeight.medium },
+  browseEntryPath: { color: colors.textTertiary, fontSize: typeScale.micro, lineHeight: lineHeight.micro, marginTop: 2 },
   browseSelectButton: {
     alignItems: 'center',
     borderColor: colors.border,
@@ -7204,12 +7214,14 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     color: colors.textPrimary,
     flex: 1,
     fontSize: typeScale.body,
+    lineHeight: lineHeight.body,
     fontWeight: fontWeight.medium,
     minWidth: 0,
   },
   paletteSecondary: {
     color: colors.textTertiary,
     fontSize: typeScale.caption,
+    lineHeight: lineHeight.caption,
     maxWidth: 160,
   },
   paletteStatusRow: {
@@ -7264,7 +7276,7 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   voiceStatusText: {
     color: colors.textSecondary,
     flex: 1,
-    fontSize: typeScale.caption,
+    fontSize: typeScale.footnote,
     lineHeight: lineHeight.caption,
   },
   voiceStatusButton: {
@@ -7304,9 +7316,9 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     minHeight: MOBILE_COMPOSER_INPUT_LINE_HEIGHT,
   },
   // 语音态占位文案渲染的就是普通态 TextInput 的 placeholder,颜色必须同源
-  // (placeholderTextColor 也是 textTertiary),否则一进语音态这行字会变色。
+  // (placeholderTextColor 也是 textPlaceholder),否则一进语音态这行字会变色。
   voiceDraftListeningText: {
-    color: colors.textTertiary,
+    color: colors.textPlaceholder,
     ...MOBILE_COMPOSER_DRAFT_TEXT_STYLE,
   },
   composerToolbarWrap: {
@@ -7333,7 +7345,7 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     color: colors.textPrimary,
     flexShrink: 1,
     fontSize: typeScale.caption,
-    fontWeight: fontWeight.semibold,
+    fontWeight: fontWeight.medium,
     lineHeight: lineHeight.caption,
     minWidth: 0,
   },
