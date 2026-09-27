@@ -1,3 +1,4 @@
+import { mergeSessionEnvironment } from '../shared/session-environment.js';
 /**
  * ClaudeCodeAgent — Claude Code 的 maker-core 一等公民实现。
  *
@@ -1340,7 +1341,9 @@ export class ClaudeCodeAgent extends BaseAgent {
     // 网关白名单字面比对,裸名必 403。钉到会话自身 wire 模型(唯一确定已授权);
     // 裸名会话(订阅直连/自定义中继)不传,CLI 默认行为零变化。
     const smallFastModel = opts.model.includes('/') ? sdkModel : undefined;
-    const env = await buildClaudeEnv(this.deps.auth, this.deps.runtimeConfig, {
+    const companionEnvironment = opts.botRuntimeProfile && !opts.remoteHostId && opts.sessionId
+      ? await this.deps.resolveSessionEnvironment?.(opts.sessionId) : undefined;
+    const env = mergeSessionEnvironment(await buildClaudeEnv(this.deps.auth, this.deps.runtimeConfig, {
       credentialMode,
       nativeCliAuth,
       authModel: opts.model,
@@ -1351,7 +1354,7 @@ export class ClaudeCodeAgent extends BaseAgent {
       // 先按「不设」建好 env(顺带删掉可能从 process.env 继承来的残留),真正的判定在下面
       // 拿到这份 env 之后做 —— 扫描需要 env 里的 CLAUDE_CONFIG_DIR 才能找对目录。
       subagentModel: null,
-    });
+    }), companionEnvironment?.env);
 
     // 「Subagent 模型」设置的默认值语义(见 subagent-model-default.ts):
     // 平台的 CLAUDE_CODE_SUBAGENT_MODEL 是最高优先级**强制覆盖**,会静默盖掉用户手写
@@ -3887,6 +3890,7 @@ export class ClaudeCodeAgent extends BaseAgent {
       const botOwnSkillPluginRoots = reviewMode
         ? []
         : [...new Set(opts.botRuntimeProfile?.skillPolicy.ownSkillPluginRoots ?? [])];
+      companionEnvironment?.assertCurrent?.();
       const query = sdkQuery({
         prompt: inputQueue as unknown as Parameters<typeof sdkQuery>[0]['prompt'],
         options: {

@@ -256,6 +256,8 @@ export class RoutineEngine {
         const unchanged =
           existing?.enabled === routine.enabled &&
           JSON.stringify(oldTrigger) === JSON.stringify(trigger);
+        if (!unchanged && trigger.kind === 'once' && trigger.at <= now)
+          throw new Error('One-shot time has passed; choose a future time');
         const next = unchanged
           ? (previousNext[`${routine.id}:${trigger.id}`] ??
             nextRoutineTriggerAt(trigger, now))
@@ -430,6 +432,7 @@ export class RoutineEngine {
           this.enqueue(state, routine, [trigger.id]);
           const next = nextRoutineTriggerAt(trigger, now);
           if (next !== undefined) state.next[key] = next;
+          else delete state.next[key];
         }
       }
     });

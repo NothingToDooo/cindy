@@ -1,3 +1,4 @@
+import { CompanionImportSheet } from './CompanionImportSheet';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'expo-router';
 import { randomUUID } from 'expo-crypto';
@@ -374,6 +375,10 @@ function CompanionCreateSheetContent({ visible, onClose, onClosed, deviceId, dev
   const { invoke, openLink } = useDeviceLink();
   const { t, i18n } = useTranslation();
   const styles = useThemedStyles(makeStyles);
+  const [importing, setImporting] = useState(false);
+  const [openingImport, setOpeningImport] = useState(false);
+  const openImport = () => setOpeningImport(true);
+  const creationClosed = () => { if (openingImport) { setOpeningImport(false); setImporting(true); } else onClosed?.(); };
   const [data, setData] = useState<CompanionProfileData | null>(null);
   const [values, setValues] = useState<ProfileValues>({ name: '', avatarImageBase64: '' });
   const [loading, setLoading] = useState(false);
@@ -454,14 +459,16 @@ function CompanionCreateSheetContent({ visible, onClose, onClosed, deviceId, dev
       setBusy(false);
     }
   };
-  if (Platform.OS === 'ios') return <CompanionCreateNativeView deviceName={deviceName} nameTaken={nameTaken} duplicate={duplicate} locked={unconfirmed} visible={visible} onClose={close} onClosed={onClosed} panel={data?.panels[0]} values={values} onChange={change} onSubmit={() => void submit()} onRetry={() => void reload()} online={online} busy={busy} loading={loading} error={error} dirty={dirty} />;
-  return <CompanionSheet visible={visible} onClose={close} onClosed={onClosed} preventDismiss={dirty || busy} title={t('devices.companionProfile.create')}>
+  if (importing) return <CompanionImportSheet visible={visible} onClose={onClose} onClosed={onClosed} deviceId={deviceId} deviceName={deviceName} online={online} onCreated={onCreated} />;
+  if (Platform.OS === 'ios') return <CompanionCreateNativeView onImport={data?.resource.actions?.some(action => action.id === 'open-agent-import') ? openImport : undefined} deviceName={deviceName} nameTaken={nameTaken} duplicate={duplicate} locked={unconfirmed} visible={visible && !openingImport} onClose={close} onClosed={creationClosed} panel={data?.panels[0]} values={values} onChange={change} onSubmit={() => void submit()} onRetry={() => void reload()} online={online} busy={busy} loading={loading} error={error} dirty={dirty} />;
+  return <CompanionSheet visible={visible && !openingImport} onClose={close} onClosed={creationClosed} preventDismiss={dirty || busy} title={t('devices.companionProfile.create')}>
     <View style={styles.content}>
       {!online ? <Text style={styles.note}>{t('devices.companionProfile.offline', { deviceName })}</Text> : null}
       {error || duplicate ? <Text accessibilityRole="alert" style={styles.note}>{t(duplicate || nameTaken ? 'devices.companionProfile.nameTaken' : 'devices.companionProfile.createFailed')}</Text> : null}
       {data?.panels[0] ? <CompanionProfileForm panel={data.panels[0]} values={values} onChange={change} disabled={busy || !online || unconfirmed} /> : null}
       {loading ? <Text style={styles.note}>{t('devices.resources.loading')}</Text> : null}
       {!data && online && !loading ? <MainWindowActionButton action={{ label: t('devices.resources.retry'), disabled: busy, onPress: () => void reload() }} /> : null}
+      {data?.resource.actions?.some(action => action.id === 'open-agent-import') ? <MainWindowActionButton action={{ label: t('devices.companionImport.entry'), disabled: busy || !online || unconfirmed, onPress: openImport }} /> : null}
       <MainWindowActionButton action={{ label: t('devices.companionProfile.create'), busy, disabled: !online || !data || typeof values.name !== 'string' || !values.name.trim() || duplicate, onPress: () => void submit() }} />
     </View>
   </CompanionSheet>;

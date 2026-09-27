@@ -1,3 +1,4 @@
+import { companionEnvironmentStore } from '../bot-import/runtime.js';
 import { createBotMessageTransport } from './botMessageTransport.js';
 import { setBotRemoteMessageService } from './botRemoteMessageReceiver.js';
 import { handleListDevices, defaultDeps as deviceDirectoryDeps } from '../device-link/ipc.js';
@@ -9922,7 +9923,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     getDelegationService: () => botDelegationServiceHolder,
     onPaused: (botId) => updateBotRoutineLifecycle(botId, 'pause'),
     onResumed: (botId) => updateBotRoutineLifecycle(botId, 'resume'),
-    onBeforeDelete: (botId) => updateBotRoutineLifecycle(botId, 'delete'),
+    onBeforeDelete: async (botId) => {
+      await updateBotRoutineLifecycle(botId, 'delete');
+      companionEnvironmentStore.remove(botId);
+    },
   });
   const delegationForRestore = botDelegationServiceHolder;
   void restoreBotRuntimeForCurrentOwner();

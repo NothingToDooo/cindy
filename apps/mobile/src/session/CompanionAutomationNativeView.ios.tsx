@@ -79,7 +79,7 @@ export function CompanionAutomationNativeView(p: CompanionAutomationNativeViewPr
   const updateTrigger = (index: number, value: RoutineTrigger) => p.onChange(draft => draft && ({ ...draft, triggers: draft.triggers.map((item, i) => i === index ? value : item) }));
   const triggerText = (trigger: Record<string, unknown>) => trigger.kind === 'interval'
     ? t('devices.companions.automation.everyMinutes', { count: Number(trigger.intervalMs) / 60_000 })
-    : trigger.kind === 'cron' ? `${trigger.expression} · ${trigger.timezone}` : `${trigger.sourceId} · ${trigger.eventType}`;
+    : trigger.kind === 'cron' ? `${trigger.expression} · ${trigger.timezone}` : trigger.kind === 'once' ? new Date(Number(trigger.at)).toLocaleString() : `${trigger.sourceId} · ${trigger.eventType}`;
   const list = (active: boolean) => p.items.filter(item => Boolean(item.activity) === active).map(item =>
     <Button key={item.id} onPress={() => p.onOpen(item.id)} testID={`companion.automation.${item.id}`} modifiers={[buttonStyle('plain')]}>
       <HStack spacing={spacing.md} modifiers={[frame({ maxWidth: Infinity, minHeight: 44 }), contentShape(shapes.rectangle())]}>
@@ -115,9 +115,9 @@ export function CompanionAutomationNativeView(p: CompanionAutomationNativeViewPr
           {draft.preRunHook ? <FieldRow label={tr('timeoutMs')} value={draft.preRunHook.timeoutMs === undefined ? '' : String(draft.preRunHook.timeoutMs)} onChange={value => p.onChange(d => d && ({ ...d, preRunHook: { ...d.preRunHook!, timeoutMs: value ? Number(value) : undefined } }))} busy={p.busy} numeric /> : null}
         </DisclosureGroup></Section> : null}
         {draft.triggers.map((trigger, index) => <Section key={trigger.id} title={tr('triggers')}>
-          <Choice label={tr('triggerType')} value={trigger.kind} options={['cron', 'interval', 'event'].map(value => ({ value, label: tr(value) }))} blocked={p.busy || !p.online}
-            onChange={kind => updateTrigger(index, kind === 'interval' ? { id: trigger.id, kind, intervalMs: 3_600_000 } : kind === 'event' ? { id: trigger.id, kind, sourceId: '', eventType: '', filters: [] } : { id: trigger.id, kind: 'cron', expression: '0 9 * * *', timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' })} />
-          {trigger.kind === 'cron' ? <CronFields trigger={trigger} onChange={value => updateTrigger(index, value)} busy={p.busy} /> : trigger.kind === 'interval' ?
+          {trigger.kind !== 'once' ? <Choice label={tr('triggerType')} value={trigger.kind} options={['cron', 'interval', 'event'].map(value => ({ value, label: tr(value) }))} blocked={p.busy || !p.online}
+            onChange={kind => updateTrigger(index, kind === 'interval' ? { id: trigger.id, kind, intervalMs: 3_600_000 } : kind === 'event' ? { id: trigger.id, kind, sourceId: '', eventType: '', filters: [] } : { id: trigger.id, kind: 'cron', expression: '0 9 * * *', timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' })} /> : null}
+          {trigger.kind === 'once' ? <Text>{new Date(trigger.at).toLocaleString()}</Text> : trigger.kind === 'cron' ? <CronFields trigger={trigger} onChange={value => updateTrigger(index, value)} busy={p.busy} /> : trigger.kind === 'interval' ?
             <FieldRow label={tr('minutes')} value={String(trigger.intervalMs / 60_000)} onChange={value => updateTrigger(index, { ...trigger, intervalMs: Number(value) * 60_000 })} busy={p.busy} numeric /> : <>
               <Choice label={tr('source')} value={trigger.sourceId} options={detail.sources.map(s => ({ value: s.id, label: s.name }))} blocked={p.busy || !p.online} onChange={sourceId => updateTrigger(index, { ...trigger, sourceId, eventType: '', filters: [] })} />
               <Choice label={tr('event')} value={trigger.eventType} options={(detail.sources.find(s => s.id === trigger.sourceId)?.events ?? []).map(e => ({ value: e.type, label: e.name }))} blocked={p.busy || !p.online} onChange={eventType => updateTrigger(index, { ...trigger, eventType, filters: [] })} />

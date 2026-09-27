@@ -207,7 +207,7 @@ export function CompanionAutomationSheet({ visible, onClose, collectionId, botId
   );
   const triggerText = (trigger: Record<string, unknown>) => trigger.kind === 'interval'
     ? t('devices.companions.automation.everyMinutes', { count: Number(trigger.intervalMs) / 60_000 })
-    : trigger.kind === 'cron' ? `${trigger.expression} · ${trigger.timezone}` : `${trigger.sourceId} · ${trigger.eventType}`;
+    : trigger.kind === 'cron' ? `${trigger.expression} · ${trigger.timezone}` : trigger.kind === 'once' ? new Date(Number(trigger.at)).toLocaleString() : `${trigger.sourceId} · ${trigger.eventType}`;
   const row = (item: RoutineSummary) => (
     <Pressable key={item.id} accessibilityRole="button" onPress={() => open(item.id)} style={styles.row} testID={`companion.automation.${item.id}`}>
       <Clock3 size={iconSize.lg} color={colors.textSecondary} />
@@ -254,8 +254,8 @@ export function CompanionAutomationSheet({ visible, onClose, collectionId, botId
           </View> : null}
           <Text style={styles.heading}>{tr('triggers')}</Text>
           {draft.triggers.map((trigger, index) => <View key={`${draftGeneration}:${trigger.id}`} style={styles.group}>
-            {choose(tr('triggerType'), trigger.kind, ['cron', 'interval', 'event'].map((value) => ({ value, label: tr(value) })), (kind) => updateTrigger(index, kind === 'interval' ? { id: trigger.id, kind, intervalMs: 3_600_000 } : kind === 'event' ? { id: trigger.id, kind, sourceId: '', eventType: '', filters: [] } : { id: trigger.id, kind: 'cron', expression: '0 9 * * *', timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' }))}
-            {trigger.kind === 'cron' ? <RoutineCronFields trigger={trigger} onChange={(value) => updateTrigger(index, value)} disabled={busy} /> : trigger.kind === 'interval' ? <NumberField key={trigger.id} label={tr('minutes')} value={trigger.intervalMs / 60_000} onChange={(value) => updateTrigger(index, { ...trigger, intervalMs: value * 60_000 })} disabled={busy} /> : <>
+            {trigger.kind !== 'once' && choose(tr('triggerType'), trigger.kind, ['cron', 'interval', 'event'].map((value) => ({ value, label: tr(value) })), (kind) => updateTrigger(index, kind === 'interval' ? { id: trigger.id, kind, intervalMs: 3_600_000 } : kind === 'event' ? { id: trigger.id, kind, sourceId: '', eventType: '', filters: [] } : { id: trigger.id, kind: 'cron', expression: '0 9 * * *', timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' }))}
+            {trigger.kind === 'once' ? <Text style={styles.label}>{new Date(trigger.at).toLocaleString()}</Text> : trigger.kind === 'cron' ? <RoutineCronFields trigger={trigger} onChange={(value) => updateTrigger(index, value)} disabled={busy} /> : trigger.kind === 'interval' ? <NumberField key={trigger.id} label={tr('minutes')} value={trigger.intervalMs / 60_000} onChange={(value) => updateTrigger(index, { ...trigger, intervalMs: value * 60_000 })} disabled={busy} /> : <>
               {choose(tr('source'), trigger.sourceId, detail.sources.map((s) => ({ value: s.id, label: s.name })), (sourceId) => updateTrigger(index, { ...trigger, sourceId, eventType: '', filters: [] }))}
               {choose(tr('event'), trigger.eventType, (detail.sources.find((s) => s.id === trigger.sourceId)?.events ?? []).map((e) => ({ value: e.type, label: e.name })), (eventType) => updateTrigger(index, { ...trigger, eventType, filters: [] }))}
               {trigger.filters.map((filter, fi) => <View key={fi} style={styles.group}>

@@ -1,3 +1,5 @@
+import { prepareImportedAutomation, finishImportedAutomation } from './bot-import/automationRuntime.js';
+import { recoverCompanionImports } from './bot-import/host.js';
 import { listWorktreeRecycleStatus, controlWorktreeRecycle } from './worktree/recycleControls';
 import { registerFilePeerIpc } from './device-link/filePeer';
 import { registerLoginItemIpc } from './login-item-ipc.js';
@@ -1176,6 +1178,7 @@ async function waitForCurrentAccountProviderModelsReady(): Promise<void> {
 
 // Live getters preserve account/scheduler replacement without loading Main modules at dispatch time.
 configureRoutineHost({
+  prepareImportedAutomation, finishImportedAutomation, recoverImports: recoverCompanionImports,
   getBot: getBotRemoteResourceSource,
   getScheduler: getSchedulerIfInitialized,
   getScheduleStorage,

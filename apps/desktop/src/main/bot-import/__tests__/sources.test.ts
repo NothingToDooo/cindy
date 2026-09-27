@@ -1,0 +1,78 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { promises as fs } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { discoverImportSources, inspectImportSource } from '../sources.js';
+
+let home: string;
+beforeEach(async () => { home = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-import-source-test-')); });
+afterEach(async () => { await fs.rm(home, { recursive: true, force: true }); });
+async function write(name: string, text: string) { const file = path.join(home, name); await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, text); }
+const deps = () => ({ home, env: {}, readCronDatabase: vi.fn(async () => []) });
+
+describe('installed agent imports', () => {
+  it('keeps secret references unexpanded until the final env and connection selection', async () => {
+    await write('.hermes/config.yaml', 'name: Ada\nmcp_servers:\n  data:\n    url: https://example.invalid/mcp\n    headers:\n      Authorization: Bearer ${DATA_TOKEN}\n');
+    await write('.hermes/.env', 'DATA_TOKEN=fake-selected-secret\nTELEGRAM_BOT_TOKEN=12345:fake-telegram-token');
+    const reader = deps(); const [source] = await discoverImportSources(reader);
+    const snapshot = await inspectImportSource(source!, reader);
+    const mcp = snapshot.items.find(item => item.mcp)!;
+    const token = snapshot.items.find(item => item.env?.DATA_TOKEN)!;
+    expect(mcp.mcp?.headers?.Authorization).toBe('Bearer ${DATA_TOKEN}');
+    expect(mcp.view.dependsOn).toContain(token.view.id);
+    const telegram = snapshot.items.find(item => item.credential?.format === 'telegram')!;
+    expect(telegram.credential?.value).toMatchObject({ token: '${TELEGRAM_BOT_TOKEN}' });
+    expect(JSON.stringify(mcp)).not.toContain('fake-selected-secret');
+    expect(JSON.stringify(telegram)).not.toContain('12345:fake-telegram-token');
+  });
+  it('preserves personality and memory, defaults to used skills and resolves environment without shell evaluation', async () => {
+    await write('.hermes/config.yaml', 'name: Ada\n');
+    await write('.hermes/SOUL.md', 'Calm, direct, and patient.');
+    await write('.hermes/memories/USER.md', 'Prefers concise answers.');
+    await write('.hermes/.env', 'DATA_API_KEY=not-a-real-secret-123\nDATA_URL=https://example.invalid/api\nLITERAL=$(never-run)');
+    await write('.hermes/skills/report/SKILL.md', '---\nname: report\ndescription: Fetch DATA_URL using DATA_API_KEY\n---\nUse scripts/report.py');
+    await write('.hermes/skills/report/scripts/report.py', 'print("fixture")');
+    await write('.hermes/skills/unused/SKILL.md', '# unused');
+    await write('.hermes/cron/jobs.json', JSON.stringify({ jobs: [{ id: 'daily', name: 'Report', prompt: 'Use report to read DATA_URL', skills: ['report'], schedule: { kind: 'interval', minutes: 5 }, enabled: true }] }));
+    const reader = deps(); const sources = await discoverImportSources(reader);
+    expect(sources).toHaveLength(1);
+    const result = await inspectImportSource(sources[0]!, reader);
+    expect(result.items.find(item => item.role === 'identity')?.text).toBe('Calm, direct, and patient.');
+    expect(result.items.find(item => item.role === 'user')?.text).toContain('concise');
+    expect(result.items.find(item => item.view.name === 'report')?.view.selected).toBe(true);
+    expect(result.items.find(item => item.view.name === 'unused')?.view.selected).toBe(false);
+    expect(result.items.find(item => item.env?.LITERAL)?.env?.LITERAL).toBe('$(never-run)');
+    expect(JSON.stringify(result.items.map(item => item.view))).not.toContain('not-a-real-secret');
+    const automation = result.items.find(item => item.automation)!;
+    expect(automation.view.issues).toBeUndefined();
+    expect(automation.automation?.input?.triggers).toEqual([{ id: 'time', kind: 'interval', intervalMs: 300000 }]);
+    expect(automation.view.dependsOn).toContain(result.items.find(item => item.env?.DATA_API_KEY)!.view.id);
+  });
+
+  it('filters legacy OpenClaw tasks by selected agent and keeps paused tasks paused', async () => {
+    await write('.openclaw/agents.json5', '{entries:[{id:"main",name:"Main",default:true},{id:"second",name:"Second"}]}');
+    await write('.openclaw/openclaw.json', '{agents:{$include:"agents.json5"}}');
+    await write('.openclaw/workspace-second/SOUL.md', 'Second persona');
+    await write('.openclaw/cron/jobs.json', JSON.stringify({ jobs: [
+      { id: 'a', agentId: 'main', name: 'Other', payload: { kind: 'agentTurn', message: 'Other reminder' }, schedule: { kind: 'every', everyMs: 60000 } },
+      { id: 'b', agentId: 'second', name: 'Mine', enabled: false, payload: { kind: 'agentTurn', message: 'My reminder' }, schedule: { kind: 'every', everyMs: 120000, anchorMs: 100000 } },
+    ] }));
+    const reader = deps(); const sources = await discoverImportSources(reader);
+    const source = sources.find(source => source.agentId === 'second')!;
+    const snapshot = await inspectImportSource(source, reader);
+    const tasks = snapshot.items.filter(item => item.automation);
+    expect(tasks.map(item => item.view.name)).toEqual(['Mine']);
+    expect(tasks[0]?.view.enabled).toBe(false);
+    expect(tasks[0]?.automation?.input?.triggers[0]).toMatchObject({ kind: 'interval', anchorMs: 100000 });
+  });
+
+  it('uses the current SQLite source instead of stale JSON and never falls back on a DB failure', async () => {
+    await write('.openclaw/openclaw.json', '{}');
+    await write('.openclaw/state/openclaw.sqlite', 'fixture');
+    await write('.openclaw/cron/jobs.json', '{"jobs":[]}');
+    const reader = deps(); const [source] = await discoverImportSources(reader);
+    reader.readCronDatabase.mockRejectedValue(new Error('unavailable'));
+    await expect(inspectImportSource(source!, reader)).rejects.toThrow('unavailable');
+    expect(reader.readCronDatabase).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'main', defaultAgent: true }));
+  });
+});

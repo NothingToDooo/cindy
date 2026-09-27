@@ -82,6 +82,7 @@ function secretDir(): string {
 }
 
 const DYNAMIC_SECRET_PREFIXES = [
+  'bot_environment_',
   'byok_cache_',
   CUSTOM_MCP_SECRET_PREFIX,
   CUSTOM_PROVIDER_HEADER_SECRET_PREFIX,
@@ -921,5 +922,23 @@ export const byokSnapshotSecretIo = {
   write(key: string, value: string): boolean {
     if (!/^byok_cache_[a-f0-9]{64}$/.test(key)) return false;
     return electronSecretIo.write(key, value);
+  },
+};
+
+/** Host-only companion environment. The key is never admitted by renderer safe-storage IPC. */
+export const botEnvironmentSecretIo = {
+  read(key: string): string | null {
+    if (!/^bot_environment_[a-f0-9]{64}$/.test(key)) throw new Error('Invalid companion secret key');
+    const scoped = resolveOwnerScopedSecretStorageKey(key);
+    if (!scoped || !safeStorage.isEncryptionAvailable()) throw new Error('Companion credential storage unavailable');
+    return readPhysical(scoped);
+  },
+  write(key: string, value: string): boolean {
+    if (!/^bot_environment_[a-f0-9]{64}$/.test(key)) return false;
+    return electronSecretIo.write(key, value);
+  },
+  remove(key: string): boolean {
+    if (!/^bot_environment_[a-f0-9]{64}$/.test(key)) return false;
+    return electronSecretIo.remove(key).success;
   },
 };

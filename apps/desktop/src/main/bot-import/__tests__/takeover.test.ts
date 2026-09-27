@@ -1,0 +1,36 @@
+import { afterEach, expect, it } from 'vitest';
+import { promises as fs } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { discoverImportSources, inspectImportSource } from '../sources.js';
+import { changeSourceAutomationState } from '../takeover.js';
+let root: string | undefined;
+afterEach(async () => { if (root) await fs.rm(root, { recursive: true, force: true }); });
+it.skipIf(process.platform === 'win32')('uses native pause/resume and rejects a changed source definition', async () => {
+  root = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-import-takeover-test-'));
+  const state = path.join(root, '.hermes'); const bin = path.join(root, '.local/bin');
+  await fs.mkdir(path.join(state, 'cron'), { recursive: true }); await fs.mkdir(bin, { recursive: true });
+  await fs.writeFile(path.join(state, 'config.yaml'), 'name: Fixture');
+  const file = path.join(state, 'cron/jobs.json');
+  const job = { id: 'fixture', name: 'Reminder', prompt: 'Take a break', schedule: { kind: 'interval', minutes: 60 }, enabled: true };
+  await fs.writeFile(file, JSON.stringify({ jobs: [job] }));
+  await fs.writeFile(path.join(bin, 'hermes'), `#!${process.execPath}
+const fs = require('node:fs'), path = require('node:path');
+const file = path.join(process.env.HERMES_HOME, 'cron/jobs.json');
+const data = JSON.parse(fs.readFileSync(file,'utf8'));
+const job = data.jobs.find(job => job.id === process.argv[4]);
+if (process.argv[2] !== 'cron' || !job) process.exit(2);
+job.enabled = process.argv[3] === 'resume';
+fs.writeFileSync(file, JSON.stringify(data));
+`, { mode: 0o700 });
+  const readers = { home: root, env: {}, readCronDatabase: async () => [] };
+  const [source] = await discoverImportSources(readers);
+  const snapshot = await inspectImportSource(source!, readers); const item = snapshot.items.find(item => item.automation)!;
+  await changeSourceAutomationState(source!, item, false, readers, () => {});
+  expect(JSON.parse(await fs.readFile(file, 'utf8')).jobs[0].enabled).toBe(false);
+  await changeSourceAutomationState(source!, item, false, readers, () => {}, true);
+  await changeSourceAutomationState(source!, item, true, readers, () => {});
+  expect(JSON.parse(await fs.readFile(file, 'utf8')).jobs[0].enabled).toBe(true);
+  await fs.writeFile(file, JSON.stringify({ jobs: [{ ...job, prompt: 'User changed the task' }] }));
+  await expect(changeSourceAutomationState(source!, item, false, readers, () => {})).rejects.toThrow('SOURCE_AUTOMATION_CHANGED');
+});

@@ -1,3 +1,4 @@
+import { mergeSessionEnvironment } from '../shared/session-environment.js';
 /**
  * CodexAgent — 路线 A 完整版 (Phase 1+2+3+4 全打通)。
  *
@@ -511,12 +512,13 @@ function localSessionHostIdentity(input: {
   customContext: boolean;
   storage?: { sqliteHome: string; historyHome: string };
   policy: 'isolated' | 'legacy-shared';
+  environmentIdentity?: string;
 }): string {
   const base = input.accountSessionHost
     ? `local-account:${input.accountProviderId ?? 'openai'}:session:${input.sessionId}`
     : input.reviewMode ? localReviewHostKey(input.sessionId)
       : input.customContext ? localCustomContextHostKey(input.sessionId) : hostKey(input.remoteHostId);
-  return codexLocalAuthHostIdentity(base + (input.storage
+  return codexLocalAuthHostIdentity(base + (input.environmentIdentity ? `:environment:${input.environmentIdentity}` : '') + (input.storage
     ? `:storage:${input.storage.sqliteHome}:history:${input.storage.historyHome}` : ''), input.policy);
 }
 
@@ -2483,6 +2485,7 @@ export class CodexAgent extends BaseAgent {
       customContextWindow?: number;
       sqliteHome?: string;
       historyHome?: string;
+      environment?: Record<string, string>;
     } = {},
   ): Promise<AppServerHost> {
     const key = opts.keyOverride ?? (opts.providerId ? `local-account:${opts.providerId}` : hostKey(remoteHostId));
@@ -2706,6 +2709,7 @@ assertRouteCurrent();
         opts.historyHome,
         opts.localAuthPolicy,
         opts.routeIsCurrent,
+        opts.environment,
       ).finally(() => {
         // 成功: this.hosts 已赋值, 后续走快路径; 失败: 清掉 promise 让下次调用能重试
         const current = this.hostPromises.get(key);
@@ -2953,6 +2957,7 @@ assertRouteCurrent();
     historyHome?: string,
     localAuthPolicy?: 'isolated' | 'legacy-shared',
     routeIsCurrent?: () => boolean,
+    environment?: Record<string, string>,
   ): Promise<AppServerHost> {
     const seq = (this.createHostSeqByKey.get(key) ?? 0) + 1;
     this.createHostSeqByKey.set(key, seq);
@@ -3045,7 +3050,7 @@ assertRouteCurrent();
       }
       effectiveMode =
         spawnCredentialMode ?? resolveEffectiveCredentialModeFromAuthSource(undefined, state.authSource);
-      env = await buildCodexEnv(this.deps.auth, this.deps.runtimeConfig, authOptions);
+      env = mergeSessionEnvironment(await buildCodexEnv(this.deps.auth, this.deps.runtimeConfig, authOptions), environment);
       assertCurrentGeneration('env');
 
       extraArgs = [...baseExtraArgs];
@@ -4974,9 +4979,12 @@ assertRouteCurrent();
       ? await this.deps.resolveCodexThreadStorage?.(opts.resumeSessionId)
       : undefined;
     const sessionSqliteHome = sessionStorage?.sqliteHome;
+    const companionEnvironment = opts.botRuntimeProfile && !opts.remoteHostId && sid
+      ? await this.deps.resolveSessionEnvironment?.(sid) : undefined;
     const resolveSessionHostKey = (): string => localSessionHostIdentity({
       sessionId: sid, remoteHostId: opts.remoteHostId, accountSessionHost, accountProviderId,
       reviewMode, customContext: usesCustomContextHost, storage: sessionStorage, policy: localAuthPolicy,
+      environmentIdentity: companionEnvironment?.identity,
     });
     let currentHostKey = resolveSessionHostKey();
     let releaseHostBindingLease: (() => void) | null = null;
@@ -4998,12 +5006,13 @@ assertRouteCurrent();
       if (!routeSelection.isCurrent()) throw new CodexRouteSelectionChangedError();
       acquireHostBindingLeaseIfNeeded();
       return await this.getHost(opts.remoteHostId, credentialMode, {
+        ...(companionEnvironment ? { keyOverride: currentHostKey, environment: companionEnvironment.env } : {}),
         ...(accountProviderId ? { providerId: accountProviderId } : {}),
         ...(sessionSqliteHome ? { sqliteHome: sessionSqliteHome } : {}),
         ...(sessionStorage ? { historyHome: sessionStorage.historyHome } : {}),
         ...(accountSessionHost || reviewMode || usesCustomContextHost || sessionSqliteHome ? { keyOverride: currentHostKey } : {}),
         ignoreBindingLeases: 1,
-        routeIsCurrent: routeSelection.isCurrent,
+        routeIsCurrent: () => { companionEnvironment?.assertCurrent?.(); return routeSelection.isCurrent(); },
         routeSignal: startupRouteSignal,
         ...(localAuthPolicy === 'isolated' || reviewMode || usesCustomContextHost
           ? { keyOverride: currentHostKey }
@@ -14620,12 +14629,14 @@ assertRouteCurrent();
         : await this.deps.resolveCodexThreadContextWindow?.(opts.providerId, opts.model);
       const accountProviderId = this.deps.isCodexAccountProvider?.(opts.providerId) ? opts.providerId! : undefined;
       const storage = await this.deps.resolveCodexThreadStorage?.(opts.threadId);
+      const companionEnvironment = opts.sessionId
+        ? await this.deps.resolveSessionEnvironment?.(opts.sessionId) : undefined;
       const targetKey = localSessionHostIdentity({
         sessionId: opts.sessionId ?? '', accountProviderId,
         accountSessionHost: accountProviderId !== undefined || this.deps.isolateCodexAccountSessions === true,
         reviewMode: opts.reviewMode === true,
         customContext: typeof contextWindow === 'number' && Number.isFinite(contextWindow) && contextWindow > 0,
-        storage, policy: selection.policy,
+        storage, policy: selection.policy, environmentIdentity: companionEnvironment?.identity,
       });
       if (!selection.isCurrent()) throw new CodexRouteSelectionChangedError();
       for (const [key, host] of hosts) {

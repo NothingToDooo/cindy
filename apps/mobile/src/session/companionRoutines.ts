@@ -8,7 +8,8 @@ export function getRoutineActionId(resource: RemoteResource | null, operation: s
 
 export type RoutineTrigger =
   | { id: string; kind: 'cron'; expression: string; timezone: string }
-  | { id: string; kind: 'interval'; intervalMs: number }
+  | { id: string; kind: 'interval'; intervalMs: number; anchorMs?: number }
+  | { id: string; kind: 'once'; at: number }
   | { id: string; kind: 'event'; sourceId: string; eventType: string; filters: { field: string; operator: 'equals' | 'contains' | 'not-equals'; value: string }[] };
 export interface RoutineDefinition { name: string; prompt: string; enabled: boolean; triggers: RoutineTrigger[]; silentWhenIdle?: boolean; preRunHook?: { command: string; timeoutMs?: number } | null }
 export interface RoutineSummary { id: string; name: string; enabled: boolean; revision: number; activity?: 'queued' | 'running'; triggers: Array<Record<string, unknown>> }
@@ -28,7 +29,8 @@ export function parseRoutineDefinition(raw: unknown): RoutineDefinition | null {
     const r = record(rawTrigger);
     if (!r || !bounded(r.id, 128)) return null;
     if (r.kind === 'cron' && bounded(r.expression, 128) && bounded(r.timezone, 128)) triggers.push({ id: r.id, kind: 'cron', expression: r.expression, timezone: r.timezone });
-    else if (r.kind === 'interval' && Number.isSafeInteger(r.intervalMs) && Number(r.intervalMs) >= 60_000) triggers.push({ id: r.id, kind: 'interval', intervalMs: Number(r.intervalMs) });
+    else if (r.kind === 'interval' && Number.isSafeInteger(r.intervalMs) && Number(r.intervalMs) >= 60_000) triggers.push({ id: r.id, kind: 'interval', intervalMs: Number(r.intervalMs), ...(Number.isSafeInteger(r.anchorMs) ? { anchorMs: Number(r.anchorMs) } : {}) });
+    else if (r.kind === 'once' && Number.isSafeInteger(r.at) && Number(r.at) > 0) triggers.push({ id: r.id, kind: 'once', at: Number(r.at) });
     else if (r.kind === 'event' && bounded(r.sourceId) && bounded(r.eventType) && Array.isArray(r.filters) && r.filters.length <= 16) {
       const filters: Extract<RoutineTrigger, { kind: 'event' }>['filters'] = [];
       for (const rawFilter of r.filters) {
