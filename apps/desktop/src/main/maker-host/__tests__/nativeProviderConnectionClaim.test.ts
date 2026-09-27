@@ -26,6 +26,8 @@ const h = vi.hoisted(() => ({
   refreshXaiMediaModels: vi.fn(async () => true),
   loadAnthropicDiskCache: vi.fn(async () => {}),
   requestAnthropicModelProbe: vi.fn(),
+  hasAnthropicModels: true,
+  refreshAnthropicModelsFromProbe: vi.fn(async () => true),
   codexLoginWithSideEffects: vi.fn(async () => false),
   codexLoginReadOnly: vi.fn(() => false),
 }));
@@ -75,6 +77,8 @@ vi.mock('../grok-oauth-login.js', () => ({
 vi.mock('../model-discovery/anthropic.js', () => ({
   loadAnthropicModelsFromDiskCache: h.loadAnthropicDiskCache,
   requestAnthropicModelProbe: h.requestAnthropicModelProbe,
+  hasAnthropicDiscoveredModels: () => h.hasAnthropicModels,
+  refreshAnthropicModelsFromProbe: h.refreshAnthropicModelsFromProbe,
 }));
 vi.mock('../model-discovery/xai.js', () => ({
   clearXaiDiscoveredModels: vi.fn(),
@@ -167,6 +171,8 @@ beforeEach(() => {
   h.refreshXaiMediaModels.mockClear();
   h.loadAnthropicDiskCache.mockClear();
   h.requestAnthropicModelProbe.mockClear();
+  h.hasAnthropicModels = true;
+  h.refreshAnthropicModelsFromProbe.mockClear();
   h.codexLoginWithSideEffects.mockClear();
   h.codexLoginReadOnly.mockClear();
 });
@@ -255,6 +261,49 @@ describe('native provider connection claim on read', () => {
     expect(
       providers.find((provider) => provider.id === 'anthropic')?.models['claude-code'],
     ).toEqual([cachedModel]);
+  });
+
+  it('首次认领且没有缓存时,waitForDiscovery 要等主动读取清单完成再返回', async () => {
+    h.hasAnthropicModels = false;
+    const anthropic = BUNDLED_CATALOG.providers.find((provider) => provider.id === 'anthropic')!;
+    const modelSeed = BUNDLED_CATALOG.providers.find((provider) => provider.id === 'xd')!.models[
+      'claude-code'
+    ]![0]!;
+    const probedModel = { ...modelSeed, id: 'claude-probed', name: 'Claude Probed' };
+    let releaseProbe!: () => void;
+    h.refreshAnthropicModelsFromProbe.mockImplementationOnce(
+      () =>
+        new Promise<boolean>((resolve) => {
+          releaseProbe = () => {
+            h.catalog = {
+              ...BUNDLED_CATALOG,
+              providers: BUNDLED_CATALOG.providers.map((provider) =>
+                provider.id === anthropic.id
+                  ? { ...provider, models: { ...provider.models, 'claude-code': [probedModel] } }
+                  : provider,
+              ),
+            };
+            resolve(true);
+          };
+        }),
+    );
+
+    let settled = false;
+    const providersPromise = listProviders(true, true).then((providers) => {
+      settled = true;
+      return providers;
+    });
+
+    await vi.waitFor(() => expect(h.refreshAnthropicModelsFromProbe).toHaveBeenCalledTimes(1));
+    const settledBeforeProbe = settled;
+    releaseProbe();
+
+    const providers = await providersPromise;
+    expect(settledBeforeProbe).toBe(false);
+    expect(h.requestAnthropicModelProbe).not.toHaveBeenCalled();
+    expect(
+      providers.find((provider) => provider.id === 'anthropic')?.models['claude-code'],
+    ).toEqual([probedModel]);
   });
 
   it('普通可信 provider read 不等待首次磁盘清单补载，先返回 connected', async () => {

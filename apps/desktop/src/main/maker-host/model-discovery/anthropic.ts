@@ -724,6 +724,11 @@ export function refreshAnthropicModelsFromProbe(): Promise<boolean> {
   return promise;
 }
 
+/** 当前是否已有可用的 Anthropic 清单(磁盘缓存恢复或 SDK 捕获)。 */
+export function hasAnthropicDiscoveredModels(): boolean {
+  return lastApplied.length > 0;
+}
+
 /** 后台请求一次主动探测;失败只记日志。 */
 export function requestAnthropicModelProbe(): void {
   void refreshAnthropicModelsFromProbe().then(

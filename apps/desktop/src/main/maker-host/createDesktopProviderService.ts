@@ -69,7 +69,9 @@ import {
   readCodexDiscoveredModelsForAuthRefresh,
 } from './codex-model-discovery.js';
 import {
+  hasAnthropicDiscoveredModels,
   loadAnthropicModelsFromDiskCache,
+  refreshAnthropicModelsFromProbe,
   requestAnthropicModelProbe,
 } from './model-discovery/anthropic.js';
 import {
@@ -929,9 +931,12 @@ function refreshAnthropicCatalogAfterClaim(): Promise<void> {
 
   const flight = (async () => {
     // 启动期的磁盘清单加载可能因尚未绑定而早退,认领后补一次;失败保留已有目录,
-    // 不把连接态读取整条打穿。随后后台主动读一次 SDK 清单(新账号可能没有缓存)。
+    // 不把连接态读取整条打穿。成员只来自 SDK 清单:有缓存时后台刷新即可;没有缓存时
+    // 要等主动读取完成,否则 waitForDiscovery 的调用方(Orca 路由、定时任务解析)会拿到
+    // 空目录。读取失败同样不打穿连接态读取。
     await loadAnthropicModelsFromDiskCache().catch(() => undefined);
-    requestAnthropicModelProbe();
+    if (hasAnthropicDiscoveredModels()) requestAnthropicModelProbe();
+    else await refreshAnthropicModelsFromProbe().catch(() => false);
   })();
   anthropicClaimDiscoveryInflight = flight;
   const clear = () => {
