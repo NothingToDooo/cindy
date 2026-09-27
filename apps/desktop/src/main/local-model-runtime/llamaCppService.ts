@@ -29,6 +29,7 @@ import {
 } from '../../shared/llamaCpp.js';
 import {
   downloadLlamaCppAsset,
+  LlamaCppResumeReadError,
   hfDownloadUrl,
   llamaCppPlatform,
   resolveHfRepository,
@@ -353,6 +354,9 @@ export function createLlamaCppService(
               );
               break;
             } catch (error) {
+              // Reuse the paused operation so neither this loop nor its outer cleanup
+              // discards an unreadable prefix. Only an explicit resume retries it.
+              if (!signal.aborted && error instanceof LlamaCppResumeReadError) pause();
               if (signal.aborted || attempt.signal.reason !== 'DOWNLOAD_PAUSED') throw error;
             } finally {
               transfer = undefined;

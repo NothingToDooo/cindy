@@ -91,6 +91,13 @@ export async function resolveLlamaCppRelease(signal: AbortSignal): Promise<Llama
   return pickLlamaCppRelease(await res.json(), process.platform, process.arch);
 }
 
+/** Existing prefix could not be read; the owner must retain its paused download. */
+export class LlamaCppResumeReadError extends Error {
+  constructor(cause: unknown) {
+    super('DOWNLOAD_RESUME_READ_FAILED', { cause });
+  }
+}
+
 /** Stream to a staging file; no unverified or partial bytes become an installed asset. */
 export async function downloadLlamaCppAsset(
   asset: DownloadAsset,
@@ -110,11 +117,15 @@ export async function downloadLlamaCppAsset(
     clearTimeout(idleTimer);
     idleTimer = setTimeout(() => stalled.abort(new Error('DOWNLOAD_TIMEOUT')), 120_000);
   };
+  let preservePrefix = false;
   try {
     let offset = resume
       ? await stat(partial).then(
           (s) => s.size,
-          () => 0,
+          (error: NodeJS.ErrnoException) => {
+            if (error.code === 'ENOENT') return 0;
+            throw new LlamaCppResumeReadError(error);
+          },
         )
       : 0;
     if (offset > asset.size) {
@@ -123,10 +134,15 @@ export async function downloadLlamaCppAsset(
     }
     const hash = createHash('sha256');
     if (offset) {
-      for await (const chunk of createReadStream(partial)) {
-        signal.throwIfAborted();
-        resetIdle();
-        hash.update(chunk);
+      try {
+        for await (const chunk of createReadStream(partial)) {
+          signal.throwIfAborted();
+          resetIdle();
+          hash.update(chunk);
+        }
+      } catch (error) {
+        if (signal.aborted) throw error;
+        throw new LlamaCppResumeReadError(error);
       }
       progress(offset);
     }
@@ -194,9 +210,13 @@ export async function downloadLlamaCppAsset(
       throw new Error('DOWNLOAD_CHECKSUM');
     signal.throwIfAborted();
     await rename(partial, destination);
+  } catch (error) {
+    preservePrefix = error instanceof LlamaCppResumeReadError;
+    throw error;
   } finally {
     clearTimeout(idleTimer);
-    if (parentSignal.reason !== 'DOWNLOAD_PAUSED') await rm(partial, { force: true });
+    if (!preservePrefix && parentSignal.reason !== 'DOWNLOAD_PAUSED')
+      await rm(partial, { force: true });
   }
 }
 

@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
+import { Readable } from 'node:stream';
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -12,8 +13,65 @@ import {
 } from '../llamaCppDownloads.js';
 import { validLlamaCppFile, validLlamaCppRepo } from '../../../shared/llamaCpp.js';
 
+const fsMocks = vi.hoisted(() => ({ stat: vi.fn(), readStream: vi.fn() }));
+vi.mock('node:fs', async (original) => ({
+  ...(await original<typeof import('node:fs')>()),
+  createReadStream: fsMocks.readStream,
+}));
+vi.mock('node:fs/promises', async (original) => ({
+  ...(await original<typeof import('node:fs/promises')>()),
+  stat: fsMocks.stat,
+}));
+beforeEach(async () => {
+  const fs = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+  fsMocks.stat.mockImplementation(fs.stat);
+  const syncFs = await vi.importActual<typeof import('node:fs')>('node:fs');
+  fsMocks.readStream.mockImplementation(syncFs.createReadStream);
+});
 afterEach(() => vi.unstubAllGlobals());
 describe('managed llama.cpp downloads', () => {
+  it.each(['EACCES', 'EPERM', 'EIO', 'READ_EIO'])(
+    'retains a paused prefix when stat fails with %s',
+    async (code) => {
+      const dir = await mkdtemp(path.join(os.tmpdir(), 'cindy-resume-io-'));
+      const dest = path.join(dir, 'model.gguf');
+      const bytes = Buffer.from('saved prefix');
+      try {
+        await writeFile(`${dest}.partial`, bytes);
+        const error = Object.assign(new Error(code), { code });
+        if (code === 'READ_EIO')
+          fsMocks.readStream.mockImplementationOnce(
+            () =>
+              new Readable({
+                read() {
+                  this.destroy(error);
+                },
+              }),
+          );
+        else fsMocks.stat.mockRejectedValueOnce(error);
+        const fetchMock = vi.fn();
+        vi.stubGlobal('fetch', fetchMock);
+        await expect(
+          downloadLlamaCppAsset(
+            {
+              url: 'https://huggingface.co/owner/repo/resolve/main/model.gguf',
+              size: 100,
+              sha256: '',
+            },
+            dest,
+            'hf',
+            new AbortController().signal,
+            () => {},
+            true,
+          ),
+        ).rejects.toThrow('DOWNLOAD_RESUME_READ_FAILED');
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(await readFile(`${dest}.partial`)).toEqual(bytes);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
   it.each([true, false])(
     'resumes and verifies a saved prefix (server honors Range: %s)',
     async (honorsRange) => {

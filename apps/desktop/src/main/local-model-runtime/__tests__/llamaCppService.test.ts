@@ -55,6 +55,7 @@ vi.mock('../llamaCppDownloads.js', async (importOriginal) => ({
   resolveHfRepository: mocks.resolve,
   resolveLlamaCppRelease: mocks.release,
 }));
+import { LlamaCppResumeReadError } from '../llamaCppDownloads.js';
 import { createLlamaCppService, managedModelId } from '../llamaCppService.js';
 
 let root: string;
@@ -752,6 +753,38 @@ describe('managed llama.cpp model lifecycle', () => {
     expect((await first.snapshot()).models).toHaveLength(1);
     expect(await readdir(path.join(root, 'llamacpp-runtime'))).toEqual(['models']);
   });
+  it.each(['resume', 'cancel'] as const)(
+    'keeps unreadable prefix staged until explicit %s',
+    async (action) => {
+      const service = createLlamaCppService(root);
+      let prefix = '';
+      mocks.download.mockImplementationOnce(async (_asset, dest) => {
+        prefix = `${dest}.partial`;
+        await writeFile(prefix, 'saved bytes');
+        throw new LlamaCppResumeReadError(Object.assign(new Error('EIO'), { code: 'EIO' }));
+      });
+      const running = service.download({ repo: 'owner/repo', file: 'model.gguf' });
+      const settled = running.then(
+        () => 'complete',
+        () => 'cancelled',
+      );
+      await vi.waitFor(async () => expect((await service.snapshot()).operation?.paused).toBe(true));
+      expect(await readFile(prefix, 'utf8')).toBe('saved bytes');
+      expect(mocks.download).toHaveBeenCalledTimes(1);
+      if (action === 'resume') {
+        service.resume();
+        expect(await settled).toBe('complete');
+      } else {
+        service.cancel();
+        expect(await settled).toBe('cancelled');
+      }
+      expect(
+        (await readdir(path.join(root, 'llamacpp-runtime'))).some((name) =>
+          name.startsWith('model-download-'),
+        ),
+      ).toBe(false);
+    },
+  );
   it.each(['resume', 'cancel'] as const)(
     'settles a paused download through %s without publishing partial files',
     async (action) => {

@@ -73,7 +73,7 @@ import type {
 } from '@cindy/model-providers';
 
 import { isLocalRuntimeBetaProviderId, isManagedSidecarProviderId, MANAGED_OLLAMA_PROVIDER_ID } from '../../../shared/localModelRuntime';
-import { MANAGED_LLAMACPP_PROVIDER_ID, supportsLlamaCppMillionContext } from '../../../shared/llamaCpp';
+import { MANAGED_LLAMACPP_PROVIDER_ID, supportsLlamaCppMillionContext, llamaCppMaxContextSize } from '../../../shared/llamaCpp';
 import { modelBrand } from './modelManagementPresentation';
 import { ModelPriceOverrideDialog } from './ModelPriceOverrideDialog';
 import type { UnionModelRow } from './UnifiedModelList';
@@ -238,25 +238,26 @@ export function ModelAdvancedDrawer({
           : agent === 'pi',
     ) ?? primaryCandidates?.[0] ?? null;
   const primaryModel = row && primaryAgent ? (row.byAgent[primaryAgent] ?? null) : null;
-  const [millionContextModelId, setMillionContextModelId] = useState<string | null>(null);
+  const [localModelRepo, setLocalModelRepo] = useState<{ id: string; repo: string } | null>(null);
   const [localConfigurationBlocked, setLocalConfigurationBlocked] = useState(false);
   useEffect(() => {
     let active = true;
-    setMillionContextModelId(null);
+    setLocalModelRepo(null);
     setLocalConfigurationBlocked(false);
     if (open && provider.id === MANAGED_LLAMACPP_PROVIDER_ID && primaryModel) {
       const modelId = primaryModel.id;
       void window.electronAPI.maker.llamaCppStatus().then((snapshot) => {
         if (active) setLocalConfigurationBlocked(snapshot.canConfigure === false);
-        if (active && snapshot.models.some((model) => model.id === modelId && supportsLlamaCppMillionContext(model))) {
-          setMillionContextModelId(modelId);
-        }
+        if (active) setLocalModelRepo(snapshot.models.find((model) => model.id === modelId) ?? null);
       }).catch(() => {});
     }
     return () => { active = false; };
   }, [open, provider.id, primaryModel?.id]);
   const supportsMillionContext = provider.id === MANAGED_LLAMACPP_PROVIDER_ID &&
-    !!primaryModel && millionContextModelId === primaryModel.id;
+    !!primaryModel && localModelRepo?.id === primaryModel.id && supportsLlamaCppMillionContext(localModelRepo);
+  const maximumContext = provider.id === MANAGED_LLAMACPP_PROVIDER_ID
+    ? llamaCppMaxContextSize(localModelRepo?.id === primaryModel?.id && localModelRepo ? localModelRepo : { repo: '' })
+    : 100_000_000;
 
   const contextAgent = primaryAgent && chatAgents.includes(primaryAgent) ? primaryAgent : null;
   const contextModel = contextAgent ? row?.byAgent[contextAgent] : null;
@@ -333,7 +334,7 @@ export function ModelAdvancedDrawer({
   const parsedTokens = parsedK * 1000;
   const ctxInvalid =
     ctxDirtyRef.current && ctxDraft.trim() !== '' &&
-    (!Number.isSafeInteger(parsedK) || parsedK < minimumContextK || parsedTokens > (supportsMillionContext ? 1_000_000 : 100_000_000));
+    (!Number.isSafeInteger(parsedK) || parsedK < minimumContextK || parsedTokens > maximumContext);
   const commitCtxDraft = useCallback(() => {
     if (!ctxDirtyRef.current || ctxInvalid || ctx.loading || localConfigurationBlocked) return;
     ctxDirtyRef.current = false;

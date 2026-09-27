@@ -100,6 +100,28 @@ beforeEach(() => {
 });
 
 describe('model advanced editor', () => {
+  it('rejects ordinary managed GGUF edits above the backend maximum', async () => {
+    const previous = window.electronAPI;
+    Object.defineProperty(window, 'electronAPI', { configurable: true, value: { maker: {
+      llamaCppStatus: vi.fn(async () => ({ canConfigure: true, models: [{ id: 'small', repo: 'owner/small' }] })),
+    } } });
+    try {
+      const source = { ...buildUserProvider({ id: 'cindy-local-llamacpp', name: 'llama.cpp', runtimes: {
+        pi: { baseUrl: 'http://127.0.0.1:11435/v1', wireProtocol: 'openai-chat', models: [{ id: 'small', name: 'Small', contextWindow: 32768 }] },
+      } }), connected: true } as ProviderView;
+      const primary = source.models.pi![0]!;
+      render(<ModelAdvancedDrawer provider={source} row={{ id: primary.id, name: primary.name, avail: ['pi'], byAgent: { pi: primary } }} open onOpenChange={vi.fn()} pricePresentationOf={() => null} onDisable={vi.fn()} disabled={false} paymentRequired={false} />);
+      const input = screen.getByRole('textbox', { name: 'settings.providers.models.advanced.contextLimitAria' });
+      await waitFor(() => expect(window.electronAPI.maker.llamaCppStatus).toHaveBeenCalled());
+      fireEvent.change(input, { target: { value: '64' } });
+      expect(input.getAttribute('aria-invalid')).toBe('true');
+      fireEvent.blur(input);
+      expect(mocks.setLimit).not.toHaveBeenCalled();
+      fireEvent.change(input, { target: { value: '32' } });
+      fireEvent.blur(input);
+      expect(mocks.setLimit).toHaveBeenLastCalledWith(32000);
+    } finally { cleanup(); Object.defineProperty(window, 'electronAPI', { configurable: true, value: previous }); }
+  });
   it.each([true, false])('gates local context configuration with capability %s', async (canConfigure) => {
     const previous = window.electronAPI;
     Object.defineProperty(window, 'electronAPI', { configurable: true, value: { maker: {
