@@ -91,6 +91,9 @@ export async function readOrcaWorkerCreationPrefs(scope: string): Promise<OrcaWo
       // 损坏的记忆按首次默认值处理。
     }
   }
+  // 读取期间用户已提交并写回了新选择:以刚保存的为准,不让这次迟到的旧值覆盖。
+  const saved = memory.get(scope);
+  if (saved) return saved;
   memory.set(scope, prefs);
   return prefs;
 }

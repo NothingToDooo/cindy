@@ -54,4 +54,15 @@ describe('Worker creation preferences', () => {
     await expect(readOrcaWorkerCreationPrefs('user-1')).resolves.toEqual(next);
     await expect(readOrcaWorkerCreationPrefs('user-2')).resolves.toEqual(defaultOrcaWorkerCreationPrefs());
   });
+
+  it('keeps a choice saved while an older read was still in flight', async () => {
+    storage.set('cindy:orcaWorkerCreationPrefs:v1:user-1', JSON.stringify({
+      ...defaultOrcaWorkerCreationPrefs(), workerPermissionMode: 'bypassPermissions',
+    }));
+    const pending = readOrcaWorkerCreationPrefs('user-1');
+    const next = { ...defaultOrcaWorkerCreationPrefs(), lastAgent: 'pi' as const, workerPermissionMode: 'auto' as const };
+    saveOrcaWorkerCreationPrefs('user-1', next);
+    await expect(pending).resolves.toEqual(next);
+    await expect(readOrcaWorkerCreationPrefs('user-1')).resolves.toEqual(next);
+  });
 });
