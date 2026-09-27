@@ -242,23 +242,32 @@ export function createImChannelDefaultRouteSync(deps: {
     if (outcome === 'staged') {
       // 记登记后读回的意图与它的注册修订号 —— 系统登记时可能改道了来源;
       // 下一条消息据此认出「自己的意图」(用户重新挑过会换修订号, 不会误认)。
-      const intent = readPendingAgentSwitchRoute(sessionId);
-      if (intent) {
-        await writeRecord(
-          sessionId,
-          buildImDefaultRouteRecord(
-            e.record.fp,
-            e.record.route,
-            pendingFor(
-              {
-                agentKind: intent.agentKind,
-                model: intent.model,
-                providerId: intent.providerId,
-                effort: intent.effort ?? null,
-              },
-              intent.rev,
+      // 这次写失败也不能丢「暂缓」结论: 否则外层会继续通用意图应用, 把刚登记的
+      // 意图应用到仍在承载后台工作的会话上(PR #5155 review P1)。
+      try {
+        const intent = readPendingAgentSwitchRoute(sessionId);
+        if (intent) {
+          await writeRecord(
+            sessionId,
+            buildImDefaultRouteRecord(
+              e.record.fp,
+              e.record.route,
+              pendingFor(
+                {
+                  agentKind: intent.agentKind,
+                  model: intent.model,
+                  providerId: intent.providerId,
+                  effort: intent.effort ?? null,
+                },
+                intent.rev,
+              ),
             ),
-          ),
+          );
+        }
+      } catch (err) {
+        log.warn(
+          `default route staged claim write failed (non-fatal) session=...${sessionId.slice(-8)}: ` +
+            (err instanceof Error ? err.message : String(err)),
         );
       }
       log.info(`default route switch staged session=...${sessionId.slice(-8)} (runtime busy)`);

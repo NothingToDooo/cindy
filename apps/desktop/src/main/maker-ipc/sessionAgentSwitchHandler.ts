@@ -215,7 +215,8 @@ export interface MakerSessionAgentSwitchHandlerDeps {
   /**
    * 用户选择的路由落地(应用成功)后回调 —— 供 IM 侧给任务打「脱离跟随」标记:
    * 「单独改过」按选择行为判定, 同值重选也永久脱离跟随(greptile P1 补充, PR #5155)。
-   * 系统配置对齐(configStaged)与 Agent 自选不触发。
+   * 系统配置对齐(configStaged)与 Agent 自选不触发。**失败会抛错**: 墓碑写不进去时
+   * 意图保留、下一条消息重试, 不把用户选择当成功消费。
    */
   onUserRouteSelectionLanded?(sessionId: string): void | Promise<void>;
   log: {
@@ -769,21 +770,27 @@ export async function performSessionAgentSwitch(
  *    已进入 commit point 后若失败,则只重试其原子恢复尾段。
  */
 /**
- * 用户选择落地 → 通知调用方打「脱离跟随」标记。只认用户选择: 系统配置对齐
+ * 用户选择落地 → 给任务打「脱离跟随」标记。只认用户选择: 系统配置对齐
  * (configStaged)与 Agent 自选都由默认变化覆盖, 不得永久脱离。
+ *
+ * **先立碑再清意图**: 同值重选的唯一证据就是这份墓碑, 写入必须等成功 —— 失败抛错
+ * 让意图保留、下一条消息重试, 不得把选择当成功消费(PR #5155 review P2)。
  */
-function noteLandedUserRouteSelection(
+async function noteLandedUserRouteSelection(
   deps: MakerSessionAgentSwitchHandlerDeps,
   sessionId: string,
   intent: PendingAgentSwitchIntent,
-): void {
+): Promise<void> {
   if (intent.configStaged === true || intent.runtimeSource === 'agent') return;
-  void Promise.resolve(deps.onUserRouteSelectionLanded?.(sessionId)).catch((err) => {
+  try {
+    await deps.onUserRouteSelectionLanded?.(sessionId);
+  } catch (err) {
     deps.log.warn('failed to record landed user route selection', {
       sessionId,
       err: err instanceof Error ? err.message : String(err),
     });
-  });
+    throw err;
+  }
 }
 
 const pendingAgentSwitchApplyInFlight = new Map<string, Promise<void>>();
@@ -839,11 +846,11 @@ export function applyPendingAgentSwitchIfIdle(
         if (result.deferred || result.superseded) {
           throw new Error('model selection could not be applied before send');
         }
+        await noteLandedUserRouteSelection(deps, sessionId, intent);
         if (deps.pendingSwitches?.get(sessionId) === intent) {
           deps.pendingSwitches.clear(sessionId);
           deps.onPendingSwitchChanged?.(sessionId, null);
         }
-        noteLandedUserRouteSelection(deps, sessionId, intent);
         throwIfAgentSwitchAborted(opts?.signal);
         if (opts?.bootstrapAfterSwitch && !deps.getLiveSession(sessionId)) {
           await deps.bootstrapSwitchedSession(sessionId);
@@ -867,11 +874,11 @@ export function applyPendingAgentSwitchIfIdle(
           recovery.boundaryContent,
         );
         deps.setPendingHandoff(sessionId, recovery.handoff, recoveryHandoffGeneration);
+        await noteLandedUserRouteSelection(deps, sessionId, intent);
         if (deps.pendingSwitches?.get(sessionId) === intent) {
           deps.pendingSwitches.clear(sessionId);
           deps.onPendingSwitchChanged?.(sessionId, null);
         }
-        noteLandedUserRouteSelection(deps, sessionId, intent);
         return;
       }
       const result = await performSessionAgentSwitch(deps, {
@@ -893,10 +900,16 @@ export function applyPendingAgentSwitchIfIdle(
         throw new Error('Harness switch recovery is pending; retry the send after recovery');
       }
       // CAS 语义:执行期间用户可能又选了另一个目标,不能把新意图一起清掉。
-      if (!result.retryPending && deps.pendingSwitches?.get(sessionId) === intent) {
-        deps.pendingSwitches.clear(sessionId);
-        deps.onPendingSwitchChanged?.(sessionId, null);
-        noteLandedUserRouteSelection(deps, sessionId, intent);
+      if (!result.retryPending) {
+        // 同引擎 CAS 超车(sameEngineSuperseded)= 这次选择没落地, 不立碑。
+        if (result.sameEngineSuperseded !== true) {
+          await noteLandedUserRouteSelection(deps, sessionId, intent);
+        }
+        // CAS 语义:执行期间用户可能又选了另一个目标,不能把新意图一起清掉。
+        if (deps.pendingSwitches?.get(sessionId) === intent) {
+          deps.pendingSwitches.clear(sessionId);
+          deps.onPendingSwitchChanged?.(sessionId, null);
+        }
       }
       // Once the switch has committed, the intent has been consumed even if
       // cancellation arrived during the final bootstrap step.  The caller's

@@ -1110,4 +1110,32 @@ describe('landed user route selection', () => {
     await applyPendingAgentSwitchIfIdle(h.deps, 's1');
     expect(h.landed).toEqual([]);
   });
+
+  it('keeps the intent when the manual-override marker cannot be persisted', async () => {
+    // 同值重选的唯一证据就是墓碑: 写入失败不得把选择当成功消费 —— 意图保留、
+    // 下一条消息重试(PR #5155 review P2)。
+    const pending = createPendingAgentSwitchRegistry();
+    const { deps } = makeDeps({
+      pendingSwitches: pending,
+      selectSameAgentModel: async (id, choice, applyNow) => {
+        if (!applyNow) {
+          pending.set(id, choice);
+          return { deferred: true };
+        }
+        return { deferred: false };
+      },
+      onUserRouteSelectionLanded: async () => {
+        throw new Error('db closed');
+      },
+    });
+    await performSessionAgentSwitch(deps, {
+      sessionId: 's1',
+      targetAgentKind: 'claude-code',
+      model: 'claude-fable-5',
+      providerId: 'xd',
+    });
+
+    await expect(applyPendingAgentSwitchIfIdle(deps, 's1')).rejects.toThrow('db closed');
+    expect(pending.get('s1')).toBeDefined();
+  });
 });

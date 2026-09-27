@@ -214,6 +214,19 @@ describe('syncUnderLock', () => {
     expect(mocks.applyRoute).toHaveBeenCalledWith('t1', { ...NEW, fastMode: true }, 'claude-code');
   });
 
+  it('still defers the generic apply when the staged claim write fails', async () => {
+    // 登记后声称的落库瞬时失败不能丢「暂缓」信号, 否则外层通用意图应用会把刚登记
+    // 的意图应用到仍在承载后台工作的会话上(PR #5155 review P1)。
+    await insertTask('t1', OLD);
+    mocks.readPendingRoute.mockReturnValueOnce(undefined).mockReturnValue(NEW);
+    mocks.applyRoute.mockImplementation(async () => {
+      db = { update: () => { throw new Error('db closed') } } as never;
+      return 'staged';
+    });
+
+    await expect(sync().syncUnderLock('t1')).resolves.toBe(true);
+  });
+
   it('remembers the staged intent as registered, then does not re-register it', async () => {
     await insertTask('t1', OLD);
     const rerouted: ImDefaultRoute = { ...NEW, providerId: 'openai-copy' };
