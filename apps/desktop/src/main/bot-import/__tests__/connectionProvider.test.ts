@@ -58,7 +58,7 @@ it('restores advertised enum, const and default values at the upstream call boun
   const connection = { name: 'stage', url: 'https://example.invalid/mcp' };
   const tool: Tool = { name: 'read_stage', inputSchema: { type: 'object', properties: {
     stage: { type: 'string', enum: ['prod', 'test'] },
-    nested: { type: 'array', items: { type: 'object', properties: { fixed: { const: 'prod' }, fallback: { default: 'prefix-prod' } } } },
+    nested: { type: 'array', items: { type: 'object', properties: { fixed: { const: 'prod' }, fallback: { default: 'prefix-prod' }, note: { type: 'string' } } } },
     free: { type: 'string' },
   } } };
   const callTool = vi.fn(async () => ({ content: [{ type: 'text', text: 'ok' }] }));
@@ -75,10 +75,11 @@ it('restores advertised enum, const and default values at the upstream call boun
     expect(properties.stage.enum[0]).not.toBe('prod');
     expect(nested.fixed.const).not.toBe('prod');
     expect(nested.fallback.default).not.toBe('prefix-prod');
-    const args = { stage: properties.stage.enum[0], nested: [{ fixed: nested.fixed.const, fallback: nested.fallback.default }], free: '[PRIVATE]' };
+    const alias = properties.stage.enum[0]!;
+    const args = { stage: alias, nested: [{ fixed: nested.fixed.const, fallback: nested.fallback.default, note: alias }], free: alias, extra: '[PRIVATE]' };
     const result = await client.callTool({ name: published.name, arguments: args });
     expect(result.isError).not.toBe(true);
-    expect(callTool).toHaveBeenCalledWith({ name: 'read_stage', arguments: { stage: 'prod', nested: [{ fixed: 'prod', fallback: 'prefix-prod' }], free: '[PRIVATE]' } }, undefined, { timeout: 120000 });
+    expect(callTool).toHaveBeenCalledWith({ name: 'read_stage', arguments: { stage: 'prod', nested: [{ fixed: 'prod', fallback: 'prefix-prod', note: alias }], free: alias, extra: '[PRIVATE]' } }, undefined, { timeout: 120000 });
     expect(args.stage).toBe(properties.stage.enum[0]);
   } finally { imported.mockRestore(); await client.close(); await config.instance.close(); }
 });
@@ -126,6 +127,31 @@ it('preserves schema keywords while masking same-named properties and forwarding
 it('refuses ambiguous scalar aliases and never expands arbitrary secret placeholders or schema descriptions', () => {
   expect(() => restoreImportedArguments({ stage: '[STAGE]' }, { enum: ['prod', '[STAGE]'] }, { STAGE: 'prod' })).toThrow('Ambiguous imported schema');
   expect(restoreImportedArguments({ value: '[PRIVATE]', enum: '[PRIVATE]' }, { properties: { enum: { description: 'key' } } }, { PRIVATE: 'key' })).toEqual({ value: '[PRIVATE]', enum: '[PRIVATE]' });
+});
+
+it('keeps literal and property aliases local through references, tuples and dictionary arguments', () => {
+  const schema = { $defs: { mode: { enum: ['prod'] } }, properties: {
+    rows: { items: { properties: { mode: { $ref: '#/$defs/mode' }, note: { type: 'string' } } } },
+    tuple: { prefixItems: [{ const: 'prod' }, { type: 'string' }] },
+    legacyTuple: { items: [{ default: 'prod' }, { type: 'string' }] },
+    modes: { additionalProperties: { $ref: '#/$defs/mode' } },
+    notes: { additionalProperties: { type: 'string' } },
+    fixed: { const: { prod: 'prod', note: '[STAGE]' } },
+  } };
+  const args = { rows: [{ mode: '[STAGE]', note: '[STAGE]' }], tuple: ['[STAGE]', '[STAGE]'], legacyTuple: ['[STAGE]', '[STAGE]'],
+    modes: { a: '[STAGE]' }, notes: { '[STAGE]': '[STAGE]' }, fixed: { '[STAGE]': '[STAGE]', note: '[STAGE]' } };
+  const original = structuredClone(args);
+  expect(restoreImportedArguments(args, schema, { STAGE: 'prod' })).toEqual({
+    rows: [{ mode: 'prod', note: '[STAGE]' }], tuple: ['prod', '[STAGE]'], legacyTuple: ['prod', '[STAGE]'],
+    modes: { a: 'prod' }, notes: { '[STAGE]': '[STAGE]' }, fixed: { prod: 'prod', note: '[STAGE]' },
+  });
+  expect(args).toEqual(original);
+});
+
+it.each(['allOf', 'anyOf', 'oneOf'])('restores literals from %s at the declared path without changing sibling text', keyword => {
+  expect(restoreImportedArguments({ mode: '[STAGE]', note: '[STAGE]' }, {
+    properties: { mode: { [keyword]: [{ enum: ['prod'] }] }, note: { type: 'string' } },
+  }, { STAGE: 'prod' })).toEqual({ mode: 'prod', note: '[STAGE]' });
 });
 
 it('preserves catalog enums and normal results with short locale variables, and forwards the selected enum unchanged', async () => {

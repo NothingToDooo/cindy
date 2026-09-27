@@ -185,8 +185,9 @@ omitting it retains normal companion defaults, and a rejected request can be cor
   inside the host. The connection configuration itself is not modified.
   Required property names use the same masking as schema keys, and host dispatch
   restores schema-defined argument keys and exact aliases from enum/const/default
-  values privately (including nested arrays) for runtime calls and verification
-  probes. Free-text secret placeholders are not expanded. Business response/meta object keys are
+  values only at their corresponding argument paths (including nested arrays)
+  for runtime calls and verification probes. Sibling free-text placeholders are
+  not expanded even when they match an enum alias elsewhere. Business response/meta object keys are
   masked as well. MCP envelope keys (`content`, `structuredContent`, `isError`,
   `_meta`) and SDK-validated content/resource fields keep their protocol spelling;
   content types and audience/theme enums remain valid. Their text and structured

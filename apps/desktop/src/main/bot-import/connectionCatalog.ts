@@ -93,33 +93,79 @@ function redactSchema(value: unknown, secrets: Record<string, string>, dictionar
 
 /** Restore only schema-defined aliases, privately at the upstream call boundary. */
 export function restoreImportedArguments(value: Record<string, unknown>, schema: unknown, secrets: Record<string, string>): Record<string, unknown> {
-  const keys = new Map<string, string>();
-  const scalars = new Map<string, string>();
-  const literal = (value: unknown): void => {
-    if (typeof value === 'string') {
-      const alias = redactEnvironmentValues(value, secrets);
-      if (scalars.has(alias) && scalars.get(alias) !== value) throw new Error('Ambiguous imported schema');
-      // Include unchanged literals to detect collisions with an existing alias.
-      scalars.set(alias, value);
-    } else if (value && typeof value === 'object') Object.values(value).forEach(literal);
+  const object = (node: unknown): Record<string, unknown> | undefined =>
+    node !== null && typeof node === 'object' && !Array.isArray(node) ? node as Record<string, unknown> : undefined;
+  const expand = (nodes: unknown[]): Record<string, unknown>[] => {
+    const result: Record<string, unknown>[] = [];
+    const seen = new Set<unknown>();
+    const visit = (node: unknown): void => {
+      const current = object(node);
+      if (!current || seen.has(node)) return;
+      seen.add(node); result.push(current);
+      // Resolve local definitions only; no external schema fetching at dispatch.
+      if (typeof current.$ref === 'string' && current.$ref.startsWith('#')) {
+        let target: unknown = schema;
+        const pointer = decodeURIComponent(current.$ref.slice(1));
+        if (!pointer || pointer.startsWith('/')) {
+          for (const segment of pointer ? pointer.slice(1).split('/') : []) {
+            const key = segment.replaceAll('~1', '/').replaceAll('~0', '~');
+            const record = object(target);
+            target = record && Object.hasOwn(record, key) ? record[key] : undefined;
+          }
+          visit(target);
+        }
+      }
+      for (const keyword of ['allOf', 'anyOf', 'oneOf']) {
+        const branches = current[keyword];
+        if (Array.isArray(branches)) branches.forEach(visit);
+      }
+    };
+    nodes.forEach(visit);
+    return result;
   };
-  const collect = (node: unknown, dictionary = false): void => {
-    if (!node || typeof node !== 'object') return;
-    for (const [key, child] of Object.entries(node)) {
-      const publicKey = redactEnvironmentValues(key, secrets);
-      if (keys.has(publicKey) && keys.get(publicKey) !== key) throw new Error('Ambiguous imported schema');
-      keys.set(publicKey, key);
-      if (!dictionary && (key === 'enum' || key === 'const' || key === 'default')) literal(child);
-      collect(child, !dictionary && ['properties', 'patternProperties', '$defs', 'definitions', 'dependentSchemas'].includes(key));
+  const aliases = (values: string[]): Map<string, string> => {
+    const result = new Map<string, string>();
+    for (const original of values) {
+      const alias = redactEnvironmentValues(original, secrets);
+      if (result.has(alias) && result.get(alias) !== original) throw new Error('Ambiguous imported schema');
+      // Unchanged literals also participate in collision detection at this path.
+      result.set(alias, original);
     }
+    return result;
   };
-  collect(schema);
-  const restore = (node: unknown): unknown => {
-    if (Array.isArray(node)) return node.map(restore);
-    if (node && typeof node === 'object') return Object.fromEntries(Object.entries(node).map(([key, child]) => [keys.get(key) ?? key, restore(child)]));
-    return typeof node === 'string' ? scalars.get(node) ?? node : node;
+  const restore = (node: unknown, schemas: unknown[], inherited: unknown[] = []): unknown => {
+    const candidates = expand(schemas);
+    const literals = [...inherited, ...candidates.flatMap(current => [
+      ...(Array.isArray(current.enum) ? current.enum : []),
+      ...(Object.hasOwn(current, 'const') ? [current.const] : []),
+      ...(Object.hasOwn(current, 'default') ? [current.default] : []),
+    ])];
+    const scalars = aliases(literals.filter((literal): literal is string => typeof literal === 'string'));
+    if (typeof node === 'string') return scalars.get(node) ?? node;
+    if (Array.isArray(node)) return node.map((child, index) => restore(child, candidates.map(current => {
+      if (Array.isArray(current.prefixItems)) return current.prefixItems[index] ?? current.items;
+      return Array.isArray(current.items) ? current.items[index] ?? current.additionalItems : current.items;
+    }), literals.filter(Array.isArray).map(literal => literal[index])));
+    if (object(node)) {
+      const literalObjects = literals.map(object).filter((literal): literal is Record<string, unknown> => !!literal);
+      const properties = candidates.map(current => object(current.properties) ?? {});
+      const keys = aliases([...properties, ...literalObjects].flatMap(current => Object.keys(current)));
+      return Object.fromEntries(Object.entries(node as Record<string, unknown>).map(([key, child]) => {
+        const originalKey = keys.get(key) ?? key;
+        const children = candidates.flatMap((current, index) => {
+          const matched = Object.hasOwn(properties[index]!, originalKey) ? [properties[index]![originalKey]] : [];
+          for (const [pattern, constraint] of Object.entries(object(current.patternProperties) ?? {})) {
+            if (new RegExp(pattern).test(originalKey)) matched.push(constraint);
+          }
+          return matched.length ? matched : [current.additionalProperties];
+        });
+        return [originalKey, restore(child, children, literalObjects.flatMap(literal =>
+          Object.hasOwn(literal, originalKey) ? [literal[originalKey]] : []))];
+      }));
+    }
+    return node;
   };
-  return restore(value) as Record<string, unknown>;
+  return restore(value, [schema]) as Record<string, unknown>;
 }
 
 /** Redact tool metadata and schema keys/strings while preserving protocol syntax. */
