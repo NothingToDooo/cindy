@@ -23,6 +23,7 @@ import {
   StyleSheet,
   View,
   useWindowDimensions,
+  type AccessibilityProps,
   type StyleProp,
   type ViewStyle,
 } from "react-native";
@@ -59,11 +60,33 @@ const PREFERRED_MIN_HEIGHT = 240;
 
 type Anchor = { x: number; y: number; width: number; height: number };
 
-function childAccessibilityLabel(children: ReactNode): string | undefined {
-  if (!isValidElement(children)) return undefined;
-  const label = (children.props as { accessibilityLabel?: unknown })
-    .accessibilityLabel;
-  return typeof label === "string" ? label : undefined;
+type ChildAccessibility = Pick<
+  AccessibilityProps,
+  | "accessibilityHint"
+  | "accessibilityLabel"
+  | "accessibilityState"
+  | "accessibilityValue"
+>;
+
+/**
+ * 外层按钮替子控件成为唯一的读屏节点,要带上子控件原有的读屏信息(如筛选按钮的
+ * selected),只在状态上叠加菜单的 expanded。
+ */
+function childAccessibility(children: ReactNode): ChildAccessibility {
+  if (!isValidElement(children)) return {};
+  const props = children.props as ChildAccessibility;
+  return {
+    accessibilityHint:
+      typeof props.accessibilityHint === "string"
+        ? props.accessibilityHint
+        : undefined,
+    accessibilityLabel:
+      typeof props.accessibilityLabel === "string"
+        ? props.accessibilityLabel
+        : undefined,
+    accessibilityState: props.accessibilityState ?? undefined,
+    accessibilityValue: props.accessibilityValue ?? undefined,
+  };
 }
 
 export function AnchoredPullDownMenu({
@@ -100,15 +123,16 @@ export function AnchoredPullDownMenu({
   }, []);
   const close = useCallback(() => setAnchor(null), []);
 
+  const child = childAccessibility(children);
   return (
     <>
       <Pressable
         ref={anchorRef}
-        accessibilityLabel={
-          accessibilityLabel ?? childAccessibilityLabel(children)
-        }
+        accessibilityHint={child.accessibilityHint}
+        accessibilityLabel={accessibilityLabel ?? child.accessibilityLabel}
         accessibilityRole="button"
-        accessibilityState={{ expanded: open }}
+        accessibilityState={{ ...child.accessibilityState, expanded: open }}
+        accessibilityValue={child.accessibilityValue}
         collapsable={false}
         onLongPress={longPress ? show : undefined}
         onPress={longPress ? undefined : show}

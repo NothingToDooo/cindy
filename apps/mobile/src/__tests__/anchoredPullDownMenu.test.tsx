@@ -20,6 +20,7 @@ vi.mock("react-native", async () => {
         onPress,
         onLongPress,
         testID,
+        accessibilityHint,
         accessibilityLabel,
         accessibilityRole,
         accessibilityState,
@@ -49,6 +50,11 @@ vi.mock("react-native", async () => {
             accessibilityState?.expanded === undefined
               ? undefined
               : String(accessibilityState.expanded),
+          "data-selected":
+            accessibilityState?.selected === undefined
+              ? undefined
+              : String(accessibilityState.selected),
+          "data-hint": accessibilityHint,
           disabled,
           "data-opacity": styleOf(style).opacity,
           onClick: onPress ?? onLongPress,
@@ -226,6 +232,33 @@ describe("Android anchored pull-down menu", () => {
     expect(q("[data-modal]")).toBeNull();
     click('[data-testid="trigger"]');
     expect(q("[data-modal]")).not.toBeNull();
+    expect(q('[data-testid="trigger"]')!.getAttribute("data-expanded")).toBe(
+      "true",
+    );
+  });
+
+  it("keeps the trigger's own accessibility state and hint while adding expanded", () => {
+    render(
+      vi.fn(),
+      createElement(
+        "span",
+        {
+          accessibilityHint: "Filters are applied",
+          accessibilityLabel: "Filter",
+          accessibilityState: { selected: true },
+        },
+        "filter",
+      ),
+    );
+    const trigger = q('[data-testid="trigger"]')!;
+    expect(trigger.getAttribute("aria-label")).toBe("Filter");
+    expect(trigger.getAttribute("data-selected")).toBe("true");
+    expect(trigger.getAttribute("data-hint")).toBe("Filters are applied");
+    expect(trigger.getAttribute("data-expanded")).toBe("false");
+    click('[data-testid="trigger"]');
+    expect(q('[data-testid="trigger"]')!.getAttribute("data-selected")).toBe(
+      "true",
+    );
     expect(q('[data-testid="trigger"]')!.getAttribute("data-expanded")).toBe(
       "true",
     );

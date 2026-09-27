@@ -266,12 +266,12 @@ export function MobileModelPickerList({
           const fullEffortLabel = rowEffort
             ? effortLabelFor(row.model, rowEffort, capabilities ?? null)
             : null;
-          // 副行与 iOS 同口径:「订阅 · 强度 · Fast」,折扣版缺 key 时追加提示。
+          // 副行与 iOS 同口径:「订阅 · 强度 · Fast」。折扣版缺 key 的提示是整句恢复指引,
+          // 单独成行且不限行数,不挤在单行元信息里被截掉。
           const metaLine = [
             isSubscription ? t('models.picker.subscriptionBadge') : null,
             fullEffortLabel,
             fastOn ? t('models.options.fastMode') : null,
-            rowDisabled ? budgetDisabledHint() : null,
           ]
             .filter(Boolean)
             .join(' · ');
@@ -335,6 +335,9 @@ export function MobileModelPickerList({
                     <Text numberOfLines={1} style={styles.optionText}>{row.model.displayName}</Text>
                     {metaLine ? (
                       <Text numberOfLines={1} style={styles.metaLine}>{metaLine}</Text>
+                    ) : null}
+                    {rowDisabled ? (
+                      <Text style={styles.metaLine} testID={`${testID}.disabledHint`}>{budgetDisabledHint()}</Text>
                     ) : null}
                   </View>
                   {selected ? <Check color={colors.textPrimary} size={iconSize.lg} strokeWidth={iconStroke.medium} /> : null}

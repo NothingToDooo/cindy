@@ -8,6 +8,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const native = vi.hoisted(() => ({
+  budgetDisabled: false,
   menu: true,
   menus: new Map<
     string,
@@ -141,10 +142,14 @@ vi.mock("lucide-react-native", async () => {
 vi.mock("@/components/AppText", async () => {
   const { createElement: el } = await import("react");
   return {
-    Text: ({ children, style, testID }: AnyProps) =>
+    Text: ({ children, numberOfLines, style, testID }: AnyProps) =>
       el(
         "span",
-        { "data-testid": testID, "data-color": flatStyle(style).color },
+        {
+          "data-testid": testID,
+          "data-color": flatStyle(style).color,
+          "data-lines": numberOfLines,
+        },
         children,
       ),
     TextInput: ({
@@ -272,7 +277,7 @@ vi.mock("@/session/goalStatusLabel", () => ({
 }));
 vi.mock("@/session/modelPickerRows", () => ({
   budgetDisabledHint: () => "needs key",
-  budgetRowDisabled: () => false,
+  budgetRowDisabled: () => native.budgetDisabled,
   effortLabelFor: (_model: unknown, effort: string) => `effort:${effort}`,
   modelRowAccessibilityLabel: ({ baseLabel }: AnyProps) => baseLabel,
   rowEffortOf: ({ selected, liveEffort, model }: AnyProps) =>
@@ -636,6 +641,33 @@ describe("Android legacy model list groups by source like iOS", () => {
     expect(rows[1].querySelector('[data-icon="Check"]')).toBeNull();
     // 来源品牌 mark 保留。
     expect(rows[0].querySelector('[data-model-mark="sub"]')).not.toBeNull();
+  });
+
+  it("keeps the missing-key hint on its own unrestricted line instead of truncating it", () => {
+    native.budgetDisabled = true;
+    try {
+      render(
+        createElement(MobileModelPickerList, {
+          providerRows: [{ provider: provider("sub", "ChatGPT", { access: { kind: "subscription" } }), model: model("a") }],
+          flatOptions: [],
+          activeModelId: "b",
+          activeSourceId: "sub",
+          agentKind: "codex",
+          capabilities: { hasFastMode: true },
+          onSelectProviderRow: vi.fn(),
+          onSelectFlatModel: vi.fn(),
+          testID: "list",
+        } as never),
+      );
+      const hint = host.querySelector('[data-testid="list.disabledHint"]')!;
+      expect(hint.textContent).toBe("needs key");
+      expect(hint.getAttribute("data-lines")).toBeNull();
+      const row = host.querySelector('button[data-testid="list"]')!;
+      const meta = [...row.querySelectorAll('span[data-lines="1"]')].map((node) => node.textContent);
+      expect(meta.some((text) => text?.includes("needs key"))).toBe(false);
+    } finally {
+      native.budgetDisabled = false;
+    }
   });
 
   it("reports the selected row offset in scroll-content coordinates after grouping", () => {
