@@ -95,6 +95,7 @@ function redactSchema(value: unknown, secrets: Record<string, string>, dictionar
 export function restoreImportedArguments(value: Record<string, unknown>, schema: unknown, secrets: Record<string, string>): Record<string, unknown> {
   const object = (node: unknown): Record<string, unknown> | undefined =>
     node !== null && typeof node === 'object' && !Array.isArray(node) ? node as Record<string, unknown> : undefined;
+  const names = (node: unknown): string[] => Array.isArray(node) ? node.filter((name): name is string => typeof name === 'string') : [];
   const expand = (nodes: unknown[]): Record<string, unknown>[] => {
     const result: Record<string, unknown>[] = [];
     const seen = new Set<unknown>();
@@ -149,7 +150,13 @@ export function restoreImportedArguments(value: Record<string, unknown>, schema:
     if (object(node)) {
       const literalObjects = literals.map(object).filter((literal): literal is Record<string, unknown> => !!literal);
       const properties = candidates.map(current => object(current.properties) ?? {});
-      const keys = aliases([...properties, ...literalObjects].flatMap(current => Object.keys(current)));
+      // These keywords declare names on this object even without properties entries.
+      const requiredNames = candidates.flatMap(current => [
+        ...names(current.required),
+        ...['dependentRequired', 'dependencies'].flatMap(keyword =>
+          Object.entries(object(current[keyword]) ?? {}).flatMap(([name, required]) => [name, ...names(required)])),
+      ]);
+      const keys = aliases([...requiredNames, ...[...properties, ...literalObjects].flatMap(current => Object.keys(current))]);
       return Object.fromEntries(Object.entries(node as Record<string, unknown>).map(([key, child]) => {
         const originalKey = keys.get(key) ?? key;
         const children = candidates.flatMap((current, index) => {

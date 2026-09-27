@@ -84,6 +84,40 @@ it('restores advertised enum, const and default values at the upstream call boun
   } finally { imported.mockRestore(); await client.close(); await config.instance.close(); }
 });
 
+it.each(['required', 'dependentRequired', 'dependencies'] as const)('restores names declared only in %s at the corresponding argument path', async keyword => {
+  const secret = 'fixture-required-field';
+  const trigger = `trigger-${secret}`;
+  const env = { PRIVATE: secret };
+  const connection = { name: 'required-fields', url: 'https://example.invalid/mcp' };
+  const constraint = keyword === 'required' ? { required: [secret] } : { [keyword]: { [trigger]: [secret] } };
+  const tool: Tool = { name: 'read_fields', inputSchema: { type: 'object', properties: {
+    group: { type: 'object', ...constraint }, untouched: { type: 'object' }, note: { type: 'string' },
+  } } };
+  const callTool = vi.fn(async () => ({ content: [{ type: 'text', text: 'ok' }] }));
+  const imported = vi.spyOn(connectionModule, 'withImportedConnection').mockImplementation(async (_server, _env, _assert, run) => run({ listTools: async () => ({ tools: [tool] }), callTool } as never));
+  vi.mocked(readCompanionSessionEnvironment).mockResolvedValue({ identity: 'required-fields', botId: 'bot', userData: '/fixture', assertOwner() {}, environment: { version: 1, env, mcp: [connection], credentials: [] } });
+  const config = createCompanionConnectionsProvider().toClaudeSdkConfig!({} as never) as { instance: McpServer };
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'fixture', version: '1' });
+  await config.instance.connect(serverTransport); await client.connect(clientTransport);
+  try {
+    const published = (await client.listTools()).tools[1]!;
+    const group = published.inputSchema.properties!.group as Record<string, unknown>;
+    const dependent = keyword === 'required' ? undefined : Object.entries(group[keyword] as Record<string, string[]>)[0]!;
+    const alias = dependent ? dependent[1][0]! : (group.required as string[])[0]!;
+    expect(alias).not.toContain(secret);
+    if (dependent) expect(dependent[0]).not.toContain(secret);
+    const publicFields = { [alias]: alias, ...(dependent ? { [dependent[0]]: 'on' } : {}) };
+    const args = { group: publicFields, untouched: { ...publicFields }, note: alias };
+    const before = structuredClone(args);
+    await client.callTool({ name: published.name, arguments: args });
+    expect(callTool).toHaveBeenCalledWith({ name: tool.name, arguments: {
+      group: { [secret]: alias, ...(dependent ? { [trigger]: 'on' } : {}) }, untouched: publicFields, note: alias,
+    } }, undefined, { timeout: 120000 });
+    expect(args).toEqual(before);
+  } finally { imported.mockRestore(); await client.close(); await config.instance.close(); }
+});
+
 it('preserves schema keywords while masking same-named properties and forwarding valid nested arguments', async () => {
   const env = Object.fromEntries(['properties', 'required', 'items', 'enum', 'type', 'additionalProperties', 'const'].map((value, index) => [`KEY_${index}`, value]));
   const connection = { name: 'schema', url: 'https://example.invalid/mcp' };

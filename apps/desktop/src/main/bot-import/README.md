@@ -186,7 +186,9 @@ omitting it retains normal companion defaults, and a rejected request can be cor
   Required property names use the same masking as schema keys, and host dispatch
   restores schema-defined argument keys and exact aliases from enum/const/default
   values only at their corresponding argument paths (including nested arrays)
-  for runtime calls and verification probes. Sibling free-text placeholders are
+  for runtime calls and verification probes. Names declared only in `required`,
+  `dependentRequired` or legacy `dependencies` are restored on that object too,
+  without requiring a matching `properties` entry. Sibling free-text placeholders are
   not expanded even when they match an enum alias elsewhere. Business response/meta object keys are
   masked as well. MCP envelope keys (`content`, `structuredContent`, `isError`,
   `_meta`) and SDK-validated content/resource fields keep their protocol spelling;
