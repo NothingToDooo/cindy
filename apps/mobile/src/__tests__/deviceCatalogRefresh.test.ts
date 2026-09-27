@@ -24,6 +24,8 @@ describe('catalog invalidation under a slow device link', () => {
     if (action === 'cancel') refresh.cancel('a');
     else refresh[action]();
     available = true;
+    refresh.wake('a');
+    refresh.wake();
     await vi.advanceTimersByTimeAsync(30000);
     expect(readProviders).not.toHaveBeenCalled();
     refresh.dispose();
@@ -44,6 +46,44 @@ describe('catalog invalidation under a slow device link', () => {
     // Recovery needs no second provider notification or picker remount.
     await vi.advanceTimersByTimeAsync(2000);
     expect(readProviders).toHaveBeenCalledWith('a');
+    refresh.dispose();
+  });
+  it.each(['peer', 'connection'] as const)('wakes pending work after long backoff on %s recovery without invalidating completed reads', async (scope) => {
+    const { createDeviceCatalogRefresh } = await import('@/device-link/deviceCatalogRefresh');
+    const cache = await import('@/device-link/deviceProvidersCache');
+    let available = false;
+    const readProviders = vi.fn(async (id: string) => catalog(id));
+    const refresh = createDeviceCatalogRefresh({ readProviders, readCapabilities: async () => null,
+      connectionEpoch: () => 1, canRead: (id) => id === 'healthy' || available });
+    refresh.notify('pending');
+    refresh.notify('healthy');
+    await vi.advanceTimersByTimeAsync(60000);
+    refresh.wake(); // Still unreadable: no RPC and no changed cache generation.
+    expect(readProviders).toHaveBeenCalledExactlyOnceWith('healthy');
+    const generation = cache.getDeviceProvidersGen('healthy');
+    available = true;
+    refresh.wake(scope === 'peer' ? 'pending' : undefined);
+    await flush();
+    expect(readProviders).toHaveBeenCalledTimes(2);
+    expect(cache.getCachedDeviceProviders('pending')).toEqual(catalog('pending'));
+    refresh.wake();
+    await vi.advanceTimersByTimeAsync(30000);
+    expect(readProviders).toHaveBeenCalledTimes(2);
+    expect(cache.getDeviceProvidersGen('healthy')).toBe(generation);
+    refresh.dispose();
+  });
+  it('does not miss recovery racing the blocked attempt settlement', async () => {
+    const { createDeviceCatalogRefresh } = await import('@/device-link/deviceCatalogRefresh');
+    let available = false;
+    const readProviders = vi.fn(async () => catalog('new'));
+    const refresh = createDeviceCatalogRefresh({ readProviders, readCapabilities: async () => null,
+      connectionEpoch: () => 1, canRead: () => available });
+    refresh.notify('a');
+    vi.advanceTimersByTime(50); // Start gated runner without settling its promise.
+    available = true;
+    refresh.wake('a');
+    await flush();
+    expect(readProviders).toHaveBeenCalledExactlyOnceWith('a');
     refresh.dispose();
   });
   it('coalesces four notifications and serializes a burst during a read without committing stale results', async () => {

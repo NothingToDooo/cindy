@@ -51,6 +51,16 @@ export function createDeviceCatalogRefresh(options: {
     return { retry: !disposed && options.canRead?.(id) === false };
   });
   return {
+    wake(deviceId?: string) {
+      if (disposed) return;
+      for (const id of deviceId ? [deviceId] : devices) {
+        // Resume only accepted work. Do not invalidate a healthy cache or
+        // resurrect cancellation. Include running attempts so a recovery
+        // racing their settlement cannot leave a newly installed retry asleep.
+        if (devices.has(id) && options.canRead?.(id) !== false
+          && scheduler.getSnapshot(id).phase !== 'idle') scheduler.request(id);
+      }
+    },
     notify(id: string) {
       if (disposed) return;
       devices.add(id);
