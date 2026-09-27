@@ -1311,7 +1311,9 @@ apps/mobile/src/
 
 ### Phase 7: Automations
 
-当前进展:
+当前范围调整：手机版已移除独立自动化管理页、设备详情的「计划」入口，以及「所有任务」下拉和伙伴资料页中的例行任务管理。以下为该阶段的历史实现记录，不代表当前手机入口；任务运行历史与桌面管理继续保留。当前可用资源过滤见 `src/device-link/remoteResources.ts`，回归见 `remoteResources.test.ts` 与 `remoteResourceCache.test.ts`。
+
+历史进展:
 
 - 已确认 `feat/device-link-remote-control` 分支在 `packages/device-link/src/allowlist.ts` 开放 `maker:schedule:*`,且 `maker:schedule:event` 已进入 push forward allowlist;手机版不需要另起私有协议。
 - 已在 `mobileMakerTransport` 增加 `schedule.list/get/listTemplates/createFromTemplate/create/update/listRuns/runNow/pause/resume/delete/markRunRead/markScheduleRunsRead`,参数顺序对齐桌面 preload 的 `window.electronAPI.maker.schedule.*`。

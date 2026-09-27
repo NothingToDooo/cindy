@@ -3,7 +3,7 @@ import { useRouter } from 'expo-router';
 import { randomUUID } from 'expo-crypto';
 import { Alert, Image, Platform, Pressable, ScrollView, StyleSheet, Switch, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
-import { Brain, Check, ChevronRight, Clock3, FileText, MessageCircle, Search, Settings2, Sparkles, UserRound } from 'lucide-react-native';
+import { Brain, Check, ChevronRight, FileText, MessageCircle, Search, Settings2, Sparkles, UserRound } from 'lucide-react-native';
 import { resolveRemoteText, type RemoteResource, type RemoteResourceRef, type RemoteText } from '@cindy/device-link';
 import { useAuth } from '@/auth/AuthContext';
 import { Text, TextInput } from '@/components/AppText';
@@ -40,7 +40,6 @@ export interface CompanionProfileSheetProps {
   online: boolean;
   onDeleted?: () => void;
   onOpenSearch: () => void;
-  onOpenAutomation: () => void;
 }
 /** Identity-keyed content prevents previous-account drafts and reads from surviving a switch. */
 export function CompanionProfileSheet(props: CompanionProfileSheetProps) {
@@ -51,7 +50,7 @@ export function CompanionProfileSheet(props: CompanionProfileSheetProps) {
 
 /** One navigation host, with real host reads, draft guards and in-surface confirmations. */
 function CompanionProfileSheetContent(props: CompanionProfileSheetProps) {
-  const { visible, resource, collectionId, deviceId, deviceName, online, onClose, onOpenSearch, onOpenAutomation } = props;
+  const { visible, resource, collectionId, deviceId, deviceName, online, onClose, onOpenSearch } = props;
   const { t, i18n } = useTranslation();
   const router = useRouter();
   const pendingTask = useRef<string | null>(null);
@@ -305,7 +304,7 @@ function CompanionProfileSheetContent(props: CompanionProfileSheetProps) {
     onConfirm={target => { setConfirmation(target); if (target?.id === 'delete') { setValues({}); setEditing(false); } }}
     onRetry={() => { if (page === 'editor') void retryEditor(); else void refresh(); }} onDiscard={discardDraft}
     onEditor={id => void openEditor(id)} onEditorPanel={item => { setEditorPanel(item.id); setValues(item.values); setEditing(false); }}
-    onSearch={onOpenSearch} onAutomation={onOpenAutomation} /></>;
+    onSearch={onOpenSearch} /></>;
 
   return <>{modelPicker}<CompanionSheet visible={visible && modelStage === 'profile'} onClosed={afterClosed} onClose={dismiss}
       preventDismiss={dirty || busy || !!confirmation || memory.dirty || memory.busy}
@@ -341,7 +340,6 @@ function CompanionProfileSheetContent(props: CompanionProfileSheetProps) {
         </Pressable>
         <View style={styles.group}>{row('memory', Brain)}{row('models', Settings2)}{row('skills', Sparkles)}{row('artifacts', FileText)}</View>
         <View style={styles.group}>
-          <ContextSheetRow trailing="chevron" label={t('devices.companionProfile.automation')} icon={<Clock3 size={iconSize.lg} color={colors.textSecondary} />} onPress={() => { onClose(); onOpenAutomation(); }} />
           {row('permissions', UserRound)}
           <ContextSheetRow trailing="chevron" label={t('devices.companionProfile.search')} icon={<Search size={iconSize.lg} color={colors.textSecondary} />} onPress={() => { onClose(); onOpenSearch(); }} />
         </View>
