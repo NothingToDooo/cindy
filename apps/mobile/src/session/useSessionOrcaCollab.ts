@@ -33,7 +33,6 @@ import {
   type OrcaWorkerPermissionMode,
 } from '@/session/orcaTeam';
 import {
-  DEFAULT_ORCA_COLLABORATION_SETTINGS,
   parseOrcaCollaborationSettings,
   parseOrcaTeamWorkers,
   readOrcaTeamLeadSessionId,
@@ -62,14 +61,18 @@ const ALL_AGENTS: readonly OrcaWorkerAgentKind[] = ['claude-code', 'codex', 'pi'
 
 export interface OrcaTeamSnapshot {
   workers: OrcaTeamWorker[];
-  settings: OrcaCollaborationSettings;
+  /**
+   * 被控端的协同设置(只读权威值)。null = 还没读到;读取失败时保留上一次读到的值,
+   * 不用默认值冒充——否则会误判名额上限,错误地禁用或放行创建。
+   */
+  settings: OrcaCollaborationSettings | null;
   loading: boolean;
   error: string | null;
 }
 
 const EMPTY_TEAM: OrcaTeamSnapshot = {
   workers: [],
-  settings: DEFAULT_ORCA_COLLABORATION_SETTINGS,
+  settings: null,
   loading: false,
   error: null,
 };
@@ -105,12 +108,12 @@ export function useOrcaTeam(params: {
         makerRef.current.orca.getCollaborationSettings().catch(() => null),
       ]);
       if (generation !== generationRef.current) return;
-      setSnapshot({
+      setSnapshot((current) => ({
         workers: parseOrcaTeamWorkers(workers),
-        settings: parseOrcaCollaborationSettings(settings),
+        settings: settings === null ? current.settings : parseOrcaCollaborationSettings(settings),
         loading: false,
         error: null,
-      });
+      }));
     } catch (error) {
       if (generation !== generationRef.current) return;
       setSnapshot((current) => ({

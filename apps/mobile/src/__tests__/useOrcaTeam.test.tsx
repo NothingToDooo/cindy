@@ -52,7 +52,7 @@ it('loads the Lead team and refreshes only on worker-changed pushes for that Lea
   await act(async () => root.render(<Probe maker={maker} leadSessionId="lead-1" />));
   expect(listWorkers).toHaveBeenCalledTimes(1);
   expect(latest?.workers.map((worker) => worker.workerId)).toEqual(['w-1']);
-  expect(latest?.settings.workerHardLimit).toBe(4);
+  expect(latest?.settings?.workerHardLimit).toBe(4);
 
   await act(async () => {
     for (const listener of pushListeners) listener('dev-1', 'other-lead');
@@ -115,4 +115,28 @@ it('reloads the team after reconnecting, since pushes may have been missed', asy
   expect(listWorkers).toHaveBeenCalledTimes(1);
   await act(async () => root.render(<EpochProbe epoch={2} />));
   expect(listWorkers).toHaveBeenCalledTimes(2);
+});
+
+it('keeps the last collaboration limits when a later settings read fails', async () => {
+  const listWorkers = vi.fn(async () => []);
+  const getCollaborationSettings = vi.fn()
+    .mockResolvedValueOnce({ workerSoftLimit: 6, workerHardLimit: 10 })
+    .mockRejectedValueOnce(new Error('[INVOKE_TIMEOUT] timed out'));
+  const maker = { orca: { listWorkers, getCollaborationSettings } } as unknown as MobileMakerTransport;
+  await act(async () => root.render(<Probe maker={maker} leadSessionId="lead-1" />));
+  expect(latest?.settings?.workerHardLimit).toBe(10);
+  await act(async () => { await latest!.refresh(); });
+  // 不用默认 5/8 冒充被控端的权威上限。
+  expect(latest?.settings?.workerHardLimit).toBe(10);
+});
+
+it('leaves limits unknown instead of assuming defaults when they were never read', async () => {
+  const maker = {
+    orca: {
+      listWorkers: vi.fn(async () => []),
+      getCollaborationSettings: vi.fn(async () => { throw new Error('[INVOKE_TIMEOUT] timed out'); }),
+    },
+  } as unknown as MobileMakerTransport;
+  await act(async () => root.render(<Probe maker={maker} leadSessionId="lead-1" />));
+  expect(latest?.settings).toBeNull();
 });

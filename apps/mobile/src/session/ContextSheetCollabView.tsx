@@ -189,7 +189,8 @@ export function OrcaWorkerFormView({
 
 export interface OrcaTeamPanelViewProps {
   workers: readonly OrcaTeamWorker[];
-  settings: OrcaCollaborationSettings;
+  /** null = 还没读到被控端设置:不在手机上判名额,由被控端裁决。 */
+  settings: OrcaCollaborationSettings | null;
   loading: boolean;
   busy: boolean;
   error?: string | null;
@@ -227,10 +228,10 @@ export function OrcaTeamPanelView({
   const { t } = useTranslation();
   const { colors } = useTheme();
   const running = workers.filter((worker) => worker.status === 'running').length;
-  const slot = orcaWorkerSlotState(workers, settings);
-  const createHint = slot === 'hard'
+  const slot = settings ? orcaWorkerSlotState(workers, settings) : 'ok';
+  const createHint = settings && slot === 'hard'
     ? t('session.collab.hardLimitHint', { limit: settings.workerHardLimit })
-    : slot === 'soft'
+    : settings && slot === 'soft'
       ? t('session.collab.softLimitHint', { limit: settings.workerSoftLimit })
       : null;
   return (
@@ -281,11 +282,13 @@ export function OrcaTeamPanelView({
       </ContextSheetGroup>
       <ContextSheetGroup label="">
         {createHint ? <ContextSheetNote text={createHint} /> : null}
-        <ContextSheetNote text={t('session.collab.limitSummary', {
-          soft: settings.workerSoftLimit,
-          hard: settings.workerHardLimit,
-        })}
-        />
+        {settings ? (
+          <ContextSheetNote text={t('session.collab.limitSummary', {
+            soft: settings.workerSoftLimit,
+            hard: settings.workerHardLimit,
+          })}
+          />
+        ) : null}
         {error ? <ContextSheetNote text={error} tone="error" testID="collab.teamError" /> : null}
       </ContextSheetGroup>
     </>
