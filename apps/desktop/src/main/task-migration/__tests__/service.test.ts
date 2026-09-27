@@ -700,4 +700,20 @@ describe('resumable cross-computer copy', () => {
       action:'receipt', id:result.targetSessionId!, sourceSessionId:'fork',
     }))).rejects.toThrow('MIGRATION_ID_CONFLICT');
   });
+
+  it('discards a snapshot when a new turn finishes during preparation', async () => {
+    state.snapshot.mockImplementationOnce(() => { state.rows.get('A')!.get('fork')!.updatedAt = 123; });
+    await start();
+    expect(await settled()).toMatchObject({stage:'preparing',error:'MIGRATION_SOURCE_CHANGED'});
+    expect(state.imports).not.toHaveBeenCalled();
+    expect(state.files.size).toBe(0);
+    await requestTaskMigration({action:'retry',sessionId:'fork'});
+    expect((await settled()).stage).toBe('complete');
+  });
+  it('serializes admission even without process-local route locks', async () => {
+    const results = await Promise.allSettled([start(), start()]);
+    expect(results.filter(r => r.status === 'fulfilled')).toHaveLength(1);
+    expect((await settled()).stage).toBe('complete');
+    expect(state.imports).toHaveBeenCalledTimes(1);
+  });
 });

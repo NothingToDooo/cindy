@@ -46,7 +46,8 @@
       "MIGRATION_NO_SPACE": "Not enough space on the destination computer.",
       "MIGRATION_TARGET_MODEL_UNAVAILABLE": "The destination has no available model for this task’s engine. Connect a provider there first.",
       "MIGRATION_UNSUPPORTED": "Update both computers to a version that supports task copy.",
-      "MIGRATION_TASK_QUEUED": "This task has queued messages. Finish or remove them before copying it."
+      "MIGRATION_TASK_QUEUED": "This task has queued messages. Finish or remove them before copying it.",
+      "MIGRATION_SOURCE_CHANGED": "The source task changed during preparation. Retry the copy."
     }
   },
   "sharedTask": {

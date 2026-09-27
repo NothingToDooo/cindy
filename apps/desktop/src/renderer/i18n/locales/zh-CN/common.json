@@ -46,7 +46,8 @@
       "MIGRATION_NO_SPACE": "目标电脑可用空间不足。",
       "MIGRATION_TARGET_MODEL_UNAVAILABLE": "目标电脑没有可用于此任务引擎的模型，请先在目标电脑连接供应商。",
       "MIGRATION_UNSUPPORTED": "请将两台电脑更新至支持任务复制的版本。",
-      "MIGRATION_TASK_QUEUED": "此任务有排队中的消息，请先完成或移除这些消息再复制。"
+      "MIGRATION_TASK_QUEUED": "此任务有排队中的消息，请先完成或移除这些消息再复制。",
+      "MIGRATION_SOURCE_CHANGED": "准备期间源任务发生变化，请重试复制。"
     }
   },
   "sharedTask": {

@@ -46,7 +46,8 @@
       "MIGRATION_NO_SPACE": "目標電腦可用空間不足。",
       "MIGRATION_TARGET_MODEL_UNAVAILABLE": "目標電腦沒有可用於此任務引擎的模型，請先在目標電腦連接供應商。",
       "MIGRATION_UNSUPPORTED": "請將兩台電腦更新至支援任務複製的版本。",
-      "MIGRATION_TASK_QUEUED": "此任務有排隊中的訊息，請先完成或移除這些訊息再複製。"
+      "MIGRATION_TASK_QUEUED": "此任務有排隊中的訊息，請先完成或移除這些訊息再複製。",
+      "MIGRATION_SOURCE_CHANGED": "準備期間來源任務發生變更，請重試複製。"
     }
   },
   "sharedTask": {

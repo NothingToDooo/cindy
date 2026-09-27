@@ -46,7 +46,8 @@
       "MIGRATION_NO_SPACE": "コピー先の空き容量が不足しています。",
       "MIGRATION_TARGET_MODEL_UNAVAILABLE": "コピー先にこのタスクのエンジンで利用できるモデルがありません。先にプロバイダーを接続してください。",
       "MIGRATION_UNSUPPORTED": "両方のコンピューターをタスクのコピーに対応したバージョンに更新してください。",
-      "MIGRATION_TASK_QUEUED": "このタスクには待機中のメッセージがあります。処理または削除してからコピーしてください。"
+      "MIGRATION_TASK_QUEUED": "このタスクには待機中のメッセージがあります。処理または削除してからコピーしてください。",
+      "MIGRATION_SOURCE_CHANGED": "準備中に元のタスクが変更されました。コピーを再試行してください。"
     }
   },
   "sharedTask": {

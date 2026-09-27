@@ -165,6 +165,7 @@ interface SourceSession {
   source: string;
   orcaRole: string | null;
   agentKind: 'cc' | 'codex' | 'pi';
+  updatedAt: number;
 }
 async function assertSource(
   scope: Scope,
@@ -172,7 +173,7 @@ async function assertSource(
   worker = false,
 ): Promise<SourceSession> {
   const row = await scope.db.queryOne<SourceSession>(
-    'SELECT id, working_dir AS workingDir, remote_host_id AS remoteHostId, status, source, orca_role AS orcaRole, agent_kind AS agentKind FROM sessions WHERE id = ?',
+    'SELECT id, working_dir AS workingDir, remote_host_id AS remoteHostId, status, source, orca_role AS orcaRole, agent_kind AS agentKind, updated_at AS updatedAt FROM sessions WHERE id = ?',
     [sessionId],
   );
   scope.assertCurrent();
@@ -250,6 +251,7 @@ const transferFiles = (files: MigrationFiles) => [
 
 async function prepare(scope: Scope, record: MigrationHandoff) {
   const members = await sourceGroup(scope, record.sessionId);
+  const sourceRevision = JSON.stringify(members);
   const expected = [
     { sessionId: record.sessionId, workingDir: record.workingDir },
     ...(record.workers ?? []),
@@ -319,6 +321,11 @@ async function prepare(scope: Scope, record: MigrationHandoff) {
         snapshots.push(
           await snapshotWorkspace(dir, workspaceDirectory(directory, index), record.id),
         );
+      // Copy does not freeze input. Discard preparation if the task or team changed
+      // while capturing conversation and files, including a turn that already finished.
+      await sourceBoundary!.drain();
+      if (JSON.stringify(await sourceGroup(scope, record.sessionId)) !== sourceRevision)
+        throw new Error('MIGRATION_SOURCE_CHANGED');
       const workspace: WorkspaceBundle = {
         ...snapshots[0],
         ...(record.workers
@@ -536,7 +543,7 @@ function launch(scope: Scope, record: MigrationHandoff & { kind: 'outgoing' }) {
   if (running.has(key)) return;
   running.add(key);
   void withCrossProcessLock(
-    path.join(scope.root, `${record.id}.lock`),
+    path.join(scope.root, `source-${record.sessionId}.lock`),
     { label: 'task-migration', waitMs: 0 },
     async (lock) => {
       if (!lock.held) return;
@@ -905,89 +912,88 @@ export async function requestTaskMigration(raw: unknown): Promise<TaskMigrationV
   scope.assertCurrent();
   const initialMembers =
     request.action === 'start' ? await sourceGroup(scope, request.sessionId) : [];
-  return withSessionRouteLocks(
+  let nextCopy: (MigrationHandoff & { kind: 'outgoing' }) | undefined;
+  const result = await withSessionRouteLocks(
     [request.sessionId, ...initialMembers.map((member) => member.id)],
-    async () => {
-      scope.assertCurrent();
-      let record = scope.read(request.sessionId);
-      if (request.action === 'cancel') {
-        if (
-          !record ||
-          record.kind !== 'outgoing' ||
-          !canCancelHandoff(record) ||
-          running.has(`${scope.root}:${record.sessionId}`)
-        )
-          throw new Error('MIGRATION_CANNOT_CANCEL');
-        return withCrossProcessLock(
-          path.join(scope.root, `${record.id}.lock`),
-          { label: 'task-migration', waitMs: 0 },
-          async (lock) => {
-            const latest = scope.read(request.sessionId);
-            if (!lock.held || latest?.kind !== 'outgoing' || !canCancelHandoff(latest))
+    () =>
+      withCrossProcessLock(
+        path.join(scope.root, `source-${request.sessionId}.lock`),
+        { label: 'task-copy', waitMs: 0 },
+        async (lock) => {
+          if (!lock.held) throw new Error('MIGRATION_TASK_BUSY');
+          scope.assertCurrent();
+          let record = scope.read(request.sessionId);
+          if (request.action === 'cancel') {
+            if (
+              !record ||
+              record.kind !== 'outgoing' ||
+              !canCancelHandoff(record) ||
+              running.has(`${scope.root}:${record.sessionId}`)
+            )
               throw new Error('MIGRATION_CANNOT_CANCEL');
-            const cancelled = { ...latest, stage: 'cancelled' as const, error: undefined };
+            const cancelled = { ...record, stage: 'cancelled' as const, error: undefined };
             scope.save(cancelled);
             await fs
-              .rm(path.join(scope.root, 'outgoing', latest.id), {
-                recursive: true,
-                force: true,
-              })
+              .rm(path.join(scope.root, 'outgoing', record.id), { recursive: true, force: true })
               .catch(() => {});
             return view(scope, cancelled);
-          },
-        );
-      }
-      if (request.action === 'start') {
-        if (
-          record &&
-          !(record.kind === 'outgoing' && ['cancelled', 'complete'].includes(record.stage)) &&
-          !(record.kind === 'incoming' && record.stage === 'active')
-        )
-          throw new Error('MIGRATION_ALREADY_STARTED');
-        if (request.targetDeviceId === selfId() || isSharedTaskPeer(request.targetDeviceId))
-          throw new Error('MIGRATION_TARGET_INVALID');
-        const target = await invoke(request.targetDeviceId, { action: 'caps' }, scope);
-        if (request.targetProject && !target.projects?.includes(request.targetProject))
-          throw new Error('MIGRATION_TARGET_UNKNOWN');
-        const members = await sourceGroup(scope, request.sessionId);
-        if (
-          members.length !== initialMembers.length ||
-          members.some((member, index) => member.id !== initialMembers[index].id)
-        )
-          throw new Error('MIGRATION_TEAM_CHANGED');
-        const source = members[0];
-        if (source.orcaRole === 'lead' && target.teamMigration !== true)
-          throw new Error('MIGRATION_UNSUPPORTED');
-        if (members.some((member) => !target.agents?.includes(member.agentKind)))
-          throw new Error('MIGRATION_TARGET_MODEL_UNAVAILABLE');
-        const id = randomUUID();
-        record = {
-          kind: 'outgoing',
-          id,
-          sessionId: request.sessionId,
-          sourceDeviceId: selfId(),
-          targetDeviceId: request.targetDeviceId,
-          targetSessionId: id,
-          targetProject: request.targetProject ?? null,
-          workingDir: source.workingDir,
-          ...(source.orcaRole === 'lead'
-            ? {
-                workers: members.slice(1).map((member) => ({
-                  sessionId: member.id,
-                  targetSessionId: randomUUID(),
-                  workingDir: member.workingDir,
-                })),
-              }
-            : {}),
-          stage: 'preparing',
-        };
-        scope.save(record);
-      }
-      if (!record || record.kind !== 'outgoing') throw new Error('MIGRATION_NOT_FOUND');
-      launch(scope, record);
-      return view(scope, record);
-    },
+          }
+
+          if (request.action === 'start') {
+            if (
+              record &&
+              !(record.kind === 'outgoing' && ['cancelled', 'complete'].includes(record.stage)) &&
+              !(record.kind === 'incoming' && record.stage === 'active')
+            )
+              throw new Error('MIGRATION_ALREADY_STARTED');
+            if (request.targetDeviceId === selfId() || isSharedTaskPeer(request.targetDeviceId))
+              throw new Error('MIGRATION_TARGET_INVALID');
+            const target = await invoke(request.targetDeviceId, { action: 'caps' }, scope);
+            if (request.targetProject && !target.projects?.includes(request.targetProject))
+              throw new Error('MIGRATION_TARGET_UNKNOWN');
+            const members = await sourceGroup(scope, request.sessionId);
+            if (
+              members.length !== initialMembers.length ||
+              members.some((member, index) => member.id !== initialMembers[index].id)
+            )
+              throw new Error('MIGRATION_TEAM_CHANGED');
+            const source = members[0];
+            if (source.orcaRole === 'lead' && target.teamMigration !== true)
+              throw new Error('MIGRATION_UNSUPPORTED');
+            if (members.some((member) => !target.agents?.includes(member.agentKind)))
+              throw new Error('MIGRATION_TARGET_MODEL_UNAVAILABLE');
+            const id = randomUUID();
+            record = {
+              kind: 'outgoing',
+              id,
+              sessionId: request.sessionId,
+              sourceDeviceId: selfId(),
+              targetDeviceId: request.targetDeviceId,
+              targetSessionId: id,
+              targetProject: request.targetProject ?? null,
+              workingDir: source.workingDir,
+              ...(source.orcaRole === 'lead'
+                ? {
+                    workers: members.slice(1).map((member) => ({
+                      sessionId: member.id,
+                      targetSessionId: randomUUID(),
+                      workingDir: member.workingDir,
+                    })),
+                  }
+                : {}),
+              stage: 'preparing',
+            };
+            scope.save(record);
+          }
+          if (!record || record.kind !== 'outgoing') throw new Error('MIGRATION_NOT_FOUND');
+          nextCopy = record;
+          return view(scope, record);
+        },
+      ),
   );
+  // Release admission before starting the background operation on the same lock.
+  if (nextCopy) launch(scope, nextCopy);
+  return result;
 }
 
 export function registerTaskMigrationIpc(
