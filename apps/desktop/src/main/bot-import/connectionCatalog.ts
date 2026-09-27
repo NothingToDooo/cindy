@@ -144,6 +144,7 @@ export function restoreImportedArguments(value: Record<string, unknown>, schema:
     const candidates = expand(schemas);
     const literals = [...inherited, ...candidates.flatMap(current => [
       ...(Array.isArray(current.enum) ? current.enum : []),
+      ...(Array.isArray(current.examples) ? current.examples : []),
       ...(Object.hasOwn(current, 'const') ? [current.const] : []),
       ...(Object.hasOwn(current, 'default') ? [current.default] : []),
     ])];

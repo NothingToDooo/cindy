@@ -786,3 +786,47 @@ it.each(['count', 'bytes'])('bounds retained previews across controllers by %s',
   await startCompanionImport({ ...selection, previewId: ids.at(-1)! }, `fixture-${ids.length - 1}`);
   await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('complete'));
 });
+
+it.each(['readback', 'binding'] as const)('cleans an unbound first checkpoint after %s failure using the durable request index', async failure => {
+  const [source] = await listCompanionImportSources('fixture');
+  const preview = await previewCompanionImport(source!.id, 'fixture');
+  const selection = { requestId: 'fixture-first-write-failure', previewId: preview.id, name: 'Ada', entryIds: [], takeover: false };
+  const botId = `import_${fingerprint(selection.requestId).slice(0, 24)}`;
+  const values = h.secretValues;
+  let failed = false;
+  h.store = createCompanionEnvironmentStore({
+    read: key => { if (failure === 'readback' && failed) throw new Error('fixture readback failed'); return values.get(key) ?? null; },
+    write: async (key, value) => {
+      // No credential write is possible before this non-secret recovery index.
+      const index = await fs.readFile(path.join(h.root, 'companion-imports', `${selection.requestId}.json`), 'utf8');
+      expect(JSON.parse(index)).toMatchObject({ result: { botId }, copied: [] });
+      values.set(key, value); failed = true;
+      if (failure === 'binding') {
+        // A filesystem failure at the following manifest write.
+        await fs.mkdir(path.join(h.root, 'bots', botId, 'environment.json'));
+      }
+      return true;
+    },
+    remove: key => { values.delete(key); return true; },
+  });
+  const result = await startCompanionImport(selection, 'fixture');
+  expect(result.status).toBe('needs-attention');
+  expect(h.created).toBe(false); expect(values.size).toBe(1);
+  if (failure === 'binding') await fs.rm(path.join(h.root, 'bots', botId, 'environment.json'), { recursive: true });
+  // A new vault instance and the startup receipt scan must find and remove it,
+  // including when the first cleanup attempt also fails.
+  const remove = vi.fn((key: string) => { values.delete(key); return true; }).mockReturnValueOnce(false);
+  h.store = createCompanionEnvironmentStore({ read: key => values.get(key) ?? null, write: () => true, remove });
+  // A committed profile or an uncertain lookup must never lose its vault key.
+  vi.mocked(getBotRemoteResourceSource).mockResolvedValueOnce({ canonicalSessionId: 'chat' } as never);
+  await recoverCompanionImports();
+  expect(values.size).toBe(1); expect(remove).not.toHaveBeenCalled();
+  vi.mocked(getBotRemoteResourceSource).mockRejectedValueOnce(new Error('fixture database unavailable'));
+  await recoverCompanionImports();
+  expect(values.size).toBe(1); expect(remove).not.toHaveBeenCalled();
+  await recoverCompanionImports();
+  expect(values.size).toBe(1);
+  await recoverCompanionImports();
+  expect(values.size).toBe(0); expect(remove).toHaveBeenCalledTimes(2);
+  expect(h.created).toBe(false);
+});

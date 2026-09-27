@@ -187,7 +187,7 @@ omitting it retains normal companion defaults, and a rejected request can be cor
   containing credentials use public aliases and resolve to original names only
   inside the host. The connection configuration itself is not modified.
   Required property names use the same masking as schema keys, and host dispatch
-  restores schema-defined argument keys and exact aliases from enum/const/default
+  restores schema-defined argument keys and exact aliases from enum/const/default/examples
   values only at their corresponding argument paths (including nested arrays)
   for runtime calls and verification probes. Names declared only in `required`,
   `dependentRequired` or legacy `dependencies` are restored on that object too,
@@ -291,7 +291,11 @@ external data still require actual read evidence.
 ## Handover and compatibility
 
 An initial non-secret receipt indexes the request before any encrypted checkpoint
-write. The encrypted selected snapshot, including full skill resources, is written
+write. Recovery uses that index to clean a first vault write whose readback or
+manifest publication failed, but only after confirming the binding and profile
+are absent under the profile lock. Cleanup failures retain the same recovery
+index; a committed binding/profile or an uncertain lookup is never discarded.
+The encrypted selected snapshot, including full skill resources, is written
 before the request is acknowledged or an item is copied. If the process stops after
 the checkpoint but before its acknowledgement, startup scanning and same-request
 retry discover it through that index. The durable receipt records item copies and
@@ -345,7 +349,11 @@ Definitive host input rejections keep their stable error through the Mobile
 Remote Resource boundary so the existing form can be edited and resubmitted.
 Expired or changed previews clear the frozen intent and refresh the existing
 source step on Desktop and Mobile; a new preview gets a fresh request.
-Unexpected/ambiguous failures still retain the original request for reconciliation.
+Mobile validates the complete action through the existing Remote Resource parser
+before freezing its request. A payload exceeding the 64 KiB input budget stays
+editable so the user can adjust the portrait/selection; no oversized write is sent.
+The wire format and limits are unchanged. Unexpected/ambiguous failures still
+retain the original request for reconciliation.
 The optional public credential-alternative IDs are additive: older clients may
 ignore them, but the host still rejects a conflicting selection before writing.
 

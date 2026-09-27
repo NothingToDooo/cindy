@@ -53,12 +53,13 @@ it('preserves structured numeric data while masking exact credentials under arbi
     .toEqual({ count: 1, value: '[code]', key: '[arbitrary]', nested: ['[another]'] });
 });
 
-it('restores advertised enum, const and default values at the upstream call boundary', async () => {
+it('restores advertised enum, const, default and example values at the upstream call boundary', async () => {
   const env = { STAGE: 'prod', PRIVATE: 'fixture-private-key' };
   const connection = { name: 'stage', url: 'https://example.invalid/mcp' };
   const tool: Tool = { name: 'read_stage', inputSchema: { type: 'object', properties: {
     stage: { type: 'string', enum: ['prod', 'test'] },
     nested: { type: 'array', items: { type: 'object', properties: { fixed: { const: 'prod' }, fallback: { default: 'prefix-prod' }, note: { type: 'string' } } } },
+    sample: { examples: [{ 'fixture-private-key': ['prod'] }] },
     free: { type: 'string' },
   } } };
   const callTool = vi.fn(async () => ({ content: [{ type: 'text', text: 'ok' }] }));
@@ -76,10 +77,11 @@ it('restores advertised enum, const and default values at the upstream call boun
     expect(nested.fixed.const).not.toBe('prod');
     expect(nested.fallback.default).not.toBe('prefix-prod');
     const alias = properties.stage.enum[0]!;
-    const args = { stage: alias, nested: [{ fixed: nested.fixed.const, fallback: nested.fallback.default, note: alias }], free: alias, extra: '[PRIVATE]' };
+    const sample = (published.inputSchema.properties!.sample as { examples: unknown[] }).examples[0];
+    const args = { sample, stage: alias, nested: [{ fixed: nested.fixed.const, fallback: nested.fallback.default, note: alias }], free: alias, extra: '[PRIVATE]' };
     const result = await client.callTool({ name: published.name, arguments: args });
     expect(result.isError).not.toBe(true);
-    expect(callTool).toHaveBeenCalledWith({ name: 'read_stage', arguments: { stage: 'prod', nested: [{ fixed: 'prod', fallback: 'prefix-prod', note: alias }], free: alias, extra: '[PRIVATE]' } }, undefined, { timeout: 120000 });
+    expect(callTool).toHaveBeenCalledWith({ name: 'read_stage', arguments: { sample: { 'fixture-private-key': ['prod'] }, stage: 'prod', nested: [{ fixed: 'prod', fallback: 'prefix-prod', note: alias }], free: alias, extra: '[PRIVATE]' } }, undefined, { timeout: 120000 });
     expect(args.stage).toBe(properties.stage.enum[0]);
   } finally { imported.mockRestore(); await client.close(); await config.instance.close(); }
 });

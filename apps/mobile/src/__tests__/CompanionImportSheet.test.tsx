@@ -131,3 +131,30 @@ it('clears an earlier receipt after a name conflict and uses the existing editab
   expect(requests[1].requestId).toBe(requests[0].requestId);
   expect(requests[2]).toMatchObject({ requestId: 'fixture-renamed-request', name: 'Grace' });
 });
+
+it('rejects an oversized action before freezing the selection and can submit after deselection', async () => {
+  const avatar = 'a'.repeat(55_000);
+  const entries = Array.from({ length: 400 }, (_, index) => ({ id: `entry-${index}-` + 'x'.repeat(30), name: `Entry ${index}`, category: 'memory', selected: true }));
+  h.invoke.mockImplementation(async (_host: string, _channel: string, args: any[]) => {
+    const id = args[0].ref.id;
+    return { blocks: [{ primitive: 'companion-import', data: id === 'sources' ? { sources: [{ id: 'source', name: 'Ada', kind: 'hermes' }] }
+      : id.startsWith('preview:') ? { preview: { id: 'preview', name: 'Ada', avatarImageBase64: avatar, source: { id: 'source', name: 'Ada', kind: 'hermes' }, entries } }
+      : { result: null } }] };
+  });
+  h.submit.mockReset().mockResolvedValue({ effects: [] });
+  const container = document.createElement('div'); root = createRoot(container);
+  await act(async () => root!.render(createElement(CompanionImportSheet, { visible: true, deviceId: 'host', deviceName: 'Mac', online: true, onClose() {}, onCreated: h.created })));
+  const click = async (text: string) => { await act(async () => { const button = [...container.querySelectorAll('button')].find(button => button.textContent === text); expect(button).toBeDefined(); button!.click(); }); };
+  await click('Ada · Hermes');
+  await click('devices.companionImport.submit');
+  expect(h.submit).not.toHaveBeenCalled();
+  expect(h.invoke.mock.calls.some(call => call[2][0].ref.id.startsWith('result:'))).toBe(false);
+  expect((container.querySelector('input:not([type="checkbox"])') as HTMLInputElement).disabled).toBe(false);
+  await act(async () => (container.querySelector('[aria-label="devices.companionImport.memory"]') as HTMLInputElement).click());
+  await click('devices.companionImport.submit');
+  expect(h.submit).toHaveBeenCalledTimes(1);
+  const request = h.submit.mock.calls[0]![2];
+  expect(request.input).toMatchObject({ entryIds: [], avatarImageBase64: avatar });
+  const { parseRemoteActionInvokeRequest, REMOTE_RESOURCE_PROTOCOL_VERSION } = await import('@cindy/device-link');
+  expect(parseRemoteActionInvokeRequest({ ...request, client: { protocolVersion: REMOTE_RESOURCE_PROTOCOL_VERSION, primitives: [] } })).not.toBeNull();
+});

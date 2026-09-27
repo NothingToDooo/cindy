@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Switch, View } from 'react-native';
 import { randomUUID } from 'expo-crypto';
 import { useTranslation } from 'react-i18next';
-import { REMOTE_RESOURCE_GET_CHANNEL, REMOTE_RESOURCE_PROTOCOL_VERSION, type RemoteResourceRef } from '@cindy/device-link';
+import { parseRemoteActionInvokeRequest, REMOTE_RESOURCE_GET_CHANNEL, REMOTE_RESOURCE_PROTOCOL_VERSION, type RemoteResourceRef } from '@cindy/device-link';
 import { areCompanionImportEntriesSelected, toggleCompanionImportEntries, companionImportIssueKey, companionImportCategories, remoteCompanionImportApi, type CompanionImportPreview, type CompanionImportResult, type CompanionImportSelection, type CompanionImportSource } from '@cindy/maker-shared/companion-import';
 import { Text, TextInput } from '@/components/AppText';
 import { MainWindowActionButton } from '@/components/MobilePrimitives';
@@ -64,7 +64,18 @@ export function CompanionImportSheet({ visible, onClose, onClosed, deviceId, dev
   });
   const submit = () => act(async () => {
     if (!preview || !name.trim() || !avatar) return;
-    intent.current ??= { requestId: randomUUID(), previewId: preview.id, name: name.trim(), avatarImageBase64: avatar, entryIds: selected, takeover };
+    if (!intent.current) {
+      const selection = { requestId: randomUUID(), previewId: preview.id, name: name.trim(), avatarImageBase64: avatar, entryIds: selected, takeover };
+      // Validate the complete action with the host's wire parser before freezing
+      // this request. Oversized inputs must remain editable, never retry forever.
+      if (!parseRemoteActionInvokeRequest({
+        client: { protocolVersion: REMOTE_RESOURCE_PROTOCOL_VERSION, primitives: ['companion-import'], locale: i18n.language },
+        collectionId: 'companion-import', actionId: 'import',
+        resourceRef: { collectionId: 'companion-import', kind: 'import', id: `preview:${preview.source.id}` },
+        input: selection,
+      })) throw new Error('INVALID_SELECTION');
+      intent.current = selection;
+    }
     let value = await api.status(intent.current.requestId);
     if (!value || value.status === 'needs-attention') value = await api.start(intent.current);
     while (alive.current && value?.status === 'running') {

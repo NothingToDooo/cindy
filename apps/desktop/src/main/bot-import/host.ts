@@ -219,6 +219,19 @@ export async function getCompanionImportResult(requestId: string): Promise<Compa
   const running = jobs.get(`${scope.scope}:${requestId}`);
   if (running) return receipt?.companionCreated || receipt?.environmentSaved ? receipt.result : running;
   if (receipt?.creationRejected) return withBotProfileLocks([receipt.result.botId], () => cleanRejectedCreation(scope.root, receipt!, scope.assert));
+  // The request index precedes the first vault write. If that write never
+  // published its binding, use the index to reclaim its otherwise orphaned key.
+  if (receipt && !receipt.cancelled && !receipt.checkpointSaved && !receipt.companionCreated) await withBotProfileLocks([receipt.result.botId], async () => {
+    receipt = await readReceipt(scope.root, requestId); scope.assert();
+    if (!receipt || receipt.cancelled || receipt.checkpointSaved || receipt.companionCreated) return;
+    const botId = receipt.result.botId;
+    if (await companionEnvironmentStore.read(scope.root, botId, scope.assert)) return;
+    try { await getBotRemoteResourceSource(botId); scope.assert(); return; }
+    catch (error) { if (!(error instanceof Error) || !error.message.includes('[NOT_FOUND]')) throw error; }
+    scope.assert();
+    await companionEnvironmentStore.stageRemoval(scope.root, botId, scope.assert);
+    await companionEnvironmentStore.finishRemoval(scope.root, botId, scope.assert);
+  });
   // Upgrade earlier import bindings only from a durable successful receipt.
   // Failed/skipped active-source handovers must never become executable here.
   if (receipt && !receipt.cancelled && !receipt.handoverMarkers) await withBotProfileLocks([receipt.result.botId], async () => {
