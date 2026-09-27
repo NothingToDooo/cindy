@@ -5998,20 +5998,22 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       }
     },
     writeModelContextLimit: async (targets, limit) => {
+      const owner = getActiveAppSession();
+      const active = () => {
+        const now = getActiveAppSession();
+        return now?.dataOwnerId === owner?.dataOwnerId && now?.generation === owner?.generation;
+      };
       const write = () => writeModelContextLimitsWithRefresh(targets, limit,
         () => refreshContextSettings(targets),
         () => refreshContextSettings());
       if (targets.some((target) => target.providerId === MANAGED_LLAMACPP_PROVIDER_ID)) {
         const service = getManagedLlamaCppService(app.getPath('userData'));
         return service.configure(async () => {
-          const owner = getActiveAppSession();
-          const active = () => {
-            const now = getActiveAppSession();
-            return now?.dataOwnerId === owner?.dataOwnerId && now?.generation === owner?.generation;
-          };
+          if (!active()) throw new Error('OWNER_CHANGED');
           await ensureManagedLlamaCppProvider(
             (await service.snapshot()).models, active,
           );
+          if (!active()) throw new Error('OWNER_CHANGED');
           await refreshCustomProvidersIntoCatalog();
           if (!active()) throw new Error('OWNER_CHANGED');
           await write();
