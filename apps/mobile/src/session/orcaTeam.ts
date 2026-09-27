@@ -129,7 +129,9 @@ function formWireFields(form: OrcaWorkerFormValue) {
   return {
     ...(model ? { model: model.id } : {}),
     ...(model?.effort ? { effort: model.effort } : {}),
-    ...(model?.fast ? { fast: true } : {}),
+    // 选了具体模型就显式发送 Fast(含 false):省略会让被控端沿用 Lead / 默认的 Fast,与表单相反。
+    // 「默认」模型(null)才省略,交给被控端一并解析。模型不支持 Fast 时被控端按 false 落。
+    ...(model ? { fast: model.fast } : {}),
     ...(model?.providerId ? { providerId: model.providerId } : {}),
     workerPermissionMode: form.permissionMode,
   };

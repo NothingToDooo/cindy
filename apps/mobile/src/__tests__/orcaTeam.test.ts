@@ -311,5 +311,11 @@ describe('mobile Orca collaboration mutations', () => {
     const local = [gateway, bridged];
     expect(orcaWorkerProvidersForLead(local, false)).toBe(local);
   });
+
+  it('sends an explicit Fast off for a chosen model and leaves the default model to the computer', () => {
+    const chosen = { ...form, agent: 'codex' as const, model: { id: 'gpt-5.5', providerId: null, effort: 'high', fast: false } };
+    expect(buildOrcaEnableOptions(chosen)).toMatchObject({ model: 'gpt-5.5', fast: false });
+    expect(buildOrcaEnableOptions({ ...chosen, model: null })).not.toHaveProperty('fast');
+  });
 });
 
