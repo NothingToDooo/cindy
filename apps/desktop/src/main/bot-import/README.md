@@ -55,6 +55,17 @@ omitting it retains normal companion defaults, and a rejected request can be cor
   use the existing account encrypted credential store. The teammate folder has
   a non-secret `environment.json` binding. Cancellation of a variable does not
   secretly copy its expanded value into another selected connection.
+  Public profile/memory/Skill text and routine names/prompts redact all known
+  source credentials, including unchecked accounts; memory titles use the same
+  mask. Routine publication happens before createOnce persists the definition,
+  and activation compares that same projection so masking does not block takeover.
+  The encrypted checkpoint retains only masks actually matching selected source
+  content, with stable labels for restart. These values were already embedded in
+  selected originals; unrelated unchecked credentials/configurations are not
+  retained. The private environment keeps these masks for later output redaction,
+  never for subprocess env or connection authentication. Only selected credential
+  entries are activated; selected original documents/automation definitions stay
+  private and unmodified.
   Profiles supplying different values for one variable are alternatives in the
   existing checkboxes; none is guessed by file order. Picking one clears its
   conflicting choices, and group selection keeps an existing account choice.
@@ -83,7 +94,7 @@ omitting it retains normal companion defaults, and a rejected request can be cor
   are not implicitly inherited; selected proxy/runtime settings remain available.
   Codex hosts remain partitioned by companion environment identity.
   Before publishing a selected Skill, UTF-8 and BOM-marked UTF-16 text (including
-  SKILL.md, scripts and reference resources) masks all known selected credentials.
+  SKILL.md, scripts and reference resources) masks all known source credentials.
   Unchanged resources and binary assets retain their bytes. Affected skills keep
   their complete original resource tree in the encrypted environment after the
   restart checkpoint is cleared. Their readable SKILL.md points commands to the

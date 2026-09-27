@@ -131,14 +131,14 @@ it('masks all known credentials in preview labels without choosing conflicting a
   expect((await h.store.read(h.root, result.botId, () => {}))?.env).toEqual({ OPENAI_API_KEY: secrets[0] });
 });
 
-it('redacts selected credentials from profile and memory copies while retaining original documents and usable secrets privately', async () => {
+it.each([false, true])('redacts all known credentials from profile/memory copies while importing only selected connections (deselected: %s)', async deselected => {
   const secrets = ['fake-env-key', 'fake-local-key', 'fake-header-token', 'fake/url+key', 'fake-access-token', 'fake-refresh-token', '123:fake-telegram-token'];
   const text = `简短一点，带点幽默。status en us\n${secrets.join('\n')}\nfake-unselected-key`;
   const documents: ImportSnapshot['items'] = [
     { view: { id: 'soul', name: 'SOUL.md', category: 'personality', selected: true }, role: 'identity', text },
     { view: { id: 'user', name: 'USER.md', category: 'memory', selected: true }, role: 'user', text },
     { view: { id: 'instructions', name: 'HERMES.md', category: 'personality', selected: true }, role: 'instructions', text },
-    { view: { id: 'reference', name: 'notes.md', category: 'memory', selected: true }, text },
+    { view: { id: 'reference', name: 'notes fake-unselected-key.md', category: 'memory', selected: true }, text },
     { view: { id: 'ordinary', name: 'ordinary.md', category: 'memory', selected: true }, text: 'Keep this paragraph exactly.\nSecond line.' },
   ];
   h.snapshot.items = [...documents,
@@ -146,8 +146,9 @@ it('redacts selected credentials from profile and memory copies while retaining 
     { view: { id: 'mcp', name: 'Data', category: 'connections', selected: true }, mcp: { name: 'Data', url: 'https://example.invalid/mcp?token=fake%2Furl%2Bkey', env: { KEY: secrets[1]!, REFERENCED: '${DATA_TOKEN}' }, headers: { Authorization: `Bearer ${secrets[2]}` } } },
     { view: { id: 'oauth', name: 'Auth', category: 'connections', selected: true }, credential: { format: 'native-auth', value: { value: { access_token: secrets[4], nested: { refreshToken: secrets[5] } } } } },
     { view: { id: 'telegram', name: 'Telegram', category: 'connections', selected: true }, credential: { format: 'telegram', value: { token: secrets[6], account: 'default' } } },
-    { view: { id: 'excluded', name: 'Excluded', category: 'connections', selected: false }, env: { EXCLUDED: 'fake-unselected-key' } },
+    { view: { id: 'excluded', name: 'Excluded', category: 'connections', selected: false }, env: { EXCLUDED: 'fake-unselected-key', UNUSED_ONLY: 'fake-absent-from-selected-content' } },
   ];
+  if (deselected) for (const item of h.snapshot.items.filter(item => item.view.category === 'connections')) item.view.selected = false;
   const [source] = await listCompanionImportSources('fixture');
   const preview = await previewCompanionImport(source!.id, 'fixture');
   const selection = { requestId: 'fixture-request-12345', previewId: preview.id, name: 'Ada', entryIds: h.snapshot.items.filter(item => item.view.selected).map(item => item.view.id), takeover: false };
@@ -156,25 +157,71 @@ it('redacts selected credentials from profile and memory copies while retaining 
   const profile = h.writeProfile.mock.calls[0]![2];
   const publicText = JSON.stringify([profile, h.importDocument.mock.calls]);
   for (const secret of secrets) expect(publicText).not.toContain(secret);
+  expect(publicText).not.toContain('fake-unselected-key');
   for (const field of ['identitySource', 'userContextSource', 'systemPromptOverride']) {
     expect(profile[field]).toContain('简短一点，带点幽默。status en us');
-    expect(profile[field]).toContain('fake-unselected-key');
   }
   expect(h.importDocument.mock.calls.find(call => call[1] === 'ordinary')?.[3]).toBe(documents[4]!.text);
   const stored = (await h.store.read(h.root, result.botId, () => {}))!;
-  expect(stored.env.DATA_TOKEN).toBe(secrets[0]);
+  if (deselected) { expect(stored.env).toEqual({}); expect(stored.mcp).toEqual([]); expect(stored.credentials).toEqual([]); }
+  else {
+    expect(stored.env.DATA_TOKEN).toBe(secrets[0]);
+    expect(stored.mcp[0]?.env?.REFERENCED).toBe(secrets[0]);
+    expect(stored.mcp[0]?.headers?.Authorization).toBe(`Bearer ${secrets[2]}`);
+  }
   expect(stored.env).not.toHaveProperty('EXCLUDED');
-  expect(stored.mcp[0]?.env?.REFERENCED).toBe(secrets[0]);
-  expect(stored.mcp[0]?.headers?.Authorization).toBe(`Bearer ${secrets[2]}`);
+  expect(JSON.stringify(stored)).not.toContain('fake-absent-from-selected-content');
   expect(stored.documents).toEqual(Object.fromEntries(documents.map(item => [item.view.id, item.text])));
   expect(stored.pendingImport).toBeUndefined();
 });
 
+it('persists redacted routine fields and retains identical publication masks across a handover retry after restart', async () => {
+  const selectedSecret = 'fake-active-query-token'; const excludedSecret = 'fake-excluded-note-token';
+  const input = h.snapshot.items[0]!.automation!.input!;
+  input.name = `Morning report ${selectedSecret} ${excludedSecret}`;
+  input.prompt = `Read reports using ${selectedSecret}; note ${excludedSecret}`;
+  h.snapshot.items[0]!.automation!.original = { enabled: true, name: input.name, prompt: input.prompt };
+  const original = structuredClone(input);
+  h.snapshot.items.push(
+    { view: { id: 'excluded', name: 'Not selected', category: 'connections', selected: false }, env: { DISCARDED: excludedSecret, UNUSED: 'fake-unused-account-token' } },
+    { view: { id: 'active', name: 'Selected', category: 'connections', selected: true }, env: { ACTIVE: selectedSecret } },
+  );
+  const [source] = await listCompanionImportSources('fixture');
+  const preview = await previewCompanionImport(source!.id, 'fixture');
+  const selection = { requestId: 'fixture-routine-12345', previewId: preview.id, name: 'Ada', entryIds: ['task', 'active'], takeover: true };
+  const result = await startCompanionImport(selection, 'fixture');
+  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('needs-attention'));
+  expect(h.routines).toHaveLength(1);
+  const saved = structuredClone(h.routines[0]!);
+  for (const secret of [selectedSecret, excludedSecret]) expect(JSON.stringify(saved)).not.toContain(secret);
+  expect(saved.name).toContain('Morning report'); expect(saved.prompt).toContain('Read reports');
+  expect(saved.triggers).toEqual(input.triggers);
+  expect(h.pause).not.toHaveBeenCalled();
+  const environment = (await h.store.read(h.root, result.botId, () => {}))!;
+  expect(environment.env).toEqual({ ACTIVE: selectedSecret });
+  expect(environment.sourceAutomations?.[0]?.original).toEqual({ enabled: true, name: original.name, prompt: original.prompt });
+  expect(JSON.stringify(environment)).not.toContain('fake-unused-account-token');
+  const checkpoint = JSON.parse(environment.pendingImport!.snapshotJson);
+  expect(checkpoint.items.map((item: { view: { id: string } }) => item.view.id)).toEqual(['task', 'active']);
+  expect(Object.values(checkpoint.publicationRedactions)).toContain(excludedSecret);
+  expect(await fs.readFile(path.join(h.root, 'companion-imports', `${selection.requestId}.json`), 'utf8')).not.toContain(excludedSecret);
+  h.verified = true;
+  // A different controller cannot access the original in-memory preview.
+  await startCompanionImport(selection, 'after-restart');
+  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('complete'));
+  expect(h.routines).toHaveLength(1);
+  expect(h.routines[0]).toMatchObject({ name: saved.name, prompt: saved.prompt, triggers: saved.triggers, enabled: true });
+  expect(h.pause).toHaveBeenCalledExactlyOnceWith(false);
+  expect(h.sourceEnvironment).toEqual({ ACTIVE: selectedSecret });
+  expect(input).toEqual(original);
+});
+
 it.each([false, true])('publishes masked skills and runs original scripts/resources through the existing bridge (native credentials only: %s)', async nativeOnly => {
   const token = 'fake-selected-source-token'; const native = 'fake-native-resource-token';
+  const excluded = 'fake-deselected-skill-token';
   const files = [
     { name: 'SKILL.md', bytes: Buffer.from(`---\nname: report\ndescription: Query using ${token}\n---\nUse scripts/report.cjs; 原来的谈吐。`), executable: false },
-    { name: 'scripts/report.cjs', bytes: Buffer.from(`const fs = require('node:fs'); const helper = require('./helper.cjs'); if (${nativeOnly ? 'false' : `process.env.SOURCE_TOKEN !== '${token}'`} || helper.token !== '${native}') process.exit(1); fs.writeFileSync('report.txt', 'query succeeded'); console.log('query succeeded', helper.token, '${token}');`), executable: true },
+    { name: 'scripts/report.cjs', bytes: Buffer.from(`const fs = require('node:fs'); const helper = require('./helper.cjs'); if (${nativeOnly ? 'false' : `process.env.SOURCE_TOKEN !== '${token}'`} || helper.token !== '${native}' || process.env.DISCARDED) process.exit(1); fs.writeFileSync('report.txt', 'query succeeded'); console.log('query succeeded', helper.token, '${token}', '${excluded}');`), executable: true },
     { name: 'scripts/helper.cjs', bytes: Buffer.from('module.exports = require("./data/query.json");'), executable: false },
     { name: 'scripts/data/query.json', bytes: Buffer.from(JSON.stringify({ token: native })), executable: false },
     { name: 'references/guide.md', bytes: Buffer.from(`使用原接口。${native}\r\n`), executable: false },
@@ -187,6 +234,7 @@ it.each([false, true])('publishes masked skills and runs original scripts/resour
     { view: { id: 'excluded', name: 'excluded', category: 'skills', selected: false }, files, filesComplete: true },
     { view: { id: 'env', name: 'env', category: 'connections', selected: true }, env: { SOURCE_TOKEN: token } },
     { view: { id: 'native', name: 'native', category: 'connections', selected: true }, credential: { format: 'native-auth', value: { access_token: native, refresh_token: token } } },
+    { view: { id: 'discarded-credential', name: 'Discarded', category: 'connections', selected: false }, env: { DISCARDED: excluded } },
   ];
   const original = files.map(file => ({ ...file, bytes: Buffer.from(file.bytes) }));
   const [source] = await listCompanionImportSources('fixture');
@@ -198,6 +246,7 @@ it.each([false, true])('publishes masked skills and runs original scripts/resour
   for (const file of files) {
     const published = await fs.readFile(path.join(skillRoot, 'report', file.name));
     expect(published.includes(Buffer.from(token))).toBe(false); expect(published.includes(Buffer.from(native))).toBe(false);
+    expect(published.includes(Buffer.from(excluded))).toBe(false);
     if (file.name.endsWith('.bin')) expect(published).toEqual(file.bytes);
   }
   const guide = await fs.readFile(path.join(skillRoot, 'report', 'SKILL.md'), 'utf8');
@@ -208,6 +257,7 @@ it.each([false, true])('publishes masked skills and runs original scripts/resour
   const stored = (await h.store.read(h.root, result.botId, () => {}))!;
   expect(stored.pendingImport).toBeUndefined();
   if (nativeOnly) expect(stored.env).toEqual({});
+  expect(stored.env).not.toHaveProperty('DISCARDED');
   expect(h.writeProfile.mock.calls[0]![2].config.mcpServers).toContain('companion_connections');
   expect(Object.keys(stored.skillFiles!)).toEqual(['report']);
   expect(stored.skillFiles!.report!.map(file => ({ ...file, bytes: Buffer.from(file.bytes, 'base64') }))).toEqual(original);
@@ -225,6 +275,7 @@ it.each([false, true])('publishes masked skills and runs original scripts/resour
     expect(output.isError).toBe(false);
     expect(JSON.stringify(output)).toContain('query succeeded');
     expect(JSON.stringify(output)).not.toContain(token); expect(JSON.stringify(output)).not.toContain(native);
+    expect(JSON.stringify(output)).not.toContain(excluded);
     expect(await fs.readFile(path.join(h.root, 'bots', result.botId, 'workspace', 'report.txt'), 'utf8')).toBe('query succeeded');
     expect(mkdir).toHaveBeenCalledTimes(1);
     await expect(fs.access(await mkdir.mock.results[0]!.value)).rejects.toThrow();

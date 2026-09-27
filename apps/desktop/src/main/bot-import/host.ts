@@ -4,7 +4,7 @@ import path from 'node:path';
 import { app } from 'electron';
 import sharp from 'sharp';
 import { atomicWriteFileSync, readAtomicFileSync } from '../utils/atomicWriteFile.js';
-import { parseRoutineInput } from '@cindy/maker-scheduler';
+import { parseRoutineInput, type RoutineInput } from '@cindy/maker-scheduler';
 import { normalizeBotName } from '../../shared/botCreation.js';
 import { listBotRemoteResourceSources } from '../localDb/ipc/bots.js';
 import { validateBotAvatarBuffer, decodeBotAvatarImage } from '../localDb/ipc/botAvatarSelection.js';
@@ -15,7 +15,7 @@ import { readBotProfileFolder, writeBotProfileFolder, BOT_PROFILE_TEXT_MAX_BYTES
 import { importBotSkillFiles, normalizeBotSkillSlug } from '../maker-ipc/botSkillStore.js';
 import { withBotProfileLocks } from '../maker-ipc/botProfileLock.js';
 import { getRoutineEngine, routineTools } from '../routines/service.js';
-import { previewImportRedactions, resolveImportReferences, selectedImportEnvironment, selectedImportRedactions } from './environmentSelection.js';
+import { previewImportRedactions, retainedImportRedactions, resolveImportReferences, selectedImportEnvironment, selectedImportRedactions } from './environmentSelection.js';
 import { redactEnvironmentValues } from './process.js';
 import { discoverImportSources, inspectImportSource, type SourceReaderDeps } from './sources.js';
 import { readOpenClawCronDatabase } from './openclawCron.js';
@@ -189,8 +189,14 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
   if (selection.avatarImageBase64 !== undefined) {
     try { decodeBotAvatarImage(selection.avatarImageBase64); } catch { throw new CompanionImportError('INVALID_SELECTION'); }
   }
-  const contentSecrets = selectedImportRedactions(selected);
+  const contentSecrets = snapshot.publicationRedactions ?? Object.fromEntries([...new Set([
+    ...Object.values(previewImportRedactions(snapshot.items)), ...Object.values(selectedImportRedactions(selected)),
+  ])].map((value, index) => [`content_credential_${index}`, value]));
   const redactText = (text: string) => redactEnvironmentValues(text, contentSecrets);
+  const publicRoutine = (input: RoutineInput): RoutineInput => ({ ...input, name: redactText(input.name), prompt: redactText(input.prompt) });
+  let retainedRedactions = snapshot.publicationRedactions;
+  // Resource capture finishes before saveCheckpoint; retain only selected embedded values.
+  const publicationRedactions = (items: ImportSnapshot['items']) => retainedRedactions ??= retainedImportRedactions(items, contentSecrets);
   const skillSlug = (item: ImportSnapshot['items'][number]) => {
     const original = path.basename(item.sourceDirectory ?? item.view.name);
     if (redactText(original) !== original) return `import-${fingerprint(item.view.id).slice(0, 16)}`;
@@ -228,12 +234,12 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
         const slug = skillSlug(item);
         await importBotSkillFiles(scope.root, botId, slug, projectImportedSkill(item.files ?? [], slug, contentSecrets).files, scope.assert);
       } else if (item.text && item.view.category === 'memory') {
-        await getBotMemoryService().importDocument(botId, item.view.id, item.view.name, redactText(item.text), item.role === 'user' ? 'user' : 'reference');
+        await getBotMemoryService().importDocument(botId, item.view.id, redactText(item.view.name), redactText(item.text), item.role === 'user' ? 'user' : 'reference');
       }
     },
     async saveCheckpoint(botId, items) {
       const previous = await companionEnvironmentStore.read(scope.root, botId, scope.assert);
-      const pendingImport = { selection, snapshotJson: serializeImportSnapshot({ ...snapshot, avatarImageBase64: selection.avatarImageBase64, items }) };
+      const pendingImport = { selection, snapshotJson: serializeImportSnapshot({ ...snapshot, avatarImageBase64: selection.avatarImageBase64, items, publicationRedactions: publicationRedactions(items) }) };
       if (previous) await companionEnvironmentStore.update(scope.root, botId, scope.assert, environment => { environment.pendingImport = pendingImport; });
       else await companionEnvironmentStore.write(scope.root, botId, { version: 1, env: {}, mcp: [], credentials: [], pendingImport }, scope.assert);
     },
@@ -262,8 +268,9 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
         files: Object.fromEntries(items.flatMap(item => item.asset ? [[item.asset.name, item.asset.bytes.toString('base64')]] : [])),
         skillFiles,
         documents: Object.fromEntries(items.flatMap(item => item.text === undefined ? [] : [[item.view.id, item.text]])),
+        contentRedactions: publicationRedactions(items),
         sourceAutomations: items.flatMap(item => item.automation ? [{ entryId: item.view.id, kind: snapshot.source.kind, original: item.automation.original }] : []),
-        pendingImport: { selection, snapshotJson: serializeImportSnapshot({ ...snapshot, avatarImageBase64: selection.avatarImageBase64, items }) },
+        pendingImport: { selection, snapshotJson: serializeImportSnapshot({ ...snapshot, avatarImageBase64: selection.avatarImageBase64, items, publicationRedactions: publicationRedactions(items) }) },
         automations: previous?.automations ?? {},
       }, scope.assert);
       const roleText = (role: 'identity' | 'user' | 'instructions') => redactText(items.filter(item => item.role === role).map(item => item.text).join('\n\n'));
@@ -296,7 +303,7 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
           original: item.automation!.original, sourceRoot: snapshot.source.root, deliveries: item.automation!.deliveries,
           issues: [...(item.view.issues ?? []), ...(item.view.dependsOn?.some(id => !selection.entryIds.includes(id)) ? ['AUTOMATION_DEPENDENCY_NOT_SELECTED'] : [])] };
       });
-      const routine = await routineTools.createOnce(botId, input, creationId); scope.assert();
+      const routine = await routineTools.createOnce(botId, publicRoutine(input), creationId); scope.assert();
       return routine.id;
     },
     verifyAutomation: (botId, item) => verifyImportedAutomation(scope.root, botId, item, scope.assert, selected, snapshot.source.root),
@@ -309,7 +316,7 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
       // The private activation committed even if its outer receipt was lost.
       // Preserve edits made after that success instead of restoring the source.
       if (binding?.handover === 'ready') return;
-      if (!item.automation?.input || JSON.stringify(parseRoutineInput({ ...routine, enabled: false })) !== JSON.stringify(parseRoutineInput({ ...item.automation.input, enabled: false }))) {
+      if (!item.automation?.input || JSON.stringify(parseRoutineInput({ ...routine, enabled: false })) !== JSON.stringify(parseRoutineInput({ ...publicRoutine(item.automation.input), enabled: false }))) {
         throw new CompanionImportError(routine.enabled ? 'TARGET_HANDOVER_UNCERTAIN' : 'TARGET_AUTOMATION_CHANGED');
       }
       const expected = parseRoutineInput({ ...routine, enabled: true });

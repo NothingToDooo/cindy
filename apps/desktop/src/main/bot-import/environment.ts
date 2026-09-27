@@ -15,6 +15,8 @@ export interface CompanionEnvironment {
   skillFiles?: Record<string, Array<{ name: string; bytes: string; executable: boolean }>>;
   /** Original selected documents; model-readable profile/memory copies redact known credentials. */
   documents?: Record<string, string>;
+  /** Redaction only: known values embedded in selected originals, never injected into processes. */
+  contentRedactions?: Record<string, string>;
   sourceAutomations?: Array<{ entryId: string; kind: 'hermes' | 'openclaw'; original: Record<string, unknown> }>;
   /** Selected content only; encrypted restart checkpoint, removed after successful completion. */
   pendingImport?: { selection: import('@cindy/maker-shared/companion-import').CompanionImportSelection; snapshotJson: string };

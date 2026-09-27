@@ -1,7 +1,7 @@
 import { fingerprint } from './files.js';
 import { CompanionImportError, type ImportItem } from './types.js';
 import { importedContentRedactions } from './connectionCatalog.js';
-import { environmentRedactions } from './process.js';
+import { environmentRedactions, redactEnvironmentValues } from './process.js';
 
 const variableName = (name: string, platform = process.platform) => platform === 'win32' ? name.toUpperCase() : name;
 
@@ -51,6 +51,24 @@ export function previewImportRedactions(items: ImportItem[]): Record<string, str
   const secrets = [...Object.values(importRedactions(items, env)),
     ...items.flatMap(item => Object.values(environmentRedactions(item.env ?? {})))];
   return Object.fromEntries([...new Set(secrets)].map((value, index) => [`preview_credential_${index}`, value]));
+}
+
+/** Retain masks only for values already present in selected content, never discarded accounts. */
+export function retainedImportRedactions(items: ImportItem[], secrets: Record<string, string>): Record<string, string> {
+  const matched = new Set<string>();
+  const text = (value: string) => { redactEnvironmentValues(value, secrets, value => { matched.add(value); }); };
+  const visit = (value: unknown): void => {
+    if (typeof value === 'string') text(value);
+    else if (Buffer.isBuffer(value)) {
+      text(value.toString('utf8'));
+      if (value.length % 2 === 0 && value[0] === 0xff && value[1] === 0xfe) text(value.toString('utf16le'));
+      if (value.length % 2 === 0 && value[0] === 0xfe && value[1] === 0xff) text(Buffer.from(value).swap16().toString('utf16le'));
+    } else if (value && typeof value === 'object') {
+      for (const [key, child] of Object.entries(value)) { text(key); visit(child); }
+    }
+  };
+  visit(items);
+  return Object.fromEntries(Object.entries(secrets).filter(([, value]) => matched.has(value)));
 }
 
 function importRedactions(items: ImportItem[], env: Record<string, string>): Record<string, string> {

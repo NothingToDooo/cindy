@@ -34,9 +34,10 @@ function urlCredentialValues(raw: string, includePath = false): string[] {
   }))];
 }
 
-/** Known selected credentials only; keep originals in the private environment. */
-export function importedContentRedactions(environment: Pick<CompanionEnvironment, 'env' | 'mcp' | 'credentials'>, monitorUrls: string[] = []): Record<string, string> {
+/** Executable credentials plus private masks for known values embedded in selected originals. */
+export function importedContentRedactions(environment: Pick<CompanionEnvironment, 'env' | 'mcp' | 'credentials' | 'contentRedactions'>, monitorUrls: string[] = []): Record<string, string> {
   const values = [...Object.values(environmentRedactions(environment.env)),
+    ...Object.values(environment.contentRedactions ?? {}),
     ...environment.mcp.flatMap(server => Object.values(connectionRedactions(server, environment.env))),
     ...monitorUrls.flatMap(url => urlCredentialValues(url, true))];
   const collect = (value: unknown): void => {

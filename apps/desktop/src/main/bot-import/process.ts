@@ -60,7 +60,7 @@ export function environmentRedactions(env: Record<string, string>): Record<strin
   return Object.fromEntries(Object.entries(env).filter(([name, value]) => !isPublicImportSetting(name, value) && value.length > 0));
 }
 
-export function redactEnvironmentValues(text: string, env: Record<string, string>): string {
+export function redactEnvironmentValues(text: string, env: Record<string, string>, onMatch?: (value: string) => void): string {
   // Unknown variable names remain private. Short values match whole tokens so
   // "us" cannot corrupt "status"; exact short credentials are still masked.
   // Match in one pass so replacements cannot redact each other.
@@ -71,7 +71,7 @@ export function redactEnvironmentValues(text: string, env: Record<string, string
       const literal = value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       return value.length < 8 ? `(?<![\\p{L}\\p{N}])${literal}(?![\\p{L}\\p{N}])` : literal;
     }).join('|');
-  return text.replace(new RegExp(pattern, 'gu'), value => values.get(value)!);
+  return text.replace(new RegExp(pattern, 'gu'), value => { onMatch?.(value); return values.get(value)!; });
 }
 
 /** Redact untrusted keys and string values without corrupting JSON numbers or booleans. */

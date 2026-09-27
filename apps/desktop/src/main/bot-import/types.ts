@@ -65,6 +65,8 @@ export interface ImportSnapshot {
   items: ImportItem[];
   avatarImageBase64?: string;
   fingerprint: string;
+  /** Private restart masks for values already embedded in selected source content. */
+  publicationRedactions?: Record<string, string>;
 }
 
 export class CompanionImportError extends Error {
