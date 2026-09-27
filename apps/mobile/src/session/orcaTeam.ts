@@ -122,9 +122,14 @@ export function narrowOrcaWorkerProvider(
   const entry = provider ? getModel(provider, model.id, form.agent) : undefined;
   if (!entry) return narrowed;
   const efforts: readonly string[] = entry.efforts ?? [];
-  const effort = efforts.length === 0
+  // 该来源没有推理强度档位 → 不发送 effort(被控端对空档位表的显式 effort 报 INVALID_PARAMS),
+  // 与桌面「条目无档 → 省略」同口径。
+  // 老被控端的条目可能没有 efforts 字段:未知时保持原选择,交给被控端裁决。
+  const effort = entry.efforts === undefined
     ? model.effort
-    : model.effort && efforts.includes(model.effort)
+    : efforts.length === 0
+      ? null
+      : model.effort && efforts.includes(model.effort)
       ? model.effort
       : entry.defaultEffort ?? efforts[0] ?? null;
   const fast = model.fast && entry.supportsFastMode === true;

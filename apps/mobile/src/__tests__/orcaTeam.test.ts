@@ -343,5 +343,16 @@ describe('mobile Orca collaboration mutations', () => {
     // 仍不钉来源(交给被控端路由),但 effort / Fast 按该默认来源的条目收敛。
     expect(result.model).toMatchObject({ providerId: null, effort: 'low', fast: false });
   });
+
+  it('omits effort when the routed provider has no effort levels for the model', () => {
+    const provider = {
+      id: 'a', name: 'a', agents: ['codex'], connected: true, routing: { codex: {} },
+      models: { codex: [{ id: 'gpt-5.5', efforts: [], defaultEffort: null, supportsFastMode: false }] },
+    } as unknown as ProviderView;
+    const chosen = { ...form, agent: 'codex' as const, model: { id: 'gpt-5.5', providerId: 'a', effort: 'high', fast: false } };
+    const narrowed = narrowOrcaWorkerProvider(chosen, [provider]);
+    expect(narrowed.model?.effort).toBeNull();
+    expect(buildOrcaEnableOptions(narrowed)).not.toHaveProperty('effort');
+  });
 });
 
