@@ -10,6 +10,8 @@ export interface ImportReceipt {
   copied: string[];
   environmentSaved?: boolean;
   checkpointSaved?: boolean;
+  /** Durable fence: a deleted companion's old preview/request must never recreate it. */
+  cancelled?: boolean;
   routines: Record<string, { id: string; phase: 'created' | 'verified' | 'pausing-source' | 'source-paused' | 'complete' }>;
 }
 
@@ -50,6 +52,7 @@ export async function transferCompanion(snapshot: ImportSnapshot, selection: Com
   const existing = await deps.readReceipt(selection.requestId);
   deps.assertOwner();
   if (existing && existing.selectionHash !== selectionHash) throw new CompanionImportError('REQUEST_ALREADY_USED');
+  if (existing?.cancelled) return existing.result;
   if (existing?.result.status === 'complete') return existing.result;
   const receipt: ImportReceipt = existing ?? { selectionHash, copied: [], routines: {}, result: {
     requestId: selection.requestId, botId: `import_${fingerprint(selection.requestId).slice(0, 24)}`, status: 'running', checks: [],

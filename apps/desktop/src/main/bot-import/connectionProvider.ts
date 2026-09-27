@@ -1,4 +1,4 @@
-import path from 'node:path';
+import { ensureBotWorkspaceDir } from '../maker-ipc/botProfileFolder.js';
 import { importedProcessEnvironment, runImportedProcess, redactEnvironmentValues, redactEnvironmentData } from './process.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, type Tool } from '@modelcontextprotocol/sdk/types.js';
@@ -7,7 +7,7 @@ import { resolveLiziMcpSessionContext } from '@cindy/mcps';
 import { readCompanionSessionEnvironment } from './runtime.js';
 import { IMPORTED_TOOL_LIMIT, listImportedTools, withImportedConnection } from './connections.js';
 import { fingerprint } from './files.js';
-import { connectionRedactions, publicConnectionName, redactImportedTool } from './connectionCatalog.js';
+import { connectionRedactions, publicConnectionName, redactImportedTool, restoreImportedArguments } from './connectionCatalog.js';
 
 export const COMPANION_CONNECTIONS_MCP_NAME = 'companion_connections';
 
@@ -54,9 +54,10 @@ export function createCompanionConnectionsProvider(): McpProvider {
         if (request.params.name === 'run_command') {
           const command = request.params.arguments?.command;
           if (typeof command !== 'string' || !command.trim() || command.length > 32000) throw new Error('Invalid command');
+          const cwd = await ensureBotWorkspaceDir(scope.userData, scope.botId);
           const output = await runImportedProcess({ command: process.platform === 'win32' ? process.env.ComSpec || 'cmd.exe' : '/bin/sh',
             args: process.platform === 'win32' ? ['/d', '/s', '/c', command] : ['-c', command],
-            cwd: path.join(scope.userData, 'bots', scope.botId), env: importedProcessEnvironment(scope.environment.env), timeoutMs: 120_000,
+            cwd, env: importedProcessEnvironment(scope.environment.env), timeoutMs: 120_000,
             signal: extra.signal, assertOwner: scope.assertOwner });
           return { content: [{ type: 'text', text: redactEnvironmentValues(output.stdout, scope.environment.env) }], isError: output.exitCode !== 0 };
         }
@@ -66,7 +67,7 @@ export function createCompanionConnectionsProvider(): McpProvider {
           const result = await withImportedConnection(connection, scope.environment.env, scope.assertOwner, async client => {
             const tools = await listImportedTools(client);
             const tool = tools.find(item => toolName(connection.name, item.name, publicConnectionName(item.name, secrets)) === request.params.name);
-            return tool ? client.callTool({ name: tool.name, arguments: request.params.arguments ?? {} }, undefined, { timeout: 120_000 }) : undefined;
+            return tool ? client.callTool({ name: tool.name, arguments: restoreImportedArguments(request.params.arguments ?? {}, tool.inputSchema, secrets) }, undefined, { timeout: 120_000 }) : undefined;
           }, { identity: scope.identity, signal: extra.signal });
           if (result) {
             const redacted = redactEnvironmentData(result, secrets);

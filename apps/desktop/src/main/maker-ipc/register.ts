@@ -1,4 +1,5 @@
 import { companionEnvironmentStore } from '../bot-import/runtime.js';
+import { cancelCompanionImportsForDeletion } from '../bot-import/host.js';
 import { createBotMessageTransport } from './botMessageTransport.js';
 import { setBotRemoteMessageService } from './botRemoteMessageReceiver.js';
 import { handleListDevices, defaultDeps as deviceDirectoryDeps } from '../device-link/ipc.js';
@@ -9933,6 +9934,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     },
     onBeforeDelete: async (botId) => {
       const owner = activeOwnerScopeKey();
+      await cancelCompanionImportsForDeletion(botId);
       await updateBotRoutineLifecycle(botId, 'delete');
       const assertOwner = () => {
         if (isAppSessionBoundaryPending() || activeOwnerScopeKey() !== owner) throw new Error('Bot account changed during deletion');

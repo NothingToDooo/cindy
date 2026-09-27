@@ -162,7 +162,7 @@ it('finds a second-page read tool, redacts its catalog before planning and forwa
   const toolName = `read_${token}`;
   const callTool = vi.fn(async () => ({ structuredContent: { rows: [{ count: 7 }] } }));
   const listTools = vi.fn(async ({ cursor }: { cursor?: string }) => cursor
-    ? { tools: [{ name: toolName, description: `${token} ${header}`, inputSchema: { type: 'object', properties: { query: { type: 'string', default: header } } }, annotations: { readOnlyHint: true } }] }
+    ? { tools: [{ name: toolName, description: `${token} ${header}`, inputSchema: { type: 'object', properties: { [token]: { type: 'string', default: header } }, required: [token] }, annotations: { readOnlyHint: true } }] }
     : { tools: [{ name: 'write_data', inputSchema: { type: 'object' } }], nextCursor: 'page-2' });
   const imported = vi.spyOn(connectionModule, 'withImportedConnection').mockImplementation(async (_server, _env, _assert, run) => run({
     listTools, callTool,
@@ -171,7 +171,8 @@ it('finds a second-page read tool, redacts its catalog before planning and forwa
     expect(prompt).not.toContain(token); expect(prompt).not.toContain(header);
     const context = JSON.parse(prompt.slice(prompt.lastIndexOf('\n') + 1));
     const connection = context.connections[0];
-    return JSON.stringify({ reads: [{ kind: 'mcp', connection: connection.name, tool: connection.tools[0].name, arguments: { query: 'daily' }, pointer: '/rows', array: true }] });
+    const argument = Object.keys(connection.tools[0].inputSchema.properties)[0]!;
+    return JSON.stringify({ reads: [{ kind: 'mcp', connection: connection.name, tool: connection.tools[0].name, arguments: { [argument]: 'daily' }, pointer: '/rows', array: true }] });
   });
   vi.mocked(getMakerIfReady).mockReturnValue({ oneShot, getSessionMeta: vi.fn().mockResolvedValue({ agentKind: 'pi', model: 'fixture-model' }) } as never);
   vi.mocked(getBotRemoteResourceSource).mockResolvedValue({ canonicalSessionId: 'fixture-session' } as never);
@@ -180,7 +181,39 @@ it('finds a second-page read tool, redacts its catalog before planning and forwa
     expect(result.verified).toBe(true);
     expect(oneShot).toHaveBeenCalledOnce();
     expect(listTools.mock.calls.map(([args]) => args.cursor)).toEqual([undefined, 'page-2']);
-    expect(callTool).toHaveBeenCalledWith({ name: toolName, arguments: { query: 'daily' } }, undefined, { timeout: 30000 });
+    expect(callTool).toHaveBeenCalledWith({ name: toolName, arguments: { [token]: 'daily' } }, undefined, { timeout: 30000 });
+  } finally { imported.mockRestore(); }
+});
+
+it('isolates failed optional catalogs during takeover, but rejects missing planned tools and propagates owner loss', async () => {
+  const mcp = ['stopped', 'paged', 'healthy'].map(name => ({ name, url: `https://${name}.example.invalid/mcp` }));
+  vi.mocked(companionEnvironmentStore.read).mockResolvedValue({ version: 1, env: {}, mcp, credentials: [] });
+  const callTool = vi.fn(async () => ({ structuredContent: { rows: [1] } }));
+  let ownerChanged = false;
+  const assertOwner = () => { if (ownerChanged) throw new Error('OWNER_CHANGED'); };
+  const imported = vi.spyOn(connectionModule, 'withImportedConnection').mockImplementation(async (server, _env, _assert, run) => {
+    if (server.name === 'stopped') throw new Error('Unavailable');
+    return run({ listTools: async ({ cursor }: { cursor?: string }) => {
+      if (cursor) throw new Error('Incomplete catalog');
+      return { tools: [{ name: 'read', inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } }], ...(server.name === 'paged' ? { nextCursor: 'next' } : {}) };
+    }, callTool } as never);
+  });
+  const oneShot = vi.fn(async (_agent, prompt: string) => {
+    const context = JSON.parse(prompt.slice(prompt.lastIndexOf('\n') + 1));
+    expect(context.connections.map((connection: { name: string }) => connection.name)).toEqual(['healthy']);
+    return JSON.stringify({ reads: [{ kind: 'mcp', connection: 'healthy', tool: 'read', arguments: {}, pointer: '/rows', array: true }] });
+  });
+  vi.mocked(getMakerIfReady).mockReturnValue({ oneShot, getSessionMeta: vi.fn().mockResolvedValue({ agentKind: 'pi', model: 'fixture-model' }) } as never);
+  vi.mocked(getBotRemoteResourceSource).mockResolvedValue({ canonicalSessionId: 'fixture-session' } as never);
+  const item: ImportItem = { view: { id: 'query', name: 'Query', category: 'automations', selected: true }, automation: { sourceId: 'query', original: {}, fingerprint: 'fixture' } };
+  try {
+    expect((await verifyImportedAutomation('/fixture', 'bot', item, assertOwner)).verified).toBe(true);
+    expect(callTool).toHaveBeenCalledOnce();
+    oneShot.mockResolvedValue(JSON.stringify({ reads: [{ kind: 'mcp', connection: 'paged', tool: 'read', pointer: '/rows', array: true }] }));
+    expect((await verifyImportedAutomation('/fixture', 'bot', item, assertOwner)).verified).toBe(false);
+    expect(callTool).toHaveBeenCalledOnce();
+    imported.mockImplementationOnce(async () => { ownerChanged = true; throw new Error('Disconnected'); });
+    await expect(verifyImportedAutomation('/fixture', 'bot', item, assertOwner)).rejects.toThrow('OWNER_CHANGED');
   } finally { imported.mockRestore(); }
 });
 

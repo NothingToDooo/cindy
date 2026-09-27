@@ -7,7 +7,7 @@ import { getBotRemoteResourceSource } from '../localDb/ipc/bots.js';
 import { companionEnvironmentStore } from './runtime.js';
 import { IMPORTED_TOOL_LIMIT, listImportedTools, withImportedConnection } from './connections.js';
 import { object, string, type ImportItem, type ImportedMcpServer } from './types.js';
-import { connectionRedactions, publicConnectionName, redactImportedTool } from './connectionCatalog.js';
+import { connectionRedactions, publicConnectionName, redactImportedTool, restoreImportedArguments } from './connectionCatalog.js';
 import { verifyImportedDelivery } from './delivery.js';
 import { fingerprint, writeImportFiles } from './files.js';
 import { importedProcessEnvironment, redactEnvironmentValues, runImportedProcess } from './process.js';
@@ -62,20 +62,26 @@ export async function verifyImportedAutomation(root: string, botId: string, item
       assertOwner(); monitorVerified = true;
     }
     const connections: Array<{ name: string; tools: Array<{ name: string; description?: string; inputSchema: unknown }> }> = [];
-    const readTargets = new Map<string, { server: ImportedMcpServer; tools: Map<string, string> }>();
+    const readTargets = new Map<string, { server: ImportedMcpServer; tools: Map<string, { name: string; inputSchema: unknown }> }>();
     let toolCount = 1; // Reserve the runtime catalog's built-in run_command slot.
     for (const server of environment.mcp.filter(server => server.enabled !== false)) {
-      const tools = await withImportedConnection(server, environment.env, assertOwner, client => listImportedTools(client, IMPORTED_TOOL_LIMIT - toolCount));
-      toolCount += tools.length;
-      const secrets = connectionRedactions(server, environment.env);
-      const name = publicConnectionName(server.name, secrets);
-      const target = { server, tools: new Map<string, string>() };
-      connections.push({ name, tools: tools.filter(tool => tool.annotations?.readOnlyHint === true).map(tool => {
-        const redacted = redactImportedTool(tool, secrets);
-        target.tools.set(redacted.name, tool.name);
-        return { name: redacted.name, description: redacted.description, inputSchema: redacted.inputSchema };
-      }) });
-      readTargets.set(name, target);
+      try {
+        const tools = await withImportedConnection(server, environment.env, assertOwner, client => listImportedTools(client, IMPORTED_TOOL_LIMIT - toolCount));
+        toolCount += tools.length;
+        const secrets = connectionRedactions(server, environment.env);
+        const name = publicConnectionName(server.name, secrets);
+        const target = { server, tools: new Map<string, { name: string; inputSchema: unknown }>() };
+        connections.push({ name, tools: tools.filter(tool => tool.annotations?.readOnlyHint === true).map(tool => {
+          const redacted = redactImportedTool(tool, secrets);
+          target.tools.set(redacted.name, { name: tool.name, inputSchema: tool.inputSchema });
+          return { name: redacted.name, description: redacted.description, inputSchema: redacted.inputSchema };
+        }) });
+        readTargets.set(name, target);
+      } catch {
+        // A missing optional catalog must not hide healthy connections. Account
+        // cancellation still propagates; unavailable tools cannot enter a plan.
+        assertOwner();
+      }
     }
     // Delivery credentials are required for selection/handover, but are not data
     // reads. Remove only delivery roots before expanding read dependencies: a
@@ -138,7 +144,8 @@ export async function verifyImportedAutomation(root: string, botId: string, item
         const tool = target?.tools.get(string(read.tool));
         if (!target || !tool) return { verified: false, reason: 'AUTOMATION_READ_NOT_VERIFIED' };
         data = await withImportedConnection(target.server, environment.env, assertOwner, async client => {
-          const result = await client.callTool({ name: tool, arguments: object(read.arguments) }, undefined, { timeout: 30_000 });
+          const secrets = connectionRedactions(target.server, environment.env);
+          const result = await client.callTool({ name: tool.name, arguments: restoreImportedArguments(object(read.arguments), tool.inputSchema, secrets) }, undefined, { timeout: 30_000 });
           if (result.isError) throw new Error('Query failed');
           if (result.structuredContent) return result.structuredContent;
           const blocks = Array.isArray(result.content) ? result.content : [];

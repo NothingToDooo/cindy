@@ -51,6 +51,11 @@ theme tokens. No new native Mobile dependencies or fingerprint inputs are added.
   If SQLite fails, the surviving profile retains its environment. If vault cleanup
   fails or the app exits after commit, the record survives outside the deleted
   companion folder; owner recovery checks that the profile is absent before retrying.
+  Import passes and deletion share the existing profile lifecycle lock, including
+  final checkpoint cleanup. Deletion joins the active pass and durably cancels its
+  receipts before cleanup; old previews and restart reconciliation cannot recreate
+  the removed companion or write its credentials back. Progress reads stay available
+  during an active pass, and the lock releases between handover retry passes.
 - Claude Code, Codex and Pi use the shared `companion_connections` bridge for
   imported skills, commands and data queries. Only those host-owned subprocesses
   and connections receive imported variables; the model harness does not inherit
@@ -61,6 +66,8 @@ theme tokens. No new native Mobile dependencies or fingerprint inputs are added.
   are not implicitly inherited; selected proxy/runtime settings remain available.
   Codex hosts remain partitioned by companion environment identity.
   `run_command` remains an authorized general command facility, with the existing
+  companion workspace as its cwd; relative files and outputs use the same directory
+  as the companion session. It retains the existing
   Auto/Ask/Full Access modes: Auto reviews the actual call against user intent,
   Ask confirms each invocation without a reusable server grant, and Full Access
   retains its normal behavior. Imported MCP tools use the same per-call policy:
@@ -79,12 +86,17 @@ theme tokens. No new native Mobile dependencies or fingerprint inputs are added.
   Sequential calls reuse the cached connection. Overlapping calls use independent
   transports, including during initialization; cancellation or failure closes only
   that caller's transport. Temporary parallel connections close after completion.
-  Public tool catalogs and takeover planning redact metadata/schema string values
+  Takeover catalog discovery also isolates each unavailable optional connection;
+  a plan selecting an absent tool still fails verification, and owner loss propagates.
+  Public tool catalogs and takeover planning redact metadata/schema keys and string values
   against imported variables, connection-local env, resolved headers (including
   authorization payloads), and credential-bearing URL components. The same values
   are masked in tool responses. JSON Schema type syntax remains intact; names
   containing credentials use public aliases and resolve to original names only
   inside the host. The connection configuration itself is not modified.
+  Required property names use the same masking as schema keys, and host dispatch
+  restores schema-defined argument keys privately (including nested arrays) for
+  runtime calls and verification probes. Response object keys are masked as well.
   Bounded locale/region settings such as LANG=en and REGION=us remain ordinary
   configuration. Other short values are masked as whole tokens, not substrings
   inside words such as "status"; explicitly configured header/URL credentials are

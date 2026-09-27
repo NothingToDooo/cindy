@@ -21,7 +21,9 @@ it.skipIf(process.platform === 'win32')('uses original credentials in a real imp
   vi.stubEnv('CINDY_UNRELATED_TEST_SECRET', 'fixture-launch-secret');
   vi.stubEnv('HTTPS_PROXY', 'http://fixture-user:fixture-password@example.invalid');
   root = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-import-command-test-'));
-  await fs.mkdir(path.join(root, 'bots/bot'), { recursive: true });
+  const workspace = path.join(root, 'bots/bot/workspace');
+  await fs.mkdir(path.join(workspace, 'scripts'), { recursive: true });
+  await fs.writeFile(path.join(workspace, 'scripts/report.sh'), 'printf workspace-report');
   const env = { GITHUB_PAT: 'fixture-pat', DATABASE_URL: 'postgres://fixture:secret@example.invalid/db', ALIAS: 'short' };
   vi.mocked(readCompanionSessionEnvironment).mockResolvedValue({ identity: 'fixture', botId: 'bot', userData: root, assertOwner() {}, environment: { version: 1, env, mcp: [], credentials: [] } });
   const provider = createCompanionConnectionsProvider();
@@ -37,6 +39,11 @@ it.skipIf(process.platform === 'win32')('uses original credentials in a real imp
     expect(JSON.stringify(result)).toContain('authenticated');
     for (const value of Object.values(env)) expect(JSON.stringify(result)).not.toContain(value);
     expect(process.env.GITHUB_PAT).not.toBe(env.GITHUB_PAT);
+    const relative = await client.callTool({ name: 'run_command', arguments: { command: 'sh scripts/report.sh > report.txt && cat report.txt' } });
+    expect(relative.isError).toBe(false);
+    expect(JSON.stringify(relative)).toContain('workspace-report');
+    expect(await fs.readFile(path.join(workspace, 'report.txt'), 'utf8')).toBe('workspace-report');
+    await expect(fs.access(path.join(root, 'bots/bot/report.txt'))).rejects.toThrow();
   } finally { await client.close(); await config.instance.close(); }
 });
 
@@ -74,12 +81,14 @@ it('redacts resolved catalog credentials without changing schema syntax, tool di
     env: { TOKEN: 'fixture-local-token' }, headers: { Authorization: 'Bearer fixture-header-token', 'X-Api-Key': 'fixture-api-key' } };
   const secrets = [env.TOKEN, connection.env.TOKEN, connection.headers.Authorization, 'fixture-header-token', connection.headers['X-Api-Key'], connection.url, 'fixture-user', 'fixture-password', 'fixture-url-key'];
   const echo = secrets.join(' ');
+  const secretKey = `argument_${connection.env.TOKEN}`;
   const tool: Tool = { name: `read_${connection.env.TOKEN}`, title: echo, description: echo,
-    inputSchema: { type: 'object', properties: { query: { type: 'string', description: echo, default: echo }, count: { type: 'integer', minimum: 1 } }, required: ['query'], additionalProperties: false },
+    inputSchema: { type: 'object', properties: { query: { type: 'string', description: echo, default: echo }, count: { type: 'integer', minimum: 1 },
+      nested: { type: 'array', items: { type: 'object', properties: { [secretKey]: { type: 'string' } }, required: [secretKey] } } }, required: ['query'], additionalProperties: false },
     outputSchema: { type: 'object', properties: { result: { type: ['object', 'null'], description: echo, examples: [{ note: echo }] } } },
-    annotations: { title: echo, readOnlyHint: true }, _meta: { debug: [echo] } };
+    annotations: { title: echo, readOnlyHint: true }, _meta: { debug: [echo], [secretKey]: 'private key name' } };
   const original = structuredClone({ tool, connection, env });
-  const callTool = vi.fn(async () => ({ content: [{ type: 'text', text: echo }], structuredContent: { rows: 2, authenticated: true } }));
+  const callTool = vi.fn(async () => ({ content: [{ type: 'text', text: echo }], structuredContent: { rows: 2, [secretKey]: true } }));
   const imported = vi.spyOn(connectionModule, 'withImportedConnection').mockImplementation(async (server, environment, assert, run) => {
     expect(server).toEqual(original.connection); expect(environment).toEqual(original.env); assert();
     return run({ listTools: async () => ({ tools: [tool] }), callTool } as never);
@@ -97,10 +106,13 @@ it('redacts resolved catalog credentials without changing schema syntax, tool di
     expect(importedTool.inputSchema).toMatchObject({ type: 'object', properties: { query: { type: 'string' }, count: { type: 'integer', minimum: 1 } }, required: ['query'], additionalProperties: false });
     expect(importedTool.outputSchema).toMatchObject({ type: 'object', properties: { result: { type: ['object', 'null'] } } });
     expect(importedTool.annotations?.readOnlyHint).toBe(true);
-    const result = await client.callTool({ name: importedTool.name, arguments: { query: 'ordinary data', count: 2 } });
-    expect(callTool).toHaveBeenCalledWith({ name: tool.name, arguments: { query: 'ordinary data', count: 2 } }, undefined, { timeout: 120000 });
+    const nested = importedTool.inputSchema.properties!.nested as { items: { properties: Record<string, unknown>; required: string[] } };
+    const publicKey = Object.keys(nested.items.properties)[0]!;
+    expect(nested.items.required).toEqual([publicKey]);
+    const result = await client.callTool({ name: importedTool.name, arguments: { query: 'ordinary data', count: 2, nested: [{ [publicKey]: 'value' }] } });
+    expect(callTool).toHaveBeenCalledWith({ name: tool.name, arguments: { query: 'ordinary data', count: 2, nested: [{ [secretKey]: 'value' }] } }, undefined, { timeout: 120000 });
     for (const secret of secrets) expect(JSON.stringify(result)).not.toContain(secret);
-    expect(result.structuredContent).toEqual({ rows: 2, authenticated: true });
+    expect(result.structuredContent).toEqual({ rows: 2, [publicKey]: true });
     expect({ tool, connection, env }).toEqual(original);
     expect(redactImportedTool({ ...tool, name: 'ordinary_read' }, connectionRedactions(connection, env)).name).toBe('ordinary_read');
   } finally { imported.mockRestore(); await client.close(); await config.instance.close(); }

@@ -73,10 +73,10 @@ export function redactEnvironmentValues(text: string, env: Record<string, string
   return text.replace(new RegExp(pattern, 'gu'), value => values.get(value)!);
 }
 
-/** Redact string values without corrupting JSON numbers or booleans. */
+/** Redact untrusted keys and string values without corrupting JSON numbers or booleans. */
 export function redactEnvironmentData<T>(value: T, env: Record<string, string>): T {
   if (typeof value === 'string') return redactEnvironmentValues(value, env) as T;
   if (Array.isArray(value)) return value.map(child => redactEnvironmentData(child, env)) as T;
-  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, redactEnvironmentData(child, env)])) as T;
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, child]) => [redactEnvironmentValues(key, env), redactEnvironmentData(child, env)])) as T;
   return value;
 }

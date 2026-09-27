@@ -13,6 +13,7 @@ import { activeOwnerScopeKey, getActiveAppSession, isAppSessionBoundaryPending, 
 import { createBotCanonicalSession, createBotProfile, getBotMemoryService, getBotRemoteResourceSource, reconcileBotProfileFolder } from '../localDb/ipc/bots.js';
 import { readBotProfileFolder, writeBotProfileFolder, BOT_PROFILE_TEXT_MAX_BYTES } from '../maker-ipc/botProfileFolder.js';
 import { importBotSkillFiles, normalizeBotSkillSlug } from '../maker-ipc/botSkillStore.js';
+import { withBotProfileLocks } from '../maker-ipc/botProfileLock.js';
 import { getRoutineEngine, routineTools } from '../routines/service.js';
 import { selectedImportEnvironment } from './environmentSelection.js';
 import { discoverImportSources, inspectImportSource, type SourceReaderDeps } from './sources.js';
@@ -106,24 +107,45 @@ async function saveReceipt(root: string, receipt: ImportReceipt) {
   atomicWriteFileSync(file, JSON.stringify(receipt));
 }
 
+/** Called inside the lifecycle profile lock, after the active transfer pass has joined. */
+export async function cancelCompanionImportsForDeletion(botId: string): Promise<void> {
+  const scope = owner();
+  let files: string[];
+  try { files = await fs.readdir(path.join(scope.root, 'companion-imports')); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
+  for (const name of files.filter(name => /^[A-Za-z0-9_-]{16,100}\.json$/.test(name))) {
+    const receipt = await readReceipt(scope.root, name.slice(0, -5)); scope.assert();
+    if (!receipt || receipt.result.botId !== botId) continue;
+    receipt.cancelled = true;
+    receipt.result.status = 'needs-attention';
+    receipt.result.checks = [...receipt.result.checks.filter(check => check.entryId !== 'import'),
+      { entryId: 'import', status: 'needs-attention', message: 'IMPORT_CANCELLED' }];
+    await saveReceipt(scope.root, receipt); scope.assert();
+  }
+}
+
 export async function getCompanionImportResult(requestId: string): Promise<CompanionImportResult | undefined> {
   const scope = owner();
-  const receipt = await readReceipt(scope.root, requestId); scope.assert();
+  let receipt = await readReceipt(scope.root, requestId); scope.assert();
+  if (jobs.has(`${scope.scope}:${requestId}`)) return receipt?.result;
   // Upgrade earlier import bindings only from a durable successful receipt.
   // Failed/skipped active-source handovers must never become executable here.
-  if (receipt) {
+  if (receipt && !receipt.cancelled) await withBotProfileLocks([receipt.result.botId], async () => {
+    receipt = await readReceipt(scope.root, requestId); scope.assert();
+    if (!receipt || receipt.cancelled) return;
+    const currentReceipt = receipt;
     const environment = await companionEnvironmentStore.read(scope.root, receipt.result.botId, scope.assert);
     const ready = Object.entries(receipt.routines).flatMap(([entryId, routine]) => {
       const binding = environment?.automations?.[routine.id];
-      const status = receipt.result.checks.find(check => check.entryId === entryId)?.status;
+      const status = currentReceipt.result.checks.find(check => check.entryId === entryId)?.status;
       return binding && binding.handover === undefined && routine.phase === 'complete'
         && (status === 'taken-over' || status === 'paused' && (binding.original.enabled === false || binding.original.state === 'paused')) ? [routine.id] : [];
     });
     if (ready.length) await companionEnvironmentStore.update(scope.root, receipt.result.botId, scope.assert, env => {
       for (const id of ready) if (env.automations?.[id]?.handover === undefined) env.automations![id]!.handover = 'ready';
     });
-  }
-  if (receipt && (receipt.result.status === 'running' || Object.values(receipt.routines).some(item => item.phase === 'pausing-source' || item.phase === 'source-paused')) && !jobs.has(`${scope.scope}:${requestId}`)) {
+  });
+  if (receipt && !receipt.cancelled && (receipt.result.status === 'running' || Object.values(receipt.routines).some(item => item.phase === 'pausing-source' || item.phase === 'source-paused')) && !jobs.has(`${scope.scope}:${requestId}`)) {
     const environment = await companionEnvironmentStore.read(scope.root, receipt.result.botId, scope.assert);
     const pending = environment?.pendingImport;
     if (pending && pending.selection.requestId === requestId) {
@@ -132,9 +154,13 @@ export async function getCompanionImportResult(requestId: string): Promise<Compa
       previews.set(pending.selection.previewId, { owner: scope.scope, controller, value: snapshot, createdAt: Date.now() });
       return startCompanionImport(pending.selection, controller);
     }
-    receipt.result.status = 'needs-attention';
-    receipt.result.checks.push({ entryId: 'import', status: 'needs-attention', message: 'IMPORT_INTERRUPTED' });
-    await saveReceipt(scope.root, receipt);
+    await withBotProfileLocks([receipt.result.botId], async () => {
+      receipt = await readReceipt(scope.root, requestId); scope.assert();
+      if (!receipt || receipt.cancelled) return;
+      receipt.result.status = 'needs-attention';
+      receipt.result.checks.push({ entryId: 'import', status: 'needs-attention', message: 'IMPORT_INTERRUPTED' });
+      await saveReceipt(scope.root, receipt);
+    });
   }
   return receipt?.result;
 }
@@ -159,6 +185,7 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
     if (Buffer.byteLength(text, 'utf8') > BOT_PROFILE_TEXT_MAX_BYTES) throw new CompanionImportError('PROFILE_TEXT_TOO_LARGE');
   }
   const prior = await readReceipt(scope.root, selection.requestId); scope.assert();
+  if (prior?.cancelled) return prior.result;
   if (!prior) {
     const profiles = await listBotRemoteResourceSources(); scope.assert();
     if (profiles.some(profile => profile.status !== 'archived' && normalizeBotName(profile.name) === normalizeBotName(selection.name))) throw new CompanionImportError('IMPORT_NAME_EXISTS');
@@ -174,7 +201,11 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
     readReceipt: requestId => readReceipt(scope.root, requestId),
     saveReceipt: receipt => saveReceipt(scope.root, receipt),
     async createCompanion(botId, input) {
-      try { await getBotRemoteResourceSource(botId); scope.assert(); return; }
+      try {
+        const profile = await getBotRemoteResourceSource(botId); scope.assert();
+        if (profile.status === 'deleting' || profile.status === 'archived') throw new CompanionImportError('IMPORT_CANCELLED');
+        return;
+      }
       catch (error) { if (!(error instanceof Error) || !error.message.includes('[NOT_FOUND]')) throw error; }
       await createBotProfile({ id: botId, name: input.name, description: '', avatarImageBase64: input.avatarImageBase64, prepareInvitation: false });
     },
@@ -289,25 +320,35 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
   const task = (async () => {
     for (;;) {
       scope.assert();
-      const result = await transferCompanion(snapshot, selection, transferDeps);
+      // Share deletion's existing profile lock. It joins every write (including
+      // checkpoint cleanup) before removing the profile or its private environment.
+      // Release between reconciliation passes so deletion can cancel retries.
+      const botId = `import_${fingerprint(selection.requestId).slice(0, 24)}`;
+      const result = await withBotProfileLocks([botId], async () => {
+        scope.assert();
+        const result = await transferCompanion(snapshot, selection, transferDeps);
+        if (result.status === 'complete') await companionEnvironmentStore.update(scope.root, result.botId, scope.assert, env => { delete env.pendingImport; });
+        return result;
+      });
       if (result.status !== 'running') return result;
       // A native task can still be finishing when it is paused. Reconcile the
       // durable handover on the host even if the mobile link/dialog closes.
       await new Promise(resolve => setTimeout(resolve, 5000));
     }
-  })().then(async result => {
-    if (result.status === 'complete') await companionEnvironmentStore.update(scope.root, result.botId, scope.assert, env => { delete env.pendingImport; });
-    return result;
-  }).catch(async error => {
+  })().catch(async error => {
     scope.assert();
-    const receipt = await readReceipt(scope.root, selection.requestId);
-    if (receipt) {
-      receipt.result.status = 'needs-attention';
-      receipt.result.checks.push({ entryId: 'import', status: 'needs-attention', message: error instanceof CompanionImportError ? error.code : 'IMPORT_FAILED' });
-      await saveReceipt(scope.root, receipt);
-      return receipt.result;
-    }
-    throw error;
+    return withBotProfileLocks([`import_${fingerprint(selection.requestId).slice(0, 24)}`], async () => {
+      const receipt = await readReceipt(scope.root, selection.requestId);
+      scope.assert();
+      if (receipt?.cancelled) return receipt.result;
+      if (receipt) {
+        receipt.result.status = 'needs-attention';
+        receipt.result.checks.push({ entryId: 'import', status: 'needs-attention', message: error instanceof CompanionImportError ? error.code : 'IMPORT_FAILED' });
+        await saveReceipt(scope.root, receipt);
+        return receipt.result;
+      }
+      throw error;
+    });
   }).finally(() => { if (jobs.get(jobKey) === task) jobs.delete(jobKey); });
   jobs.set(jobKey, task);
   return accepted(task, scope.root, selection.requestId);

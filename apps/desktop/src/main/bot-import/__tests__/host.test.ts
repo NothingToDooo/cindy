@@ -46,7 +46,8 @@ vi.mock('../../routines/service.js', () => ({
     h.routines = h.routines.map(row => row.id === id ? { ...row, ...input, revision: row.revision + 1 } : row);
   } }),
 }));
-import { listCompanionImportSources, previewCompanionImport, startCompanionImport, getCompanionImportResult, recoverCompanionImports } from '../host.js';
+import { listCompanionImportSources, previewCompanionImport, startCompanionImport, getCompanionImportResult, recoverCompanionImports, cancelCompanionImportsForDeletion } from '../host.js';
+import { withBotProfileLocks } from '../../maker-ipc/botProfileLock.js';
 import { assertImportedAutomationReady, prepareImportedAutomation } from '../automationRuntime.js';
 
 beforeEach(async () => {
@@ -63,6 +64,51 @@ beforeEach(async () => {
   }] };
 });
 afterEach(async () => { await fs.rm(h.root, { recursive: true, force: true }); });
+
+it('joins an in-flight credential write before deletion and durably blocks old-preview and restart retries', async () => {
+  h.snapshot.items = [{ view: { id: 'env', name: 'Key', category: 'connections', selected: true }, env: { KEY: 'fake-import-secret' } }];
+  const [source] = await listCompanionImportSources('fixture');
+  const preview = await previewCompanionImport(source!.id, 'fixture');
+  const selection = { requestId: 'fixture-request-12345', previewId: preview.id, name: 'Ada', entryIds: ['env'], takeover: false };
+  let release!: () => void;
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  let writing = false;
+  const write = h.store.write.bind(h.store);
+  const writes = vi.spyOn(h.store, 'write').mockImplementation(async (...args) => {
+    if (args[2].env.KEY) { writing = true; await blocked; }
+    await write(...args);
+  });
+  const accepted = await startCompanionImport(selection, 'fixture');
+  await vi.waitFor(() => expect(writing).toBe(true));
+  expect(h.created).toBe(true);
+  let deleted = false;
+  // The real lifecycle service holds this same lock around preparation/DB deletion/cleanup.
+  const deletion = withBotProfileLocks([accepted.botId], async () => {
+    await cancelCompanionImportsForDeletion(accepted.botId);
+    await h.store.stageRemoval(h.root, accepted.botId, () => {});
+    h.created = false;
+    await h.store.finishRemoval(h.root, accepted.botId, () => {});
+    await fs.rm(path.join(h.root, 'bots', accepted.botId), { recursive: true, force: true });
+    deleted = true;
+  });
+  try {
+    expect((await getCompanionImportResult(selection.requestId))?.status).toBe('running');
+    expect(deleted).toBe(false);
+  } finally { release(); }
+  await deletion;
+  const count = writes.mock.calls.length;
+  expect(await startCompanionImport(selection, 'fixture')).toMatchObject({ status: 'needs-attention', checks: expect.arrayContaining([{ entryId: 'import', status: 'needs-attention', message: 'IMPORT_CANCELLED' }]) });
+  // Even an old unfinished handover phase cannot restart a cancelled receipt.
+  const receiptFile = path.join(h.root, 'companion-imports', `${selection.requestId}.json`);
+  const receipt = JSON.parse(await fs.readFile(receiptFile, 'utf8'));
+  receipt.routines.old = { id: 'old', phase: 'source-paused' };
+  await fs.writeFile(receiptFile, JSON.stringify(receipt));
+  await recoverCompanionImports();
+  expect(h.created).toBe(false);
+  expect(writes).toHaveBeenCalledTimes(count);
+  expect(await h.store.read(h.root, accepted.botId, () => {})).toBeUndefined();
+  expect((await getCompanionImportResult(selection.requestId))?.checks).toContainEqual({ entryId: 'import', status: 'needs-attention', message: 'IMPORT_CANCELLED' });
+});
 
 it.each(['scan', 'same-request'] as const)('recovers an indexed checkpoint before receipt acknowledgement through %s', async recovery => {
   h.verified = true;
