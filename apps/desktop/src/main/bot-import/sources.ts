@@ -207,8 +207,9 @@ async function skills(items: ImportItem[], roots: string[], used: Set<string>) {
       const front = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text);
       if (front) try { info = object(yaml.load(front[1]!)); } catch { /* Raw skill is retained, and its native loader reports syntax errors. */ }
       const name = string(info.name) || slug;
-      items.push({ view: { id: entryId('skill', slug), category: 'skills', name, description: string(info.description).slice(0, 280), selected: used.has(slug) || used.has(name) },
-        sourceDirectory: dir, files: [await readImportFile(dir, path.join(dir, 'SKILL.md'))] });
+      const referenced = used.has(slug) || used.has(name);
+      items.push({ view: { id: entryId('skill', slug), category: 'skills', name, description: string(info.description).slice(0, 280), selected: referenced },
+        sourceDirectory: dir, files: referenced ? await readImportTree(dir) : [await readImportFile(dir, path.join(dir, 'SKILL.md'))], filesComplete: referenced });
     }
   }
 }
@@ -264,7 +265,7 @@ export async function inspectImportSource(source: ImportSource, deps: SourceRead
     const settings = object(object(object(values.skills).entries)[slug]);
     if (settings.env) item.env = scalarEnv(settings.env);
     if (settings.enabled === false) item.view.selected = false;
-    const front = /^---\r?\n([\s\S]*?)\r?\n---/.exec(item.files?.[0]?.bytes.toString('utf8') ?? '');
+    const front = /^---\r?\n([\s\S]*?)\r?\n---/.exec(item.files?.find(file => file.name === 'SKILL.md')?.bytes.toString('utf8') ?? '');
     let metadata: Record<string, unknown> = {};
     try { if (front) metadata = object(object(yaml.load(front[1]!)).metadata); } catch { /* The original skill loader reports malformed frontmatter. */ }
     const primaryEnv = string(object(metadata.openclaw ?? metadata.clawdbot ?? metadata.hermes).primaryEnv);

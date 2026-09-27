@@ -97,3 +97,20 @@ it('selects nested automation scripts using the same portable asset identity as 
   expect(script.view.selected).toBe(true);
   expect(snapshot.items.find(item => item.automation)?.view.dependsOn).toContain(script.view.id);
 });
+
+it.each(['daily-report', 'Daily report'])('matches a skill reference %s against both its directory and display name', async reference => {
+  await write('.hermes/config.yaml', 'name: Ada\n');
+  await write('.hermes/.env', 'REPORT_TOKEN=fixture-token\nREPORT_URL=https://example.invalid/api');
+  await write('.hermes/skills/daily-report/SKILL.md', '---\nname: Daily report\n---\nUse scripts/query.py');
+  await write('.hermes/skills/daily-report/scripts/query.py', 'print(os.environ["REPORT_TOKEN"], os.environ["REPORT_URL"])');
+  await write('.hermes/cron/jobs.json', JSON.stringify([{ id: 'daily', prompt: 'Read my report', skills: [reference], schedule: { kind: 'interval', minutes: 5 } }]));
+  const reader = deps(); const [source] = await discoverImportSources(reader);
+  const snapshot = await inspectImportSource(source!, reader);
+  const skill = snapshot.items.find(item => item.view.category === 'skills')!;
+  const automation = snapshot.items.find(item => item.automation)!;
+  expect(skill.view.selected).toBe(true);
+  expect(automation.view.dependsOn).toEqual(expect.arrayContaining([
+    skill.view.id, ...snapshot.items.filter(item => item.env).map(item => item.view.id),
+  ]));
+  expect(skill.files?.find(file => file.name === 'scripts/query.py')).toBeDefined();
+});

@@ -13,7 +13,7 @@ import { activeOwnerScopeKey, getActiveAppSession, isAppSessionBoundaryPending, 
 import { createBotCanonicalSession, createBotProfile, getBotMemoryService, getBotRemoteResourceSource, reconcileBotProfileFolder } from '../localDb/ipc/bots.js';
 import { readBotProfileFolder, writeBotProfileFolder, BOT_PROFILE_TEXT_MAX_BYTES } from '../maker-ipc/botProfileFolder.js';
 import { importBotSkillFiles, normalizeBotSkillSlug } from '../maker-ipc/botSkillStore.js';
-import { routineTools } from '../routines/service.js';
+import { getRoutineEngine, routineTools } from '../routines/service.js';
 import { discoverImportSources, inspectImportSource, type SourceReaderDeps } from './sources.js';
 import { readOpenClawCronDatabase } from './openclawCron.js';
 import { companionEnvironmentStore } from './runtime.js';
@@ -106,6 +106,20 @@ async function saveReceipt(root: string, receipt: ImportReceipt) {
 export async function getCompanionImportResult(requestId: string): Promise<CompanionImportResult | undefined> {
   const scope = owner();
   const receipt = await readReceipt(scope.root, requestId); scope.assert();
+  // Upgrade earlier import bindings only from a durable successful receipt.
+  // Failed/skipped active-source handovers must never become executable here.
+  if (receipt) {
+    const environment = await companionEnvironmentStore.read(scope.root, receipt.result.botId, scope.assert);
+    const ready = Object.entries(receipt.routines).flatMap(([entryId, routine]) => {
+      const binding = environment?.automations?.[routine.id];
+      const status = receipt.result.checks.find(check => check.entryId === entryId)?.status;
+      return binding && binding.handover === undefined && routine.phase === 'complete'
+        && (status === 'taken-over' || status === 'paused' && (binding.original.enabled === false || binding.original.state === 'paused')) ? [routine.id] : [];
+    });
+    if (ready.length) await companionEnvironmentStore.update(scope.root, receipt.result.botId, scope.assert, env => {
+      for (const id of ready) if (env.automations?.[id]?.handover === undefined) env.automations![id]!.handover = 'ready';
+    });
+  }
   if (receipt && (receipt.result.status === 'running' || Object.values(receipt.routines).some(item => item.phase === 'pausing-source' || item.phase === 'source-paused')) && !jobs.has(`${scope.scope}:${requestId}`)) {
     const environment = await companionEnvironmentStore.read(scope.root, receipt.result.botId, scope.assert);
     const pending = environment?.pendingImport;
@@ -225,14 +239,17 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
       scope.assert(); return result.canonicalSessionId;
     },
     async createRoutine(botId, input, creationId, item) {
-      const routine = await routineTools.createOnce(botId, input, creationId); scope.assert();
       if (!item.automation) throw new CompanionImportError('SOURCE_AUTOMATION_INVALID');
+      // createOnce uses creationId as its persisted routine ID. Publish the guard
+      // first so there is no editor-visible window without a handover binding.
       await companionEnvironmentStore.update(scope.root, botId, scope.assert, environment => {
         environment.automations ??= {};
-        environment.automations[routine.id] ??= { kind: snapshot.source.kind,
+        environment.automations[creationId] ??= { kind: snapshot.source.kind,
+          handover: item.view.enabled ? 'pending' : 'ready',
           original: item.automation!.original, sourceRoot: snapshot.source.root, deliveries: item.automation!.deliveries,
           issues: [...(item.view.issues ?? []), ...(item.view.dependsOn?.some(id => !selection.entryIds.includes(id)) ? ['AUTOMATION_DEPENDENCY_NOT_SELECTED'] : [])] };
       });
+      const routine = await routineTools.createOnce(botId, input, creationId); scope.assert();
       return routine.id;
     },
     verifyAutomation: (botId, item) => verifyImportedAutomation(scope.root, botId, item, scope.assert, selected, snapshot.source.root),
@@ -241,14 +258,34 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
     async enableRoutine(botId, routineId, item) {
       const routine = (await routineTools.list(botId)).find(item => item.id === routineId); scope.assert();
       if (!routine) throw new CompanionImportError('AUTOMATION_NOT_FOUND');
-      if (!item.automation?.input || JSON.stringify(parseRoutineInput({ ...routine, enabled: false })) !== JSON.stringify(parseRoutineInput({ ...item.automation.input, enabled: false }))) throw new CompanionImportError('TARGET_AUTOMATION_CHANGED');
+      const binding = (await companionEnvironmentStore.read(scope.root, botId, scope.assert))?.automations?.[routineId];
+      // The private activation committed even if its outer receipt was lost.
+      // Preserve edits made after that success instead of restoring the source.
+      if (binding?.handover === 'ready') return;
+      if (!item.automation?.input || JSON.stringify(parseRoutineInput({ ...routine, enabled: false })) !== JSON.stringify(parseRoutineInput({ ...item.automation.input, enabled: false }))) {
+        throw new CompanionImportError(routine.enabled ? 'TARGET_HANDOVER_UNCERTAIN' : 'TARGET_AUTOMATION_CHANGED');
+      }
       const expected = parseRoutineInput({ ...routine, enabled: true });
-      if (expected.triggers.some(trigger => trigger.kind === 'once' && trigger.at <= Date.now())) throw new CompanionImportError('AUTOMATION_TIME_PASSED');
-      try { await routineTools.save(botId, expected, routineId, routine.revision); }
+      if (!routine.enabled && expected.triggers.some(trigger => trigger.kind === 'once' && trigger.at <= Date.now())) throw new CompanionImportError('AUTOMATION_TIME_PASSED');
+      // This private transaction is reached only after a confirmed source pause.
+      // Ordinary saves remain guarded; execution waits for the durable ready bit.
+      try { const engine = await getRoutineEngine(); scope.assert(); await engine.put(botId, expected, routineId, routine.revision); }
       catch (error) {
         // A committed enable with a lost acknowledgement must not resume the source as well.
         const saved = await routineTools.list(botId).then(rows => rows.find(item => item.id === routineId), () => { throw new CompanionImportError('TARGET_HANDOVER_UNCERTAIN'); }); scope.assert();
+        if (saved?.enabled && JSON.stringify(parseRoutineInput(saved)) !== JSON.stringify(expected)) throw new CompanionImportError('TARGET_HANDOVER_UNCERTAIN');
         if (!saved || JSON.stringify(parseRoutineInput(saved)) !== JSON.stringify(expected)) throw error;
+      }
+      try {
+        await companionEnvironmentStore.update(scope.root, botId, scope.assert, env => {
+          const binding = env.automations?.[routineId];
+          if (!binding) throw new CompanionImportError('AUTOMATION_NOT_FOUND');
+          binding.handover = 'ready';
+        });
+      } catch {
+        // The target was enabled. Keep the source paused if this acknowledgement
+        // cannot be persisted; recovery retries it before any work is dispatched.
+        throw new CompanionImportError('TARGET_HANDOVER_UNCERTAIN');
       }
     },
   };

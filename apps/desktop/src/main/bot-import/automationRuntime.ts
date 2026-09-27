@@ -11,12 +11,26 @@ import { redactEnvironmentValues, runImportedProcess } from './process.js';
 import { sendImportedDelivery } from './delivery.js';
 import { importedScriptName, importedScriptInterpreter } from './scripts.js';
 
+/** Shared management guard: UI, remote edits and manual runs cannot bypass takeover. */
+export async function assertImportedAutomationReady(root: string, botId: string, routineId: string, assertOwner: () => void) {
+  const environment = await companionEnvironmentStore.read(root, botId, assertOwner);
+  const binding = environment?.automations?.[routineId];
+  if (!binding) return;
+  if (binding.issues?.length) throw new CompanionImportError(binding.issues[0]!);
+  if (binding.handover !== 'ready') throw new CompanionImportError('AUTOMATION_HANDOVER_REQUIRED');
+}
+
 /** Source script bytes are encrypted at rest and materialized only in a private execution directory. */
-export async function prepareImportedAutomation(root: string, routine: Routine, runId: string, signal: AbortSignal, assertOwner: () => void) {
+export async function prepareImportedAutomation(root: string, routine: Routine, runId: string, signal: AbortSignal, assertOwner: () => void): Promise<{
+  runId: string; prompt: string; direct?: string; skipped?: boolean; deferred?: boolean;
+} | undefined> {
   const environment = await companionEnvironmentStore.read(root, routine.botId, assertOwner);
   const binding = environment?.automations?.[routine.id];
   if (!environment || !binding) return undefined;
   if (binding.issues?.length) throw new CompanionImportError(binding.issues[0]!);
+  // Activation may commit just before its encrypted handover acknowledgement.
+  // Keep that queued run deferred, including after restart, without executing it.
+  if (binding.handover !== 'ready') return { runId, prompt: '', deferred: true as const };
   if (binding.prepared?.runId === runId) return binding.prepared;
   const job = binding.original;
   const repeat = object(job.repeat);

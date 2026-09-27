@@ -35,9 +35,11 @@ export function normalizeAutomation(source: ImportSource, job: Record<string, un
     catch { issues.push('AUTOMATION_SCRIPT_MISSING'); return []; }
   });
   const scriptItems = items.filter(item => item.asset && scriptNames.includes(item.asset.name));
-  const searchText = [prompt, ...scriptItems.map(item => item.asset!.bytes.toString('utf8')), ...items.filter(item => item.view.category === 'skills' && selectedSkills.has(item.view.name)).flatMap(item => (item.files ?? []).filter(file => /\.(md|py|js|mjs|sh|ts|json|yaml|yml|toml)$/i.test(file.name)).map(file => file.bytes.toString('utf8')))].join('\n');
+  const skillItems = items.filter(item => item.view.category === 'skills'
+    && (selectedSkills.has(item.view.name) || !!item.sourceDirectory && selectedSkills.has(path.basename(item.sourceDirectory))));
+  const searchText = [prompt, ...scriptItems.map(item => item.asset!.bytes.toString('utf8')), ...skillItems.flatMap(item => (item.files ?? []).filter(file => /\.(md|py|js|mjs|sh|ts|json|yaml|yml|toml)$/i.test(file.name)).map(file => file.bytes.toString('utf8')))].join('\n');
   const dependsOn = items.filter(item =>
-    item.view.category === 'skills' && selectedSkills.has(item.view.name) ||
+    skillItems.includes(item) ||
     item.env && Object.keys(item.env).some(key => new RegExp(`\\b${key}\\b`).test(searchText)) ||
     item.mcp && searchText.includes(item.mcp.name) || item.asset && scriptNames.includes(item.asset.name)).map(item => item.view.id);
   const delivery = importDelivery(source, job, items);

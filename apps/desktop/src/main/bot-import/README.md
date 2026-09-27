@@ -20,6 +20,8 @@ theme tokens. No new native Mobile dependencies or fingerprint inputs are added.
 - Selected identity/user/instruction documents are retained as text. Memories
   enter the teammate's native memory store. Selected skill folders retain their
   real scripts, templates, executable bits and `SKILL.md`.
+  Automation references match both the source directory slug and skill display
+  name; referenced skill scripts contribute their environment dependencies.
 - Selected variables, MCP env/headers, source credentials and automation assets
   use the existing account encrypted credential store. The teammate folder has
   a non-secret `environment.json` binding. Cancellation of a variable does not
@@ -39,7 +41,9 @@ theme tokens. No new native Mobile dependencies or fingerprint inputs are added.
   operation allowlist is outside the approved migration behavior.
 - Imported MCP discovery isolates unavailable servers and incomplete catalogs;
   healthy connections and independent commands remain available. Owner changes
-  and cancellation still terminate discovery.
+  and cancellation still terminate discovery. Cached connections retain their
+  owner check during idle time; an account change closes their credential-bearing
+  subprocess/transport and removes the cache entry.
 - Cron/timezone, anchored intervals, one-time triggers, paused state and selected
   Hermes scripts/monitors/repeat counters feed the existing routine engine.
   Pure-script output appears in the canonical teammate chat. Explicit Telegram
@@ -66,6 +70,13 @@ source's native CLI pauses its task; only then is the target enabled. Source
 configuration changes invalidate handover. In-flight source execution is allowed
 to finish before enabling the target. Lost acknowledgements are reconciled from
 actual state; an ambiguous target enable never resumes the source as well.
+An encrypted handover marker is installed before the target routine is published.
+For active source tasks it becomes ready only after verification, source pause and
+confirmed target activation. Ordinary editors and manual runs cannot bypass a
+pending handover; already queued work defers without executing. Lost marker writes
+keep the source paused for recovery. Already-paused source tasks remain disabled
+but retain normal later management. Earlier completed receipts can restore missing
+markers; failed checks or a skipped takeover of an active source cannot.
 Retries preserve edits, reuse the same teammate/routines, and do not recopy
 unselected items. Pending selected checkpoints are encrypted and recover after
 restart; handover reconciliation continues if the dialog/device link closes.

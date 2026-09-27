@@ -29,14 +29,28 @@ export async function withImportedConnection<T>(
       ? new SSEClientTransport(new URL(server.url!), { requestInit: { headers: server.headers } })
       : new StreamableHTTPClientTransport(new URL(server.url!), { requestInit: { headers: server.headers } });
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const close = async () => { await client.close().catch(() => {}); await transport.close().catch(() => {}); };
+  let closing: Promise<void> | undefined;
+  const close = () => {
+    clearInterval(ownerTimer); clearTimeout(connected.idle);
+    return closing ??= (async () => { await client.close().catch(() => {}); await transport.close().catch(() => {}); })();
+  };
+  const connected: Connection = { client, close, users: 0 };
+  // Own the fence for the entire connection lifetime, including cached idle time
+  // and initialization. Per-call cancellation still settles the in-flight work.
+  const ownerTimer = setInterval(() => {
+    try { assertOwner(); } catch {
+      if (key && connections.get(key) === pending) connections.delete(key);
+      void close();
+    }
+  }, 250);
+  ownerTimer.unref();
   try {
     await Promise.race([
       client.connect(transport),
       new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new CompanionImportError('CONNECTION_TIMEOUT')), 15_000); }),
     ]);
     assertOwner();
-    return { client, close, users: 0 };
+    return connected;
   } catch { await close(); throw new CompanionImportError('CONNECTION_FAILED'); }
   finally { clearTimeout(timer); }
   };

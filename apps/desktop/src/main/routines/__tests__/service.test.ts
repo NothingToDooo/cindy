@@ -100,6 +100,39 @@ it('dispatches into the current canonical task through the existing silent runne
   );
   expect((await routineTools.history('bot', routine.id))[0].resultText).toBe('Reviewed PR');
 });
+
+it('blocks enabling and manual runs until imported handover is ready while retaining disabled edits', async () => {
+  let ready = false;
+  configureRoutineHost({
+    getBot: mock.getBot, getScheduler: () => mock.scheduler, getScheduleStorage: () => mock.storage,
+    assertImportedAutomationReady: async (_root, _botId, id) => { if (id === 'imported-routine-id' && !ready) throw new Error('AUTOMATION_HANDOVER_REQUIRED'); },
+  });
+  const input = { name: 'Imported', prompt: 'Read data', enabled: false, triggers: [{ id: 'tick', kind: 'interval' as const, intervalMs: 60000 }] };
+  const routine = await routineTools.createOnce('bot', input, 'imported-routine-id');
+  await expect(routineTools.save('bot', { ...input, enabled: true }, routine.id)).rejects.toThrow('AUTOMATION_HANDOVER_REQUIRED');
+  await expect(routineTools.createOnce('bot', { ...input, enabled: true }, routine.id)).rejects.toThrow('AUTOMATION_HANDOVER_REQUIRED');
+  await expect(routineTools.runNow('bot', routine.id)).rejects.toThrow('AUTOMATION_HANDOVER_REQUIRED');
+  expect((await routineTools.list('bot'))[0]?.enabled).toBe(false);
+  expect(await routineTools.history('bot', routine.id)).toEqual([]);
+  const edited = await routineTools.save('bot', { ...input, name: 'Edited' }, routine.id);
+  expect(edited.name).toBe('Edited');
+  ready = true;
+  await routineTools.save('bot', { ...edited, enabled: true }, routine.id, edited.revision);
+  await routineTools.runNow('bot', routine.id);
+  await vi.waitFor(() => expect(mock.scheduler.runNow).toHaveBeenCalledOnce());
+});
+
+it('defers a queued imported run during an unacknowledged handover without dispatching', async () => {
+  configureRoutineHost({
+    getBot: mock.getBot, getScheduler: () => mock.scheduler, getScheduleStorage: () => mock.storage,
+    prepareImportedAutomation: async (_root, _routine, runId) => ({ runId, prompt: '', deferred: true }),
+  });
+  const routine = await routineTools.save('bot', { name: 'Imported', prompt: 'Read data', enabled: true, triggers: [{ id: 'tick', kind: 'interval', intervalMs: 60000 }] });
+  await routineTools.runNow('bot', routine.id);
+  await vi.waitFor(async () => expect((await routineTools.history('bot', routine.id))[0]?.status).toBe('queued'));
+  expect(mock.storage.insert).not.toHaveBeenCalled();
+  expect(mock.scheduler.runNow).not.toHaveBeenCalled();
+});
 it('keeps an unclassified teammate reminder audible when quiet is omitted', async () => {
   const reminder = await routineTools.save('bot', {
     name: 'Reminder', prompt: 'Remind me to rest', enabled: true,
