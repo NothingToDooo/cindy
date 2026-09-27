@@ -173,7 +173,7 @@ async function connections(items: ImportItem[], source: ImportSource, values: Re
     if (!raw) continue;
     let value: Record<string, unknown>;
     try { value = object(JSON.parse(raw)); } catch { throw new CompanionImportError('SOURCE_CREDENTIAL_INVALID'); }
-    const profiles = source.kind === 'hermes' ? { ...object(value.providers), ...Object.fromEntries(Object.entries(object(value.credential_pool)).map(([key, records]) => [key, { ...object(object(value.providers)[key]), credential_pool: records }])) } : object(value.profiles); 
+    const profiles = source.kind === 'hermes' ? { ...object(value.providers), ...Object.fromEntries(Object.entries(object(value.credential_pool)).map(([key, records]) => [key, { ...object(object(value.providers)[key]), credential_pool: records }])) } : object(value.profiles);
     for (const [id, record] of Object.entries(profiles)) {
       if (!record || typeof record !== 'object') continue;
       const profile = object(record);
