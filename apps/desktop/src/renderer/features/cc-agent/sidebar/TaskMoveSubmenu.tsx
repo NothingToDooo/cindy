@@ -111,7 +111,8 @@ export function TaskMoveSubmenu({
                     : !d.isSelf) &&
                   d.controlEnabled &&
                   !['ios', 'android'].includes(d.platform ?? '') &&
-                  d.online && d.remoteControlEnabled,
+                  d.online &&
+                  d.remoteControlEnabled,
               ),
             );
         })
@@ -188,39 +189,40 @@ export function TaskMoveSubmenu({
         ) : (
           localProjects
         )}
-        {session.orcaRole !== 'worker' && (
-          <>
-            <DropdownMenuSeparator className={MENU_SEPARATOR_CLASS} />
-            <div className="px-3 py-1.5 text-xs text-[var(--cmd-palette-item-meta)]">
-              {t('taskMove.otherComputers')}
-            </div>
-            {deviceError ? (
-              <DropdownMenuItem
-                className={MENU_ITEM_CLASS}
-                onSelect={(e) => {
-                  e.preventDefault();
-                  setRetry((n) => n + 1);
-                }}
-              >
-                {t('taskMove.retry')}
-              </DropdownMenuItem>
-            ) : (
-              devices.map((device) => (
-                <DeviceProjects
-                  key={device.deviceId}
-                  device={device}
-                  team={session.orcaRole === 'lead'}
-                  onSelect={onMigration}
-                />
-              ))
-            )}
-            {!loading && !deviceError && !devices.length && (
-              <div className="px-3 py-2 text-sm text-[var(--cmd-palette-item-meta)]">
-                {t('taskMigration.noDevices')}
+        {['desktop', 'shared'].includes(session.source ?? 'desktop') &&
+          session.orcaRole !== 'worker' && (
+            <>
+              <DropdownMenuSeparator className={MENU_SEPARATOR_CLASS} />
+              <div className="px-3 py-1.5 text-xs text-[var(--cmd-palette-item-meta)]">
+                {t('taskMove.otherComputers')}
               </div>
-            )}
-          </>
-        )}
+              {deviceError ? (
+                <DropdownMenuItem
+                  className={MENU_ITEM_CLASS}
+                  onSelect={(e) => {
+                    e.preventDefault();
+                    setRetry((n) => n + 1);
+                  }}
+                >
+                  {t('taskMove.retry')}
+                </DropdownMenuItem>
+              ) : (
+                devices.map((device) => (
+                  <DeviceProjects
+                    key={device.deviceId}
+                    device={device}
+                    team={session.orcaRole === 'lead'}
+                    onSelect={onMigration}
+                  />
+                ))
+              )}
+              {!loading && !deviceError && !devices.length && (
+                <div className="px-3 py-2 text-sm text-[var(--cmd-palette-item-meta)]">
+                  {t('taskMigration.noDevices')}
+                </div>
+              )}
+            </>
+          )}
       </DropdownMenuSubContent>
     </DropdownMenuSub>
   );

@@ -38,7 +38,7 @@
     "errors": {
       "MIGRATION_TASK_RUNNING": "请先停止任务再移动。",
       "MIGRATION_SHARED_DIRECTORY_BUSY": "其他任务正在使用此目录，请停止后重试。",
-      "MIGRATION_TASK_UNSUPPORTED": "目前只支持普通本地任务，暂不支持 SSH、审查和多 Agent 任务。",
+      "MIGRATION_TASK_UNSUPPORTED": "此任务的类型或当前状态暂不支持跨电脑移动。",
       "MIGRATION_TASK_BOUND": "此任务有关联的共享、自动运行或消息渠道，暂不支持移动。",
       "MIGRATION_NO_MEMORY": "可用内存不足以处理完整任务历史，请释放内存后重试。",
       "MIGRATION_INCOMPLETE_CONTEXT": "无法取得完整任务历史，已停止迁移以免丢失上下文。",

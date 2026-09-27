@@ -38,7 +38,7 @@
     "errors": {
       "MIGRATION_TASK_RUNNING": "請先停止任務再移動。",
       "MIGRATION_SHARED_DIRECTORY_BUSY": "其他任務正在使用此目錄，請停止後重試。",
-      "MIGRATION_TASK_UNSUPPORTED": "目前僅支援一般本機任務，尚不支援 SSH、審查和多 Agent 任務。",
+      "MIGRATION_TASK_UNSUPPORTED": "此任務的類型或目前狀態尚不支援跨電腦移動。",
       "MIGRATION_TASK_BOUND": "此任務有關聯的共享、自動執行或訊息管道，尚不支援移動。",
       "MIGRATION_NO_MEMORY": "可用記憶體不足以處理完整任務歷史，請釋放記憶體後重試。",
       "MIGRATION_INCOMPLETE_CONTEXT": "無法取得完整任務歷史，已停止遷移以免遺失上下文。",

@@ -38,7 +38,7 @@
     "errors": {
       "MIGRATION_TASK_RUNNING": "移動する前にタスクを停止してください。",
       "MIGRATION_SHARED_DIRECTORY_BUSY": "別のタスクがこのフォルダーを使用しています。停止してから再試行してください。",
-      "MIGRATION_TASK_UNSUPPORTED": "通常のローカルタスクのみ移動できます。SSH、レビュー、複数 Agent のタスクは未対応です。",
+      "MIGRATION_TASK_UNSUPPORTED": "このタスクの種類または現在の状態では、別のコンピューターに移動できません。",
       "MIGRATION_TASK_BOUND": "共有、定期実行、メッセージ連携のあるタスクはまだ移動できません。",
       "MIGRATION_NO_MEMORY": "タスク履歴全体を処理するためのメモリが不足しています。メモリを解放して再試行してください。",
       "MIGRATION_INCOMPLETE_CONTEXT": "タスク履歴が不完全なため、移動を停止しました。",

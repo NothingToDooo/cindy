@@ -38,7 +38,7 @@
     "errors": {
       "MIGRATION_TASK_RUNNING": "Stop the task before moving it.",
       "MIGRATION_SHARED_DIRECTORY_BUSY": "Another task is using this directory. Stop it before retrying.",
-      "MIGRATION_TASK_UNSUPPORTED": "Only ordinary local tasks can be moved. SSH, review and multi-agent tasks are not supported yet.",
+      "MIGRATION_TASK_UNSUPPORTED": "This task's type or current state does not support moving to another computer.",
       "MIGRATION_TASK_BOUND": "This task has sharing, automation or messaging bindings and cannot be moved yet.",
       "MIGRATION_NO_MEMORY": "Not enough available memory to process the complete task history. Free up memory and retry.",
       "MIGRATION_INCOMPLETE_CONTEXT": "The complete task history is unavailable. Migration stopped to avoid losing context.",
