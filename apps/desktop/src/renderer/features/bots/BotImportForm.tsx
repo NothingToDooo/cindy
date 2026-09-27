@@ -34,7 +34,7 @@ export function BotImportForm({ api = window.electronAPI.companionImport, onBack
     try { await fn(); } catch (cause) {
       // Only definitive creation/preflight rejections unlock editing. An ambiguous ACK
       // keeps the same request ID and is reconciled before any retry.
-      if (cause instanceof Error && /INVALID_SELECTION|PROFILE_TEXT_TOO_LARGE|IMPORT_NAME_EXISTS|SOURCE_SNAPSHOT_TOO_LARGE|SOURCE_TOO_MANY_FILES/.test(cause.message)) {
+      if (cause instanceof Error && /INVALID_SELECTION|PROFILE_TEXT_TOO_LARGE|IMPORT_NAME_EXISTS|SOURCE_SNAPSHOT_TOO_LARGE|SOURCE_TOO_MANY_FILES|SOURCE_FILE_TOO_LARGE|SOURCE_ITEM_TOO_LARGE|SOURCE_LINK_OUTSIDE_FOLDER|SOURCE_LINK_CYCLE|SOURCE_NOT_REGULAR_FILE|SOURCE_CHANGED/.test(cause.message)) {
         intent.current = undefined;
         if (alive.current) setResult(undefined);
       }

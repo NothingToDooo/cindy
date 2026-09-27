@@ -735,6 +735,30 @@ it.each(['count', 'entrypoint', 'projected-entrypoint', 'captured-entrypoint'])(
   await vi.waitFor(async () => expect((await getCompanionImportResult(`${selection.requestId}-retry`))?.status).toBe('complete'));
 });
 
+it.each(['oversized', 'symlink'])('rejects a lazily selected %s resource before a receipt, then imports after deselection', async mode => {
+  const directory = path.join(h.root, 'source-skill');
+  await fs.mkdir(directory);
+  if (mode === 'oversized') {
+    const file = await fs.open(path.join(directory, 'resource.bin'), 'w');
+    try { await file.truncate(16 * 1024 * 1024 + 1); } finally { await file.close(); }
+  } else {
+    const outside = path.join(h.root, 'outside');
+    await fs.mkdir(outside); await fs.writeFile(path.join(outside, 'resource.txt'), 'fixture');
+    await fs.symlink(outside, path.join(directory, 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
+  }
+  h.snapshot.items = [{ view: { id: 'skill', name: 'Optional skill', category: 'skills', selected: false },
+    sourceDirectory: directory, files: [{ name: 'SKILL.md', bytes: Buffer.from('# Skill'), executable: false }], filesComplete: false }];
+  const [source] = await listCompanionImportSources('fixture');
+  const preview = await previewCompanionImport(source!.id, 'fixture');
+  const selection = { requestId: `fixture-capture-${mode}`, previewId: preview.id, name: 'Ada', entryIds: ['skill'], takeover: false };
+  await expect(startCompanionImport(selection, 'fixture')).rejects.toThrow(mode === 'oversized' ? 'SOURCE_FILE_TOO_LARGE' : 'SOURCE_LINK_OUTSIDE_FOLDER');
+  expect(createBotProfile).not.toHaveBeenCalled(); expect(h.secretValues.size).toBe(0);
+  expect(await getCompanionImportResult(selection.requestId)).toBeUndefined();
+  await expect(fs.access(path.join(h.root, 'companion-imports'))).rejects.toThrow();
+  await startCompanionImport({ ...selection, requestId: `${selection.requestId}-retry`, entryIds: [] }, 'fixture');
+  await vi.waitFor(async () => expect((await getCompanionImportResult(`${selection.requestId}-retry`))?.status).toBe('complete'));
+});
+
 it('replaces previous previews for the same controller and keeps the latest usable', async () => {
   h.snapshot.items = [];
   const [source] = await listCompanionImportSources('fixture');

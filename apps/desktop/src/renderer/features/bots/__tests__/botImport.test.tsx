@@ -66,6 +66,28 @@ it('clears a previous receipt after a definitive name conflict so the user can r
   expect(requests[2]!.name).toBe('Grace');
 });
 
+it.each(['SOURCE_FILE_TOO_LARGE', 'SOURCE_ITEM_TOO_LARGE', 'SOURCE_LINK_OUTSIDE_FOLDER', 'SOURCE_LINK_CYCLE', 'SOURCE_NOT_REGULAR_FILE', 'SOURCE_CHANGED', 'INTERNAL'])('allows correcting a rejected skill after %s, retaining unknown requests', async code => {
+  const api: CompanionImportApi = { sources: async () => [{ id: 'source', name: 'Ada', kind: 'hermes' }],
+    preview: async () => ({ id: 'preview', name: 'Ada', source: { id: 'source', name: 'Ada', kind: 'hermes' }, entries: [{ id: 'skill', name: 'Optional skill', category: 'skills', selected: false }] }),
+    status: async () => undefined,
+    start: vi.fn<CompanionImportApi['start']>().mockRejectedValueOnce(new Error(code)).mockImplementation(async input => ({ requestId: input.requestId, botId: 'bot', status: 'complete', checks: [] })) };
+  render(<BotImportForm api={api} onCreated={() => {}} onBack={() => {}} onBusy={() => {}} />);
+  fireEvent.click(await screen.findByRole('button', { name: /Ada.*Hermes/ }));
+  fireEvent.click(await screen.findByText('bots.import.skills', { selector: 'summary' }));
+  fireEvent.click(screen.getByLabelText('Optional skill'));
+  fireEvent.click(screen.getByRole('button', { name: 'bots.import.submit' }));
+  await screen.findByRole('alert');
+  expect((screen.getByRole('textbox') as HTMLInputElement).disabled).toBe(code === 'INTERNAL');
+  expect((screen.getByLabelText('Optional skill').closest('fieldset') as HTMLFieldSetElement).disabled).toBe(code === 'INTERNAL');
+  if (code !== 'INTERNAL') fireEvent.click(screen.getByLabelText('Optional skill'));
+  fireEvent.click(screen.getByRole('button', { name: 'bots.import.submit' }));
+  await screen.findByRole('button', { name: 'bots.import.open' });
+  const [first, second] = vi.mocked(api.start).mock.calls.map(call => call[0]);
+  expect(first!.entryIds).toEqual(['skill']);
+  expect(second!.entryIds).toEqual(code === 'INTERNAL' ? ['skill'] : []);
+  expect(second!.requestId === first!.requestId).toBe(code === 'INTERNAL');
+});
+
 it.each(['PREVIEW_EXPIRED', 'SELECTION_CHANGED'])('returns to fresh sources after %s and submits a new editable preview', async code => {
   let attempt = 0;
   const api: CompanionImportApi = { sources: vi.fn(async () => [{ id: `source-${++attempt}`, name: 'Ada', kind: 'hermes' as const }]),
