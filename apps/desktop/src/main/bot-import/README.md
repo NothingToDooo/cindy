@@ -191,7 +191,10 @@ omitting it retains normal companion defaults, and a rejected request can be cor
   values only at their corresponding argument paths (including nested arrays)
   for runtime calls and verification probes. Names declared only in `required`,
   `dependentRequired` or legacy `dependencies` are restored on that object too,
-  without requiring a matching `properties` entry. Sibling free-text placeholders are
+  without requiring a matching `properties` entry. Conditional subschemas
+  (`if`/`then`/`else`, `not`, `dependentSchemas` and legacy schema dependencies)
+  contribute aliases at the same argument position, including dependency trigger
+  names; upstream schema validation remains unchanged. Sibling free-text placeholders are
   not expanded even when they match an enum alias elsewhere. Business response/meta object keys are
   masked as well. MCP envelope keys (`content`, `structuredContent`, `isError`,
   `_meta`) and SDK-validated content/resource fields keep their protocol spelling;

@@ -118,6 +118,49 @@ it.each(['required', 'dependentRequired', 'dependencies'] as const)('restores na
   } finally { imported.mockRestore(); await client.close(); await config.instance.close(); }
 });
 
+it.each(['if', 'then', 'else', 'not', 'dependentSchemas', 'dependencies'] as const)('restores aliases inside %s only at their declared argument path', async keyword => {
+  const secret = 'fixture-conditional-key';
+  const trigger = `trigger-${secret}`;
+  const env = { PRIVATE: secret };
+  const connection = { name: 'conditional-fields', url: 'https://example.invalid/mcp' };
+  const constraint = { properties: { [secret]: { const: secret } }, required: [secret] };
+  const dependency = keyword === 'dependentSchemas' || keyword === 'dependencies';
+  const conditional = dependency ? { [keyword]: { [trigger]: constraint } }
+    : keyword === 'not' ? { not: { ...constraint, required: [secret, 'mustBeAbsent'] } }
+      : { ...(keyword === 'then' ? { if: true } : keyword === 'else' ? { if: false } : {}), [keyword]: constraint };
+  const tool: Tool = { name: 'read_conditional', inputSchema: { type: 'object', properties: {
+    rows: { type: 'array', items: { type: 'object', ...conditional, properties: { note: { type: 'string' } } } },
+    untouched: { type: 'object' }, note: { type: 'string' },
+  } } };
+  const validateOriginal = new AjvJsonSchemaValidator().getValidator(tool.inputSchema);
+  const callTool = vi.fn(async ({ arguments: args }) => ({ isError: !validateOriginal(args).valid, content: [{ type: 'text', text: 'ok' }] }));
+  const imported = vi.spyOn(connectionModule, 'withImportedConnection').mockImplementation(async (_server, _env, _assert, run) => run({ listTools: async () => ({ tools: [tool] }), callTool } as never));
+  vi.mocked(readCompanionSessionEnvironment).mockResolvedValue({ identity: `conditional-${keyword}`, botId: 'bot', userData: '/fixture', assertOwner() {}, environment: { version: 1, env, mcp: [connection], credentials: [] } });
+  const config = createCompanionConnectionsProvider().toClaudeSdkConfig!({} as never) as { instance: McpServer };
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'fixture', version: '1' });
+  await config.instance.connect(serverTransport); await client.connect(clientTransport);
+  try {
+    const published = (await client.listTools()).tools[1]!;
+    const item = (published.inputSchema.properties!.rows as { items: Record<string, unknown> }).items;
+    const branches = item[keyword] as Record<string, unknown>;
+    const publicTrigger = Object.keys(branches)[0]!;
+    const branch = (dependency ? branches[publicTrigger] : branches) as { properties: Record<string, { const: string }> };
+    const alias = Object.keys(branch.properties)[0]!;
+    const literal = branch.properties[alias]!.const;
+    expect(alias).not.toBe(secret); expect(literal).not.toBe(secret);
+    const args = { rows: [{ [alias]: literal, note: literal, ...(dependency ? { [publicTrigger]: 'on' } : {}) }], untouched: { [alias]: literal }, note: literal };
+    const before = structuredClone(args);
+    expect(new AjvJsonSchemaValidator().getValidator(published.inputSchema)(args).valid).toBe(true);
+    const result = await client.callTool({ name: published.name, arguments: args });
+    expect(result.isError).not.toBe(true);
+    expect(callTool).toHaveBeenCalledWith({ name: tool.name, arguments: {
+      rows: [{ [secret]: secret, note: literal, ...(dependency ? { [trigger]: 'on' } : {}) }], untouched: { [alias]: literal }, note: literal,
+    } }, undefined, { timeout: 120000 });
+    expect(args).toEqual(before);
+  } finally { imported.mockRestore(); await client.close(); await config.instance.close(); }
+});
+
 it('preserves schema keywords while masking same-named properties and forwarding valid nested arguments', async () => {
   const env = Object.fromEntries(['properties', 'required', 'items', 'enum', 'type', 'additionalProperties', 'const'].map((value, index) => [`KEY_${index}`, value]));
   const connection = { name: 'schema', url: 'https://example.invalid/mcp' };

@@ -120,6 +120,12 @@ export function restoreImportedArguments(value: Record<string, unknown>, schema:
         const branches = current[keyword];
         if (Array.isArray(branches)) branches.forEach(visit);
       }
+      // These subschemas describe the same argument position. Restore their
+      // published aliases here; validation/branch selection stays upstream.
+      for (const keyword of ['if', 'then', 'else', 'not']) visit(current[keyword]);
+      for (const keyword of ['dependentSchemas', 'dependencies']) {
+        Object.values(object(current[keyword]) ?? {}).forEach(visit);
+      }
     };
     nodes.forEach(visit);
     return result;
@@ -153,7 +159,7 @@ export function restoreImportedArguments(value: Record<string, unknown>, schema:
       // These keywords declare names on this object even without properties entries.
       const requiredNames = candidates.flatMap(current => [
         ...names(current.required),
-        ...['dependentRequired', 'dependencies'].flatMap(keyword =>
+        ...['dependentRequired', 'dependentSchemas', 'dependencies'].flatMap(keyword =>
           Object.entries(object(current[keyword]) ?? {}).flatMap(([name, required]) => [name, ...names(required)])),
       ]);
       const keys = aliases([...requiredNames, ...[...properties, ...literalObjects].flatMap(current => Object.keys(current))]);
