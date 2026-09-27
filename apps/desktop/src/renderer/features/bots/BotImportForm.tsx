@@ -51,7 +51,7 @@ export function BotImportForm({ api = window.electronAPI.companionImport, onBack
     let next = await api.status(intent.current.requestId);
     if (!next || next.status === 'needs-attention') next = await api.start(intent.current);
     while (alive.current && next?.status === 'running') {
-      setResult(next);
+      setResult(next); onBusy(false);
       await new Promise(resolve => setTimeout(resolve, 1000));
       next = await api.status(intent.current.requestId);
       if (!next) throw new Error('IMPORT_RECEIPT_MISSING');

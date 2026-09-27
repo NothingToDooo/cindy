@@ -29,7 +29,9 @@ export function createCompanionConnectionsProvider(): McpProvider {
         for (const connection of scope.environment.mcp.filter(connection => connection.enabled !== false)) {
           await withImportedConnection(connection, scope.environment.env, scope.assertOwner, async client => {
             let cursor: string | undefined;
+            let pages = 0;
             do {
+              if (++pages > 100) throw new Error('Connection page limit exceeded');
               const page = await client.listTools({ cursor }, { timeout: 15_000 });
               for (const tool of page.tools) tools.push({ ...tool, name: toolName(connection.name, tool.name), description: `${connection.name} · ${tool.name}\n${tool.description ?? ''}` });
               cursor = page.nextCursor;
@@ -56,8 +58,9 @@ export function createCompanionConnectionsProvider(): McpProvider {
         for (const connection of scope.environment.mcp.filter(connection => connection.enabled !== false && request.params.name.startsWith(`c_${fingerprint(connection.name).slice(0, 12)}_`))) {
           const result = await withImportedConnection(connection, scope.environment.env, scope.assertOwner, async client => {
             let cursor: string | undefined;
-            let count = 0;
+            let count = 0; let pages = 0;
             do {
+              if (++pages > 100) throw new Error('Connection page limit exceeded');
               const page = await client.listTools({ cursor }, { timeout: 15_000 });
               count += page.tools.length;
               const tool = page.tools.find(item => toolName(connection.name, item.name) === request.params.name);

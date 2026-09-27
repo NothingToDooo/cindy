@@ -101,6 +101,8 @@ async function execute(scope: string, routine: Routine, run: RoutineRun, signal:
   const root = ownerScopedUserDataPath();
   const imported = await getRoutineHost().prepareImportedAutomation?.(root, routine, run.id, signal, () => assertScope(scope));
   assertScope(scope);
+  if (signal.aborted) throw new Error('Routine cancelled');
+  if (!canDispatch()) return { deferred: true };
   if (imported?.skipped) return { skipped: true };
   if (imported?.direct !== undefined) {
     await getRoutineHost().finishImportedAutomation?.(root, routine, bot.canonicalSessionId, run.id, imported.direct, true, signal, () => assertScope(scope));

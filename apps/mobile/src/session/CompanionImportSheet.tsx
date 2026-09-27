@@ -67,7 +67,7 @@ export function CompanionImportSheet({ visible, onClose, onClosed, deviceId, dev
   });
   const toggle = (ids: string[], checked: boolean) => setSelected(value => checked ? [...new Set([...value, ...ids])] : value.filter(id => !ids.includes(id)));
   const locked = busy || !!intent.current || !online;
-  return <CompanionSheet visible={visible} title={tr('title')} onClose={() => { if (!busy) onClose(); }} onClosed={onClosed} preventDismiss={busy}>
+  return <CompanionSheet visible={visible} title={tr('title')} onClose={() => { if (!busy || result) onClose(); }} onClosed={onClosed} preventDismiss={busy && !result}>
     <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.content}>
       <Text style={styles.note}>{tr('description')}</Text>
       {!online || error ? <Text accessibilityRole="alert" style={styles.note}>{!online ? t('devices.companionProfile.offline', { deviceName }) : tr('error')}</Text> : null}

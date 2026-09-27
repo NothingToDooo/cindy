@@ -9931,7 +9931,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       await updateBotRoutineLifecycle(botId, 'resume');
     },
     onBeforeDelete: async (botId) => {
+      const owner = activeOwnerScopeKey();
       await updateBotRoutineLifecycle(botId, 'delete');
+      if (isAppSessionBoundaryPending() || activeOwnerScopeKey() !== owner) throw new Error('Bot account changed during deletion');
       companionEnvironmentStore.remove(botId);
     },
   });
