@@ -212,6 +212,8 @@ omitting it retains normal companion defaults, and a rejected request can be cor
   listing with the same 100-page and 1000-tool catalog budgets.
 - Cron/timezone, anchored intervals, one-time triggers, paused state and selected
   Hermes scripts/monitors/repeat counters feed the existing routine engine.
+  Scheduler/companion `routine_save` schemas and the Pi direct facade retain
+  `once.at` and `interval.anchorMs`, so editing a name or prompt preserves timing.
   Source-wide Hermes models and OpenClaw agent/default models use the existing
   model-mapping issue, just like a model specified on the job itself. Their
   routines remain disabled and the source keeps running until mapped; the import
