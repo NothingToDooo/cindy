@@ -145,16 +145,13 @@ function CompanionProfileSheetContent(props: CompanionProfileSheetProps) {
   const open = (next: string) => {
     if (inFlight.current) return;
     if (next === 'memoryEntries') {
-      void (async () => {
-        if (dirty && panel && !(await submit(panel))) return;
+      void settleDraft(() => {
         setReceipt(null); setError(false); setDeleteFailure(false); setNameTakenOnSave(false); setConfirmation(null); setEditing(false); setPage(next);
-      })(); return;
+      }); return;
     }
     if (next === 'avatar' || next === 'connections' || next === 'personalSkills') {
-      void (async () => {
-        if (dirty && panel && !(await submit(panel))) return;
-        await openEditor(`settings:${resource?.ref.id}/${next === 'personalSkills' ? 'skills' : next}`);
-      })(); return;
+      void settleDraft(() => openEditor(`settings:${resource?.ref.id}/${next === 'personalSkills' ? 'skills' : next}`));
+      return;
     }
     setConflict(null); setEditor(null); setEditorPanel(null); setPage(next); setReceipt(null); setError(false); setDeleteFailure(false); setNameTakenOnSave(false); setConfirmation(null); setEditing(false);
     setValues(data?.panels.find(item => item.id === next)?.values ?? {});
@@ -225,7 +222,9 @@ function CompanionProfileSheetContent(props: CompanionProfileSheetProps) {
       else if (!(await memory.back())) open('memory');
       return;
     }
-    if (dirty && panel && !(await submit(panel))) return;
+    await settleDraft(() => leavePage(close));
+  };
+  const leavePage = async (close: boolean) => {
     if (close) { onClose(); return; }
     if (page === 'editor' && editor) {
       if (editorPanel && editor.panels.filter(item => item.action && item.id !== 'remove').length > 1) { setEditorPanel(null); setEditing(false); return; }
@@ -248,6 +247,28 @@ function CompanionProfileSheetContent(props: CompanionProfileSheetProps) {
         setConflict({ page: 'editor', next }); setError(false);
       } else { setEditor(next); setError(false); }
     } catch { if (current.current === started && generation.current === sequence) setError(true); }
+  };
+  // Leaving a page saves its dirty draft first. When the draft cannot be saved right now
+  // (offline, a host-disabled action or an unresolved version conflict), ask whether to
+  // discard it instead of silently keeping the user on a page they cannot leave.
+  const settleDraft = async (proceed: () => void | Promise<void>) => {
+    if (!dirty || !panel) { await proceed(); return; }
+    if (online && resource && panel.action && !panel.action.disabled && conflict?.page !== page) {
+      if (await submit(panel)) await proceed();
+      return;
+    }
+    const started = binding;
+    Alert.alert(t('devices.companions.automation.unsavedTitle'), t('devices.companions.automation.unsavedBody'), [
+      { text: t('devices.common.cancel'), style: 'cancel' },
+      { text: t('devices.companions.automation.discard'), style: 'destructive', onPress: () => {
+        if (current.current !== started || inFlight.current) return;
+        // Discarding a conflicted draft adopts the newer copy already read, as 「放弃编辑并重新加载」 does.
+        if (conflict?.page === page) {
+          if (page === 'editor') setEditor(conflict.next); else setData(conflict.next);
+        }
+        setEditing(false); setConflict(null); void proceed();
+      } },
+    ]);
   };
   const discardDraft = (reload: boolean) => {
     Alert.alert(t('devices.companions.automation.unsavedTitle'), t('devices.companions.automation.unsavedBody'), [
