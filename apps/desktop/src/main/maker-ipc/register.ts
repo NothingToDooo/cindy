@@ -1,7 +1,7 @@
-import { companionEnvironmentStore, finishCompanionEnvironmentRemoval } from '../bot-import/runtime.js';
+import { finishCompanionEnvironmentRemoval } from '../bot-import/runtime.js';
 import { setImportProbeConfirmation } from '../bot-import/probeAuthorization.js';
 import { requestHostInteraction } from './interactionRouter.js';
-import { cancelCompanionImportsForDeletion } from '../bot-import/host.js';
+import { prepareCompanionImportDeletion } from '../bot-import/host.js';
 import { createBotMessageTransport } from './botMessageTransport.js';
 import { setBotRemoteMessageService } from './botRemoteMessageReceiver.js';
 import { handleListDevices, defaultDeps as deviceDirectoryDeps } from '../device-link/ipc.js';
@@ -10001,16 +10001,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       void botDelegationServiceHolder?.resumeCompletionDelivery(botId);
       await updateBotRoutineLifecycle(botId, 'resume');
     },
-    onBeforeDelete: async (botId) => {
-      const owner = activeOwnerScopeKey();
-      await updateBotRoutineLifecycle(botId, 'delete');
-      await cancelCompanionImportsForDeletion(botId);
-      const assertOwner = () => {
-        if (isAppSessionBoundaryPending() || activeOwnerScopeKey() !== owner) throw new Error('Bot account changed during deletion');
-      };
-      assertOwner();
-      await companionEnvironmentStore.stageRemoval(ownerScopedUserDataPath(), botId, assertOwner);
-    },
+    onBeforeDelete: prepareCompanionImportDeletion,
     onDeleted: (botId, assertOwner) => finishCompanionEnvironmentRemoval(ownerScopedUserDataPath(), botId, assertOwner),
   });
   const delegationForRestore = botDelegationServiceHolder;

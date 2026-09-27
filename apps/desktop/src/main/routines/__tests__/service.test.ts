@@ -297,13 +297,16 @@ it('pauses backing execution and purges rules only after backing cleanup succeed
   await routineTools.runNow('bot', routine.id);
   await vi.waitFor(async () => expect((await routineTools.history('bot', routine.id))[0].status).toBe('success'));
   mock.storage.get.mockResolvedValue({ id: `routine-${routine.id}`, source: 'bot' } as Schedule);
+  const history = await routineTools.history('bot', routine.id);
   await updateBotRoutineLifecycle('bot', 'pause');
   expect(mock.scheduler.pause).toHaveBeenCalledWith(`routine-${routine.id}`, { internalRoutine: true });
   expect((await getRoutineEngine()).list('bot')[0].enabled).toBe(true);
+  expect(await routineTools.history('bot', routine.id)).toEqual(history);
   await updateBotRoutineLifecycle('bot', 'resume');
   mock.scheduler.delete.mockRejectedValueOnce(new Error('cleanup failed'));
   await expect(updateBotRoutineLifecycle('bot', 'delete')).rejects.toThrow('cleanup failed');
   expect((await getRoutineEngine()).list('bot')).toHaveLength(1);
+  expect(await routineTools.history('bot', routine.id)).toEqual(history);
   await expect((await getRoutineEngine()).runNow('bot', routine.id)).rejects.toThrow('paused');
   await updateBotRoutineLifecycle('bot', 'delete');
   expect((await getRoutineEngine()).list('bot')).toEqual([]);

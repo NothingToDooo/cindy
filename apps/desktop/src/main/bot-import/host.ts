@@ -14,7 +14,7 @@ import { createBotCanonicalSession, createBotProfile, getBotMemoryService, getBo
 import { readBotProfileFolder, writeBotProfileFolder, BOT_PROFILE_TEXT_MAX_BYTES } from '../maker-ipc/botProfileFolder.js';
 import { importBotSkillFiles, normalizeBotSkillSlug, validateBotSkillFiles, BOT_SKILL_MAX_COUNT } from '../maker-ipc/botSkillStore.js';
 import { withBotProfileLocks } from '../maker-ipc/botProfileLock.js';
-import { getRoutineEngine, routineTools } from '../routines/service.js';
+import { getRoutineEngine, routineTools, updateBotRoutineLifecycle } from '../routines/service.js';
 import { previewImportRedactions, retainedImportRedactions, resolveImportReferences, selectedImportEnvironment, selectedImportRedactions } from './environmentSelection.js';
 import { redactEnvironmentValues } from './process.js';
 import { createImportSourceReader, discoverImportSources, inspectImportSource, type SourceReaderDeps } from './sources.js';
@@ -161,6 +161,21 @@ async function cleanRejectedCreation(root: string, receipt: ImportReceipt, asser
 }
 
 /** Called inside the lifecycle profile lock, after the active transfer pass has joined. */
+export async function prepareCompanionImportDeletion(botId: string): Promise<void> {
+  const scope = owner();
+  await updateBotRoutineLifecycle(botId, 'pause');
+  scope.assert();
+  await cancelCompanionImportsForDeletion(botId);
+  scope.assert();
+  await companionEnvironmentStore.stageRemoval(scope.root, botId, scope.assert);
+  scope.assert();
+  // Keep definitions and history available for retry until handback and cleanup
+  // staging have succeeded. Pausing above stops and joins target execution.
+  await updateBotRoutineLifecycle(botId, 'delete');
+  scope.assert();
+}
+
+/** Called with target routines paused, inside the lifecycle profile lock. */
 export async function cancelCompanionImportsForDeletion(botId: string): Promise<void> {
   const scope = owner();
   let files: string[];
@@ -174,7 +189,7 @@ export async function cancelCompanionImportsForDeletion(botId: string): Promise<
     receipt.result.checks = [...receipt.result.checks.filter(check => check.entryId !== 'import'),
       { entryId: 'import', status: 'needs-attention', message: 'IMPORT_CANCELLED' }];
     await saveReceipt(scope.root, receipt); scope.assert();
-    // The lifecycle has stopped/deleted target routines under the same profile
+    // The lifecycle has paused target routines under the same profile
     // lock. Restore only source tasks this import actually paused, before the
     // profile/vault can be deleted; a failed handback remains visibly retryable.
     const environment = await companionEnvironmentStore.read(scope.root, botId, scope.assert);

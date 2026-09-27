@@ -318,10 +318,12 @@ is not retried by background passes, status polling or startup; after the bound,
 the result needs attention and requires an explicit retry. Current receipts avoid
 decrypting full environments on status/startup reads; legacy marker upgrades run
 once. This bounds repeated model calls and Ask prompts.
-Deletion first stops target routines, then uses the original native CLI to restore
+Deletion first pauses target routines, then uses the original native CLI to restore
 only source tasks this import paused, persisting each acknowledgement. Failed
-restoration aborts deletion before the profile/vault is removed, so retry retains
-the necessary credentials. Originally paused or non-taken-over tasks stay as-is.
+restoration or cleanup staging aborts deletion before routines, run history or the
+profile/vault are removed, so retry retains the necessary data and credentials.
+Only after both succeed are target routines purged. Originally paused or
+non-taken-over tasks stay as-is.
 Definitive host input rejections keep their stable error through the Mobile
 Remote Resource boundary so the existing form can be edited and resubmitted.
 Expired or changed previews clear the frozen intent and refresh the existing

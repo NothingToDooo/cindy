@@ -16,7 +16,7 @@ import { redactEnvironmentValues } from '../process.js';
 
 const h = vi.hoisted(() => ({ root: '', botId: '', created: false, verified: false, sourceEnabled: true, failReadyWrite: false, boundary: false,
   snapshot: null as unknown as ImportSnapshot, store: null as unknown as ReturnType<typeof createCompanionEnvironmentStore>,
-  routines: [] as Routine[], pause: vi.fn(), sourceEnvironment: {} as Record<string, string>,
+  routines: [] as Routine[], pause: vi.fn(), lifecycle: vi.fn(), sourceEnvironment: {} as Record<string, string>,
   writeProfile: vi.fn(), importDocument: vi.fn(), readName: vi.fn(), secretValues: new Map<string, string>(),
 }));
 vi.mock('electron', () => ({ app: { getPath: () => h.root } }));
@@ -47,6 +47,7 @@ vi.mock('../runtime.js', () => ({ recoverCompanionEnvironmentRemovals: vi.fn(asy
 } }));
 vi.mock('../../localDb/ipc/messages.js', () => ({ createMessage: vi.fn() }));
 vi.mock('../../routines/service.js', () => ({
+  updateBotRoutineLifecycle: h.lifecycle,
   routineTools: {
     list: async () => structuredClone(h.routines),
     createOnce: async (botId: string, input: RoutineInput, id: string) => {
@@ -61,7 +62,7 @@ vi.mock('../../routines/service.js', () => ({
     h.routines = h.routines.map(row => row.id === id ? { ...row, ...input, revision: row.revision + 1 } : row);
   } }),
 }));
-import { listCompanionImportSources, previewCompanionImport, startCompanionImport, getCompanionImportResult, recoverCompanionImports, cancelCompanionImportsForDeletion, ensureImportedAutomationReady } from '../host.js';
+import { listCompanionImportSources, previewCompanionImport, startCompanionImport, getCompanionImportResult, recoverCompanionImports, prepareCompanionImportDeletion, cancelCompanionImportsForDeletion, ensureImportedAutomationReady } from '../host.js';
 import { withBotProfileLocks } from '../../maker-ipc/botProfileLock.js';
 import { assertImportedAutomationReady, prepareImportedAutomation } from '../automationRuntime.js';
 import { decodeBotAvatarImage } from '../../localDb/ipc/botAvatarSelection.js';
@@ -72,6 +73,9 @@ import { verifyImportedAutomation } from '../verification.js';
 beforeEach(async () => {
   h.root = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-import-host-test-'));
   h.created = false; h.verified = false; h.sourceEnabled = true; h.failReadyWrite = false; h.boundary = false; h.routines = []; h.pause.mockReset(); h.sourceEnvironment = {};
+  h.lifecycle.mockReset().mockImplementation(async (_botId: string, action: string) => {
+    if (action === 'delete') h.routines = [];
+  });
   vi.mocked(verifyImportedAutomation).mockClear();
   vi.mocked(getBotRemoteResourceSource).mockReset().mockImplementation(async () => { if (!h.created) throw new Error('[NOT_FOUND]'); return { canonicalSessionId: 'chat' } as never; });
   vi.mocked(createBotProfile).mockReset().mockImplementation(async input => { h.created = true; h.botId = (input as { id: string }).id; return {} as never; });
@@ -198,7 +202,7 @@ it('bounds background handover reconciliation and does not restart it on status 
   expect(verifyImportedAutomation).toHaveBeenCalledTimes(1);
 });
 
-it('hands taken-over source tasks back before deletion and retains the vault if restoration fails', async () => {
+it.each(['handback', 'cleanup staging'])('retains paused routines and credentials when deletion fails during %s, then completes on retry', async failure => {
   h.verified = true;
   const [source] = await listCompanionImportSources('fixture');
   const preview = await previewCompanionImport(source!.id, 'fixture');
@@ -206,18 +210,28 @@ it('hands taken-over source tasks back before deletion and retains the vault if 
   const accepted = await startCompanionImport(selection, 'fixture');
   await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('complete'));
   expect(h.sourceEnabled).toBe(false);
-  // The real lifecycle deletes/stops target routines before the handback hook.
-  h.routines = [];
-  h.pause.mockImplementationOnce(() => { throw new CompanionImportError('SOURCE_COMMAND_UNAVAILABLE'); });
-  await expect(withBotProfileLocks([accepted.botId], () => cancelCompanionImportsForDeletion(accepted.botId))).rejects.toThrow('SOURCE_COMMAND_UNAVAILABLE');
+  const routines = structuredClone(h.routines);
+  expect(routines).toHaveLength(1);
+  const staging = vi.spyOn(h.store, 'stageRemoval');
+  if (failure === 'handback') h.pause.mockImplementationOnce(() => { throw new CompanionImportError('SOURCE_COMMAND_UNAVAILABLE'); });
+  else staging.mockRejectedValueOnce(new Error('fixture staging failed'));
+  const remove = () => withBotProfileLocks([accepted.botId], () => prepareCompanionImportDeletion(accepted.botId));
+  await expect(remove()).rejects.toThrow(failure === 'handback' ? 'SOURCE_COMMAND_UNAVAILABLE' : 'fixture staging failed');
+  expect(h.lifecycle.mock.calls).toEqual([[accepted.botId, 'pause']]);
+  expect(h.routines).toEqual(routines);
   expect(h.created).toBe(true);
   expect(await h.store.read(h.root, accepted.botId, () => {})).toBeDefined();
-  await withBotProfileLocks([accepted.botId], () => cancelCompanionImportsForDeletion(accepted.botId));
+  if (failure === 'handback') expect(staging).not.toHaveBeenCalled();
+  await remove();
   expect(h.sourceEnabled).toBe(true);
+  expect(h.routines).toEqual([]);
+  expect(h.lifecycle.mock.calls).toEqual([[accepted.botId, 'pause'], [accepted.botId, 'pause'], [accepted.botId, 'delete']]);
+  expect(h.lifecycle.mock.invocationCallOrder.at(-1)).toBeGreaterThan(staging.mock.invocationCallOrder.at(-1)!);
   const calls = h.pause.mock.calls.length;
-  await cancelCompanionImportsForDeletion(accepted.botId);
+  await remove();
   expect(h.pause).toHaveBeenCalledTimes(calls);
-  await h.store.stageRemoval(h.root, accepted.botId, () => {});
+  // Credentials remain available until the profile deletion commits.
+  expect(await h.store.read(h.root, accepted.botId, () => {})).toBeDefined();
   await h.store.finishRemoval(h.root, accepted.botId, () => {});
 });
 
