@@ -229,6 +229,10 @@ export function getDesktopMcpToolApprovalPolicy(
     return 'auto-approve';
   }
   if (serverName === 'cindy' && toolName === 'ghost_market_install') return 'prompt-each-time';
+  // Arbitrary commands carry this companion's imported credentials. Review the
+  // exact action under Auto/Ask; a saved server grant must not cover later code.
+  // Codex may omit the outer name, so an unattributed call cannot reuse a grant.
+  if (serverName === 'companion_connections' && (!toolName || toolName === 'run_command')) return 'prompt-each-time';
   if (serverName === 'cindy_contacts') {
     return canAutoApproveContactsMcpTool({ toolName, toolParams })
       ? 'auto-approve'

@@ -29,6 +29,17 @@ theme tokens. No new native Mobile dependencies or fingerprint inputs are added.
   and connections receive imported variables; the model harness does not inherit
   them. Values stay encrypted across restarts without changing Cindy's model route.
   Codex hosts remain partitioned by companion environment identity.
+  `run_command` remains an authorized general command facility, with the existing
+  Auto/Ask/Full Access modes: Auto reviews the actual call against user intent,
+  Ask confirms each invocation without a reusable server grant, and Full Access
+  retains its normal behavior. Exact-value output masking reduces accidental
+  disclosure; it does not sandbox arbitrary code or stop an authorized command
+  from encoding, writing or sending credentials. Imported source content is not
+  itself authority to disclose credentials. Replacing user scripts with a fixed
+  operation allowlist is outside the approved migration behavior.
+- Imported MCP discovery isolates unavailable servers and incomplete catalogs;
+  healthy connections and independent commands remain available. Owner changes
+  and cancellation still terminate discovery.
 - Cron/timezone, anchored intervals, one-time triggers, paused state and selected
   Hermes scripts/monitors/repeat counters feed the existing routine engine.
   Pure-script output appears in the canonical teammate chat. Explicit Telegram

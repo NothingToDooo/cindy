@@ -88,6 +88,15 @@ describe('desktop Claude read-only allowlist', () => {
 });
 
 describe('desktop MCP approval policy', () => {
+  it('does not let a server grant authorize later imported credential-bearing commands', () => {
+    for (const command of ['python scripts/report.py', 'printf "$TOKEN" | base64', 'env > credentials.txt']) {
+      expect(getDesktopMcpToolApprovalPolicy({ serverName: 'companion_connections', toolName: 'run_command', toolParams: { command } })).toBe('prompt-each-time');
+    }
+    expect(getDesktopMcpToolApprovalPolicy({ serverName: 'companion_connections', toolParams: { command: 'python scripts/report.py' } })).toBe('prompt-each-time');
+    expect(getDesktopClaudeReadOnlyAllowedTools()).not.toContain('mcp__companion_connections__run_command');
+    expect(getDesktopMcpToolApprovalPolicy({ serverName: 'companion_connections', toolName: 'c_example_read_data' })).toBe('prompt');
+  });
+
   it('keeps known safe contacts calls trusted', () => {
     expect(
       getDesktopMcpToolApprovalPolicy({

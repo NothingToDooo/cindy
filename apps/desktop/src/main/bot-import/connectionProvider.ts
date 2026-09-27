@@ -25,19 +25,29 @@ export function createCompanionConnectionsProvider(): McpProvider {
       server.server.setRequestHandler(ListToolsRequestSchema, async (_request, extra) => {
         const scope = await resolve();
         if (!scope) return { tools: [] };
-        const tools: Tool[] = [{ name: 'run_command', description: 'Run a command with this companion’s imported environment and API credentials. Use this for imported skills and data queries that require their original environment. Secrets are injected on the owning computer; do not print them.', inputSchema: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'], additionalProperties: false } }];
+        const tools: Tool[] = [{ name: 'run_command', description: 'Run a command with this companion’s imported environment and API credentials. Use this for imported skills and data queries that require their original environment. This executes arbitrary shell code with private credentials and may write files or use the network; it requires the current task’s command authorization. Output masking is not a security sandbox.', annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true }, inputSchema: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'], additionalProperties: false } }];
         for (const connection of scope.environment.mcp.filter(connection => connection.enabled !== false)) {
-          await withImportedConnection(connection, scope.environment.env, scope.assertOwner, async client => {
-            let cursor: string | undefined;
-            let pages = 0;
-            do {
-              if (++pages > 100) throw new Error('Connection page limit exceeded');
-              const page = await client.listTools({ cursor }, { timeout: 15_000 });
-              for (const tool of page.tools) tools.push({ ...tool, name: toolName(connection.name, tool.name), description: `${connection.name} · ${tool.name}\n${tool.description ?? ''}` });
-              cursor = page.nextCursor;
-              if (tools.length > 1000) throw new Error('Connection tool limit exceeded');
-            } while (cursor);
-          }, { identity: scope.identity, signal: extra.signal });
+          // Keep a failed or partially paginated catalog local to its connection.
+          // Never swallow cancellation or an account change as an optional outage.
+          try {
+            const available = await withImportedConnection(connection, scope.environment.env, scope.assertOwner, async client => {
+              const entries: Tool[] = [];
+              let cursor: string | undefined;
+              let pages = 0;
+              do {
+                if (++pages > 100) throw new Error('Connection page limit exceeded');
+                const page = await client.listTools({ cursor }, { timeout: 15_000 });
+                for (const tool of page.tools) entries.push({ ...tool, name: toolName(connection.name, tool.name), description: `${connection.name} · ${tool.name}\n${tool.description ?? ''}` });
+                cursor = page.nextCursor;
+                if (tools.length + entries.length > 1000) throw new Error('Connection tool limit exceeded');
+              } while (cursor);
+              return entries;
+            }, { identity: scope.identity, signal: extra.signal });
+            tools.push(...available);
+          } catch {
+            scope.assertOwner();
+            extra.signal.throwIfAborted();
+          }
         }
         scope.assertOwner();
         return { tools };
