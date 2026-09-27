@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 vi.mock('@cindy/mcps', () => ({ resolveLiziMcpSessionContext: () => ({ sessionId: 'fixture-session' }) }));
@@ -79,6 +80,46 @@ it('restores advertised enum, const and default values at the upstream call boun
     expect(result.isError).not.toBe(true);
     expect(callTool).toHaveBeenCalledWith({ name: 'read_stage', arguments: { stage: 'prod', nested: [{ fixed: 'prod', fallback: 'prefix-prod' }], free: '[PRIVATE]' } }, undefined, { timeout: 120000 });
     expect(args.stage).toBe(properties.stage.enum[0]);
+  } finally { imported.mockRestore(); await client.close(); await config.instance.close(); }
+});
+
+it('preserves schema keywords while masking same-named properties and forwarding valid nested arguments', async () => {
+  const env = Object.fromEntries(['properties', 'required', 'items', 'enum', 'type', 'additionalProperties', 'const'].map((value, index) => [`KEY_${index}`, value]));
+  const connection = { name: 'schema', url: 'https://example.invalid/mcp' };
+  const schema: Tool['inputSchema'] = { type: 'object', properties: {
+    properties: { type: 'array', items: { type: 'object', properties: { required: { type: 'string', enum: ['enum'] } }, required: ['required'], additionalProperties: false } },
+    type: { const: { properties: 'enum', type: 'ordinary value' } },
+  }, required: ['properties', 'type'], additionalProperties: false };
+  const tool: Tool = { name: 'read_schema', inputSchema: schema, outputSchema: schema };
+  const original = structuredClone(tool);
+  const callTool = vi.fn(async ({ arguments: args }) => ({ content: [{ type: 'text', text: 'ok' }], structuredContent: args }));
+  const imported = vi.spyOn(connectionModule, 'withImportedConnection').mockImplementation(async (_server, _env, _assert, run) => run({ listTools: async () => ({ tools: [tool] }), callTool } as never));
+  vi.mocked(readCompanionSessionEnvironment).mockResolvedValue({ identity: 'schema-keywords', botId: 'bot', userData: '/fixture', assertOwner() {}, environment: { version: 1, env, mcp: [connection], credentials: [] } });
+  const config = createCompanionConnectionsProvider().toClaudeSdkConfig!({} as never) as { instance: McpServer };
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'fixture', version: '1' });
+  await config.instance.connect(serverTransport); await client.connect(clientTransport);
+  try {
+    const published = (await client.listTools()).tools[1]!;
+    const [arrayKey, literalKey] = published.inputSchema.required as string[];
+    expect(arrayKey).not.toBe('properties'); expect(literalKey).not.toBe('type');
+    const array = published.inputSchema.properties![arrayKey!] as { items: { properties: Record<string, { enum: string[] }>; required: string[]; additionalProperties: boolean } };
+    const nestedKey = array.items.required[0]!;
+    expect(nestedKey).not.toBe('required');
+    expect(array.items.additionalProperties).toBe(false);
+    const literal = (published.inputSchema.properties![literalKey!] as { const: Record<string, string> }).const;
+    expect(literal).not.toHaveProperty('properties'); expect(literal).not.toHaveProperty('type');
+    const args = { [arrayKey!]: [{ [nestedKey]: array.items.properties[nestedKey]!.enum[0] }], [literalKey!]: literal };
+    const validate = new AjvJsonSchemaValidator().getValidator(published.inputSchema);
+    expect(validate(args).valid).toBe(true);
+    expect(validate({}).valid).toBe(false);
+    expect(validate({ ...args, [arrayKey!]: [{ [nestedKey]: 'wrong enum' }] }).valid).toBe(false);
+    const result = await client.callTool({ name: published.name, arguments: args });
+    expect(result.isError).not.toBe(true);
+    expect(published.outputSchema).toEqual(published.inputSchema);
+    expect(result.structuredContent).toEqual(args);
+    expect(callTool).toHaveBeenCalledWith({ name: tool.name, arguments: { properties: [{ required: 'enum' }], type: { properties: 'enum', type: 'ordinary value' } } }, undefined, { timeout: 120000 });
+    expect(tool).toEqual(original);
   } finally { imported.mockRestore(); await client.close(); await config.instance.close(); }
 });
 

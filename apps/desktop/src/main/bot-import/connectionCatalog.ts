@@ -64,14 +64,29 @@ export function publicConnectionName(name: string, secrets: Record<string, strin
   return redactEnvironmentValues(name, secrets) === name ? name : `imported_${fingerprint(name).slice(0, 20)}`;
 }
 
-function redactSchema(value: unknown, secrets: Record<string, string>): unknown {
+const schemaMaps = new Set(['properties', 'patternProperties', '$defs', 'definitions', 'dependentSchemas', 'dependencies']);
+const schemaChildren = new Set(['items', 'prefixItems', 'additionalItems', 'contains', 'additionalProperties', 'unevaluatedItems',
+  'unevaluatedProperties', 'propertyNames', 'allOf', 'anyOf', 'oneOf', 'not', 'if', 'then', 'else', 'contentSchema']);
+const schemaKeywords = new Set([...schemaMaps, ...schemaChildren,
+  '$schema', '$id', 'id', '$ref', '$anchor', '$dynamicRef', '$dynamicAnchor', '$recursiveRef', '$recursiveAnchor', '$vocabulary', '$comment',
+  'type', 'enum', 'const', 'default', 'examples', 'title', 'description', 'required', 'dependentRequired',
+  'multipleOf', 'maximum', 'exclusiveMaximum', 'minimum', 'exclusiveMinimum', 'maxLength', 'minLength', 'pattern',
+  'maxItems', 'minItems', 'uniqueItems', 'maxContains', 'minContains', 'maxProperties', 'minProperties',
+  'format', 'contentEncoding', 'contentMediaType', 'readOnly', 'writeOnly', 'deprecated']);
+
+function redactSchema(value: unknown, secrets: Record<string, string>, dictionary = false): unknown {
   if (Array.isArray(value)) return value.map(child => redactSchema(child, secrets));
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, child]) => {
+    // Names in property/definition maps are data even when named "type" or
+    // "properties". Schema keywords themselves must retain their wire spelling.
+    if (dictionary) return [redactEnvironmentValues(key, secrets), redactSchema(child, secrets)];
     // JSON Schema type discriminators are protocol syntax, not business values.
     // An imported variable containing "object" must not invalidate the catalog.
     const types = Array.isArray(child) ? child : [child];
     if (key === 'type' && types.every(type => ['object', 'array', 'string', 'number', 'integer', 'boolean', 'null'].includes(type))) return [key, child];
-    return [redactEnvironmentValues(key, secrets), redactSchema(child, secrets)];
+    const projected = schemaMaps.has(key) ? redactSchema(child, secrets, true)
+      : schemaChildren.has(key) ? redactSchema(child, secrets) : redactEnvironmentData(child, secrets);
+    return [schemaKeywords.has(key) ? key : redactEnvironmentValues(key, secrets), projected];
   }));
   return redactEnvironmentData(value, secrets);
 }

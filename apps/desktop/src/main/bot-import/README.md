@@ -178,7 +178,9 @@ omitting it retains normal companion defaults, and a rejected request can be cor
   against imported variables, connection-local env, resolved headers (including
   authorization payloads), and credential-bearing URL components, including
   encoded/decoded path segments. The same values
-  are masked in tool responses. JSON Schema type syntax remains intact; names
+  are masked in tool responses. JSON Schema keywords and type syntax remain intact
+  at schema positions; property/definition names and literal payload keys still
+  use the credential mask, even when named like schema keywords. Names
   containing credentials use public aliases and resolve to original names only
   inside the host. The connection configuration itself is not modified.
   Required property names use the same masking as schema keys, and host dispatch
