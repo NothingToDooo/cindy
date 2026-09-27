@@ -572,6 +572,7 @@ export default function NewRemoteSessionScreen() {
     prefsScope: outboxOwner.accountKey || null,
     active: contextSheetOpen && contextSheetView === 'collab',
     setSheetOpen: setContextSheetOpen,
+    connectionEpoch,
   });
   const collabTarget = useMemo(() => ({
     orcaRole: null,

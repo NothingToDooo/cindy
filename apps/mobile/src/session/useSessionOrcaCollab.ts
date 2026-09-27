@@ -184,8 +184,10 @@ export function useOrcaWorkerForm(params: {
   prefsScope: string | null;
   active: boolean;
   setSheetOpen(open: boolean): void;
+  /** 隧道重连代次:断线时 Agent 列表 / 模型能力读失败,重连后在打开的表单上重读一次。 */
+  connectionEpoch?: number;
 }) {
-  const { maker, prefsScope, active, setSheetOpen } = params;
+  const { maker, prefsScope, active, setSheetOpen, connectionEpoch } = params;
   const [form, setForm] = useState<OrcaWorkerFormValue>(() => {
     const defaults = defaultOrcaWorkerCreationPrefs();
     return orcaWorkerFormFromPrefs(defaults, defaults.lastAgent);
@@ -246,7 +248,8 @@ export function useOrcaWorkerForm(params: {
 
   // 读被控端实际注册的 Agent。复位时列表可能还是乐观的三个:结果回来后,当前 Agent 不在这台
   // 电脑上就切到第一个可用 Agent 并带出它的模型记忆(不论用户是否改过其它字段——角色、任务、
-  // 权限原样保留),避免表单停在一个必然提交失败的 Agent 上。
+  // 权限原样保留),避免表单停在一个必然提交失败的 Agent 上。当前 Agent 可用时也按能力再收敛
+  // 一次模型:重连后重跑本 effect 时,断线期间没能完成的收敛在这里补上。
   useEffect(() => {
     if (!active) return undefined;
     let cancelled = false;
@@ -257,7 +260,10 @@ export function useOrcaWorkerForm(params: {
         if (next.length === 0) return;
         agentsRef.current = next;
         setAgents(next);
-        if (next.includes(formRef.current.agent)) return;
+        if (next.includes(formRef.current.agent)) {
+          converge(formRef.current.agent, ++generationRef.current);
+          return;
+        }
         const generation = ++generationRef.current;
         const switched = next[0]!;
         const remembered = prefsRef.current.agents[switched];
@@ -270,7 +276,7 @@ export function useOrcaWorkerForm(params: {
       })
       .catch(() => undefined);
     return () => { cancelled = true; };
-  }, [active, converge, maker]);
+  }, [active, connectionEpoch, converge, maker]);
 
   /** 重新打开已确认的表单(新建任务的协同草稿):角色模式跟随保存的角色,不沿用上次未提交的编辑。 */
   const restore = useCallback((value: OrcaWorkerFormValue) => {
@@ -427,6 +433,7 @@ export function useSessionOrcaCollab(params: {
     prefsScope,
     active: sheetOpen && sheetView !== null,
     setSheetOpen,
+    connectionEpoch,
   });
 
   const [entryStatus, setEntryStatus] = useState<OrcaCollabEntryStatus>('loading');

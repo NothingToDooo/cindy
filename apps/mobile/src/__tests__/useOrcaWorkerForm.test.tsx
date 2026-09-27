@@ -206,3 +206,33 @@ it('moves off an unavailable Agent even after unrelated edits, keeping those edi
   expect(latest!.form.role).toBe('reviewer');
   expect(latest!.form.initialTask).toBe('check tests');
 });
+
+it('rereads Agents and model capabilities on an open form after reconnecting', async () => {
+  saveOrcaWorkerCreationPrefs('user-1', {
+    ...defaultOrcaWorkerCreationPrefs(),
+    agents: { ...defaultOrcaWorkerCreationPrefs().agents, codex: { model: 'retired', effort: 'high', fast: false } },
+  });
+  const base = fakeMaker();
+  let online = false;
+  const maker = {
+    listAvailableAgents: vi.fn(async () => {
+      if (!online) throw new Error('[DEVICE_OFFLINE] offline');
+      return base.listAvailableAgents();
+    }),
+    getCapabilities: vi.fn(async (agent: string) => {
+      if (!online) throw new Error('[DEVICE_OFFLINE] offline');
+      return base.getCapabilities(agent as never);
+    }),
+  } as unknown as MobileMakerTransport;
+  function EpochProbe({ epoch }: { epoch: number }) {
+    latest = useOrcaWorkerForm({ maker, prefsScope: 'user-1', active: true, setSheetOpen: () => undefined, connectionEpoch: epoch });
+    return null;
+  }
+  await act(async () => root.render(<EpochProbe epoch={1} />));
+  await act(async () => { latest!.reset(); await flush(); });
+  expect(latest!.form.model?.id).toBe('retired');
+  online = true;
+  await act(async () => { root.render(<EpochProbe epoch={2} />); await flush(); });
+  // 记住的模型在这台电脑上已下线 → 重连后收敛为「默认」。
+  expect(latest!.form.model).toBeNull();
+});
