@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   resolveDefaults: vi.fn(),
   rawDefault: vi.fn(),
   listProviders: vi.fn(async (): Promise<unknown[] | null> => []),
+  connectedProviders: vi.fn((): unknown[] => []),
   applyRoute: vi.fn(),
   readPendingRoute: vi.fn(() => undefined as unknown),
   cancelPending: vi.fn(),
@@ -42,6 +43,7 @@ vi.mock('@cindy/model-providers', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@cindy/model-providers')>()),
   // 隐式来源一律落到 'xd' —— 足够验证「隐式 == 钉住的 xd」归一化。
   effectiveSourceIdForModel: vi.fn(() => 'xd'),
+  connectedProvidersForAgent: mocks.connectedProviders,
 }));
 vi.mock('../../defaultSessionSettings', () => ({
   getImDefaultEffortFor: vi.fn(() => 'high'),
@@ -109,7 +111,7 @@ async function insertTask(
     record?: string | null;
     remoteHostId?: string | null;
     marker?: boolean;
-    status?: 'active' | 'archived';
+    status?: 'active' | 'archived' | 'deleted';
     fastMode?: boolean;
   } = {},
 ): Promise<void> {
@@ -486,6 +488,37 @@ describe('backfillLegacyImDefaultRoutes', () => {
       fp: 'fp-old',
       route: OLD,
     });
+  });
+
+  it('claims historical landings pinned from an implicit default whose source later died', async () => {
+    // 隐式默认(null)建任务时被系统钉成当时的有效来源 A; A 断开后默认解析改到 B,
+    // 归一化按今天的目录把 null 解析成 B —— 历史行的显式 A 两条候选都对不上
+    // (PR #5155 review P2)。用户显式钉的**可用**来源不受影响。
+    mocks.fingerprint.mockReturnValue('fp-old');
+    mocks.rawDefault.mockReturnValue(OLD);
+    mocks.resolveDefaults.mockResolvedValue({ ...OLD, permissionMode: 'auto', fastMode: false, fingerprint: 'fp-old' });
+    mocks.connectedProviders.mockReturnValue([{ id: 'live-source' }] as never);
+    await insertTask('legacy-pinned-dead', { ...OLD, providerId: 'dead-source' }, { record: null });
+    await insertTask('legacy-pinned-live', { ...OLD, providerId: 'live-source' }, { record: null });
+
+    await expect(backfillLegacyImDefaultRoutes('feishu', CONFIG)).resolves.toBe(1);
+
+    expect((await rowOf('legacy-pinned-dead')).imDefaultRoute).not.toBeNull();
+    expect((await rowOf('legacy-pinned-live')).imDefaultRoute).toBeNull();
+  });
+
+  it('claims revivable archived tasks that still run the old default', async () => {
+    // 归档/软删的可复活任务: findActiveSession 会原地复活且不补记录, 保存前不认领
+    // 就永久错过(PR #5155 review P2)。
+    mocks.resolveDefaults.mockResolvedValue({ ...OLD, permissionMode: 'auto', fastMode: false, fingerprint: 'fp-old' });
+    mocks.fingerprint.mockReturnValue('fp-old');
+    await insertTask('legacy-archived', OLD, { record: null, status: 'archived' });
+    await insertTask('legacy-deleted', OLD, { record: null, status: 'deleted' });
+
+    await expect(backfillLegacyImDefaultRoutes('feishu', CONFIG)).resolves.toBe(2);
+
+    expect((await rowOf('legacy-archived')).imDefaultRoute).not.toBeNull();
+    expect((await rowOf('legacy-deleted')).imDefaultRoute).not.toBeNull();
   });
 
   it('fails instead of reporting done when the provider catalog is unavailable', async () => {

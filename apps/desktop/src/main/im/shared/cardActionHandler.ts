@@ -73,6 +73,7 @@ import {
   updateModelEffort,
   updatePermissionMode,
 } from './sessionRepo';
+import { markImSessionManualRouteOverride } from './manualRouteOverride';
 import { changeSessionPermissionMode } from './permissionModeControl';
 import type { ImCardBuilders } from './cardBuilders';
 import { enqueueAskCardPatch } from './askCardPatchQueue';
@@ -418,6 +419,18 @@ export function createCardActionHandler(
       const liveAfterModel = turnRunner.getMakerSessionById(sessionId);
       if (!liveAfterModel) {
         log.info(`model:pick: no live session for ${sessionId.slice(-8)} — DB updated only`);
+      }
+      // 「脱离跟随」墓碑只在选择真正落地后写: 上面任何失败都会回滚持久路由, 若在
+      // updateModelEffort 里立碑, 失败回滚(同一函数)会让失败的选择永久脱离默认
+      // 跟随(PR #5155 review P2)。写失败按选择失败处理 —— 整体回滚并报错重试。
+      try {
+        await markImSessionManualRouteOverride(sessionId);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log.warn(`model:pick manual override marker failed: ${msg}`);
+        await restorePersistentRoute('manual override marker');
+        await rollbackRuntimeChange('manual override marker');
+        return msg;
       }
       // 这次 IM 选择晚于 renderer 登记的跨引擎 intent；只有整条 route 更新成功后
       // 才取消旧 intent，失败回滚时仍保留它供下一次发送重试。

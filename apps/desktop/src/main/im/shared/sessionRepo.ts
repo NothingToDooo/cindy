@@ -33,7 +33,6 @@ import {
   type ResolvedImSessionDefaults,
 } from '../defaultSessionSettings';
 import { buildImDefaultRouteRecord } from './channelDefaultRoute';
-import { markImSessionManualRouteOverride } from './manualRouteOverride';
 import { broadcastSessionCreated, broadcastSessionPatched } from './sessionBroadcast';
 import type { ImOrchestratorConfig, ImSessionNamespace } from './types';
 
@@ -757,6 +756,9 @@ export async function readModelRouteSnapshot(
  *   - string    → 显式选定该供应商(路由按它走);
  *   - null      → 清除显式选择,回落默认路由。
  * 显式传入(含 null)时一并写列,使 IM 选模型与应用内一样能锁定路由源、跨重启 hydrate 仍生效。
+ *
+ * 只写路由列 —— 「脱离跟随」墓碑由调用方在**选择真正落地后**写(PR #5155 review P2):
+ * 本函数也被失败回滚复用, 在这里立碑会让失败的选择永久脱离默认跟随。
  */
 export async function updateModelEffort(
   sessionId: string,
@@ -774,9 +776,6 @@ export async function updateModelEffort(
       updatedAt: Date.now(),
     })
     .where(eq(sessions.id, sessionId));
-  // `/model` 是用户单独改路由(哪怕选了同值): 渠道自有任务从此脱离默认跟随
-  // —— 按选择行为判定、不看取值相等(PR #5155 review P1)。
-  await markImSessionManualRouteOverride(sessionId);
 }
 
 /** Update permissionMode column (for /permission picker). */

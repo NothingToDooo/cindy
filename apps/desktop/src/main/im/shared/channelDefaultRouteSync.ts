@@ -6,9 +6,13 @@
  * 任何失败都只记日志、保持原路由, 绝不挡住用户这条消息。判定规则见
  * channelDefaultRoute.ts。
  */
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull } from 'drizzle-orm';
 import type { AgentKind } from '@cindy/maker-core';
-import { effectiveSourceIdForModel, type ProviderView } from '@cindy/model-providers';
+import {
+  connectedProvidersForAgent,
+  effectiveSourceIdForModel,
+  type ProviderView,
+} from '@cindy/model-providers';
 
 import type { ImDefaultSettingsChannel } from '../../../shared/imDefaultSettings.js';
 import { getDbClient } from '../../localDb/client/current';
@@ -105,8 +109,15 @@ async function readSessionRouteRow(sessionId: string): Promise<SessionRouteRow |
 }
 
 /** 本渠道自己的活跃本机任务。官方 hook / 已轮换的 Telegram 任务没有渠道标记列。 */
-function isChannelOwnedRow(row: SessionRouteRow, source: string): boolean {
-  if (row.source !== source || row.status !== 'active') return false;
+function isChannelOwnedRow(
+  row: SessionRouteRow,
+  source: string,
+  opts?: { includeRevivable?: boolean },
+): boolean {
+  const statusOk =
+    row.status === 'active' ||
+    (opts?.includeRevivable === true && (row.status === 'archived' || row.status === 'deleted'));
+  if (row.source !== source || !statusOk) return false;
   if (row.remoteHostId || row.orcaRole || !row.model) return false;
   return source === 'feishu' ? !!row.feishuBotAppId : !!row.imBotContextId;
 }
@@ -399,6 +410,13 @@ export function createImChannelDefaultRouteSync(deps: {
  * 改过 effort 的历史任务不能被认领(PR #5155 review P1);原始默认的 effort 在设置
  * 保存时就已按模型 reconcile 过, 与历史落点一致。
  *
+ * 另外两类历史兼容落点(PR #5155 review P2):
+ * - 隐式默认(null)建任务时会被系统钉成当时的有效来源, 该来源后来断开后两条
+ *   候选都对不上 —— 按「钉住的来源如今已不可用」认领(用户显式钉的可用来源不受
+ *   影响);
+ * - 归档/软删的可复活任务: 用户从 IM 再发消息会原地复活, 复活不补记录, 保存前
+ *   不认领就永久错过 —— 回填一并覆盖。
+ *
  * 无法可靠识别时(供应商目录拿不到)必须抛错而不是返回 0: 调用方把 0 当成「补完了」
  * 就会提交新默认, 下一次只能按新默认匹配, 还停在旧默认上的老任务永久失去跟随资格。
  */
@@ -422,8 +440,16 @@ export async function backfillLegacyImDefaultRoutes(
       imBotContextId: sessions.imBotContextId,
     })
     .from(sessions)
-    .where(and(eq(sessions.source, source), eq(sessions.status, 'active'), isNull(sessions.imDefaultRoute)));
-  const legacyRows = rows.filter((row) => isChannelOwnedRow(row, source));
+    .where(
+      and(
+        eq(sessions.source, source),
+        // 归档/软删的可复活任务一并覆盖: findActiveSession 会原地复活它们且不补
+        // 记录, 保存前不认领就永久错过(PR #5155 review P2)。
+        inArray(sessions.status, ['active', 'archived', 'deleted']),
+        isNull(sessions.imDefaultRoute),
+      ),
+    );
+  const legacyRows = rows.filter((row) => isChannelOwnedRow(row, source, { includeRevivable: true }));
   // 没有要补的就不碰供应商目录 —— 目录不可用也挡不住用户的设置保存。
   if (legacyRows.length === 0) return 0;
   const providers = await listProviders();
@@ -452,12 +478,28 @@ export async function backfillLegacyImDefaultRoutes(
     );
   }
   const normalize = providerNormalizer(providers);
+  /**
+   * 隐式默认(null)的历史落点: 建任务时被系统钉成当时的有效来源(如 A), A 断开
+   * 后默认解析改到 B —— 归一化按今天的目录把 null 解析成 B, 历史行的显式 A 两条
+   * 候选都对不上(PR #5155 review P2)。当年被钉住、如今来源已不可用的历史落点按
+   * 原始默认认领; 用户显式钉的**可用**来源不受影响, 手动覆盖照旧保护。
+   */
+  const isHistoricalImplicitLanding = (current: ImDefaultRoute): boolean =>
+    rawDefault.providerId === null &&
+    current.providerId !== null &&
+    current.agentKind === rawDefault.agentKind &&
+    current.model === rawDefault.model &&
+    current.effort === rawDefault.effort &&
+    !connectedProvidersForAgent(providers, current.agentKind).some(
+      (provider) => provider.id === current.providerId,
+    );
   let count = 0;
   for (const row of legacyRows) {
     const current = currentRouteOf(row);
     const matches =
       (!!resolvedDefault && sameImDefaultRoute(current, resolvedDefault, normalize)) ||
-      sameImDefaultRoute(current, rawDefault, normalize);
+      sameImDefaultRoute(current, rawDefault, normalize) ||
+      isHistoricalImplicitLanding(current);
     if (!matches) continue;
     await getDbClient()
       .drizzle.update(sessions)
