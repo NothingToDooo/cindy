@@ -692,7 +692,8 @@ export function useSessionOrcaCollab(params: {
     }
   }, [refreshWorkerTeam, workerLeadSessionId, workerSelf]);
 
-  const confirmArchiveSelf = useCallback(() => {
+  /** 归档自身:确认弹窗在调用方的面板上直接弹出;用户确认后先调 onConfirmed(如收起详情面板)再归档。 */
+  const confirmArchiveSelf = useCallback((onConfirmed?: () => void) => {
     if (!workerLeadSessionId || !workerSelf) return;
     const leadId = workerLeadSessionId;
     const worker = workerSelf;
@@ -705,6 +706,7 @@ export function useSessionOrcaCollab(params: {
           text: i18n.t('session.collab.archiveConfirm'),
           style: 'destructive',
           onPress: () => {
+            onConfirmed?.();
             void (async () => {
               try {
                 await makerRef.current.orca.archiveWorker(leadId, worker.workerId);

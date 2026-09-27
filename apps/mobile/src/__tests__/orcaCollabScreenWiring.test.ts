@@ -50,6 +50,9 @@ describe('mobile Orca collaboration wiring', () => {
     expect(menu).toContain('{onOpenSearch && !workerMode ? (');
     expect(menu).toContain('{!messageOnly && !workerMode && (');
     expect(menu).toContain('{workerMode ? null : !messageOnly && isSharedTaskPeer');
+    // 归档确认在面板仍展开时弹出(iOS 原生 sheet 收起中弹 Alert 会丢),确认后再收起。
+    expect(menu).toContain('run: () => worker.onArchive?.(onClose)');
+    expect(menu).toContain('(row.keepOpen ? row.run() : onRun(row.run))');
   });
 
   it('keeps Worker lifecycle on the Orca path instead of the generic task menu', () => {

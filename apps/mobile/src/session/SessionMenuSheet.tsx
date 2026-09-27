@@ -108,8 +108,11 @@ export interface SessionMenuWorkerActions {
   onOpenLead?: () => void;
   /** 已是焦点 / 查不到自身记录时为 undefined。 */
   onSetFocus?: () => void;
-  /** 查不到自身记录时为 undefined。 */
-  onArchive?: () => void;
+  /**
+   * 查不到自身记录时为 undefined。确认弹窗在详情面板仍展开时弹出(iOS 原生 sheet 正在收起时
+   * 弹 Alert 会丢),确认后由 onConfirmed 收起面板。
+   */
+  onArchive?: (onConfirmed: () => void) => void;
 }
 
 export interface SessionMenuSheetProps {
@@ -612,6 +615,7 @@ export function SessionMenuSheet({
 
           {workerMode ? (
             <WorkerMenuActions
+              onClose={onClose}
               worker={worker}
               onRun={(action) => {
                 onClose();
@@ -1037,16 +1041,18 @@ function menuActionIcon(action: SessionMenuAction, session: Pick<RemoteSession, 
 function WorkerMenuActions({
   worker,
   onRun,
+  onClose,
 }: {
   worker: SessionMenuWorkerActions | undefined;
   onRun(action: () => void): void;
+  onClose(): void;
 }) {
   const { t } = useTranslation();
   const styles = useThemedStyles(makeStyles);
   const rows = [
-    worker?.onOpenLead ? { key: 'lead', icon: CornerUpLeft, label: t('session.collab.backToLead'), danger: false, run: worker.onOpenLead, testID: 'session.workerBackToLead' } : null,
-    worker?.onSetFocus ? { key: 'focus', icon: Crosshair, label: t('session.collab.setFocus'), danger: false, run: worker.onSetFocus, testID: 'session.workerSetFocus' } : null,
-    worker?.onArchive ? { key: 'archive', icon: Archive, label: t('session.collab.archiveConfirm'), danger: true, run: worker.onArchive, testID: 'session.workerArchive' } : null,
+    worker?.onOpenLead ? { key: 'lead', icon: CornerUpLeft, label: t('session.collab.backToLead'), danger: false, run: worker.onOpenLead, testID: 'session.workerBackToLead', keepOpen: false } : null,
+    worker?.onSetFocus ? { key: 'focus', icon: Crosshair, label: t('session.collab.setFocus'), danger: false, run: worker.onSetFocus, testID: 'session.workerSetFocus', keepOpen: false } : null,
+    worker?.onArchive ? { key: 'archive', icon: Archive, label: t('session.collab.archiveConfirm'), danger: true, run: () => worker.onArchive?.(onClose), testID: 'session.workerArchive', keepOpen: true } : null,
   ].filter((row): row is NonNullable<typeof row> => row !== null);
   if (rows.length === 0) return null;
   if (Platform.OS === 'ios') {
@@ -1055,7 +1061,7 @@ function WorkerMenuActions({
         actions={rows.map((row) => ({
           label: row.label,
           danger: row.danger,
-          onPress: () => onRun(row.run),
+          onPress: () => (row.keepOpen ? row.run() : onRun(row.run)),
           testID: row.testID,
         }))}
       />
@@ -1069,7 +1075,7 @@ function WorkerMenuActions({
           icon={row.icon}
           key={row.key}
           label={row.label}
-          onPress={() => onRun(row.run)}
+          onPress={() => (row.keepOpen ? row.run() : onRun(row.run))}
           testID={row.testID}
         />
       ))}

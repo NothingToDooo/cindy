@@ -364,9 +364,13 @@ it('lets a Worker task focus itself and archive itself back to the Lead', async 
   expect(collab!.workerSelf?.workerId).toBe('w-1');
   await act(async () => { await collab!.setSelfFocus(); });
   expect(switchFocus).toHaveBeenCalledWith('lead-1', 'w-1');
-  act(() => collab!.confirmArchiveSelf());
+  // 确认弹窗先弹出(详情面板还开着),确认后才收起面板再归档。
+  const closeMenu = vi.fn();
+  act(() => collab!.confirmArchiveSelf(closeMenu));
+  expect(closeMenu).not.toHaveBeenCalled();
   const confirm = vi.mocked(Alert.alert).mock.calls.at(-1)![2]!.find((button) => button.style === 'destructive')!;
   await act(async () => { confirm.onPress?.(); await flush(); });
+  expect(closeMenu).toHaveBeenCalledTimes(1);
   expect(archiveWorker).toHaveBeenCalledWith('lead-1', 'w-1');
   expect(openSession).toHaveBeenCalledWith('lead-1');
 });
