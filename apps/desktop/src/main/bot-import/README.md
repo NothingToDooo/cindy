@@ -7,8 +7,12 @@ retain one `requestId` across reconnects and retries. Previews expose selectable
 metadata, never source paths, environment values or credential contents.
 
 The creation UI reuses the existing teammate dialog/sheet and portrait picker.
-After creation, personality, memory, skills, model and automation management use
-the existing teammate screens. Import adds category/item selection, including
+After creation, personality, memory, skills and model management use the existing
+teammate screens; routine management follows the desktop-only product contract.
+Mobile can select automations during import and request host-owned takeover.
+Reopening creation after dismissing import starts with the normal creation form;
+reconnecting an open import preserves its current selection and request.
+Import adds category/item selection, including
 unselecting defaults; unused skills start unselected. Both platforms use semantic
 theme tokens. No new native Mobile dependencies or fingerprint inputs are added.
 
@@ -36,7 +40,7 @@ theme tokens. No new native Mobile dependencies or fingerprint inputs are added.
   imported skills, commands and data queries. Only those host-owned subprocesses
   and connections receive imported variables; the model harness does not inherit
   them. Values stay encrypted across restarts without changing Cindy's model route.
-  Script, command, parser and stdio MCP subprocesses inherit only OS execution
+  Script, command, parser, source CLI and stdio MCP subprocesses inherit only OS execution
   basics plus their explicitly selected imported environment (and connection-local
   env). Unrelated launch tokens, proxy credentials and runtime injection variables
   are not implicitly inherited; selected proxy/runtime settings remain available.
@@ -84,14 +88,22 @@ external data still require actual read evidence.
 
 ## Handover and compatibility
 
-The encrypted selected snapshot, including full skill resources, is written before
-the first receipt is accepted or an item is copied. The durable receipt records
-item copies and each automation's handover phase.
+An initial non-secret receipt indexes the request before any encrypted checkpoint
+write. The encrypted selected snapshot, including full skill resources, is written
+before the request is acknowledged or an item is copied. If the process stops after
+the checkpoint but before its acknowledgement, startup scanning and same-request
+retry discover it through that index. The durable receipt records item copies and
+each automation's handover phase.
 The target routine starts disabled. Actual target reads must pass before the
 source's native CLI pauses its task; only then is the target enabled. Source
 configuration changes invalidate handover. In-flight source execution is allowed
 to finish before enabling the target. Lost acknowledgements are reconciled from
 actual state; an ambiguous target enable never resumes the source as well.
+Pause/resume CLI calls receive only OS basics, selected source variables and the
+captured source directory/configuration. The shared child runner checks ownership
+throughout execution and terminates the process tree on owner loss. An interrupted
+pause retains its durable phase for reconciliation when the original owner returns;
+it cannot enable the target under a different account.
 An encrypted handover marker is installed before the target routine is published.
 For active source tasks it becomes ready only after verification, source pause and
 confirmed target activation. Ordinary editors and manual runs cannot bypass a
