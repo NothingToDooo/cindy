@@ -44,6 +44,25 @@ it('preserves an imported portrait instead of replacing it with a gallery defaul
   expect(portraits.load).not.toHaveBeenCalled();
 });
 
+it.each(['PREVIEW_EXPIRED', 'SELECTION_CHANGED'])('returns to fresh sources after %s and submits a new editable preview', async code => {
+  let attempt = 0;
+  const api: CompanionImportApi = { sources: vi.fn(async () => [{ id: `source-${++attempt}`, name: 'Ada', kind: 'hermes' as const }]),
+    preview: vi.fn(async sourceId => ({ id: `preview-${sourceId}`, name: 'Ada', source: { id: sourceId, name: 'Ada', kind: 'hermes' as const }, entries: [] })), status: async () => undefined,
+    start: vi.fn<CompanionImportApi['start']>().mockRejectedValueOnce(new Error(code)).mockImplementation(async input => ({ requestId: input.requestId, botId: 'bot', status: 'complete', checks: [] })) };
+  render(<BotImportForm api={api} onCreated={() => {}} onBack={() => {}} onBusy={() => {}} />);
+  fireEvent.click(await screen.findByRole('button', { name: /Ada.*Hermes/ }));
+  fireEvent.click(await screen.findByRole('button', { name: 'bots.import.submit' }));
+  fireEvent.click(await screen.findByRole('button', { name: /Ada.*Hermes/ }));
+  const input = await screen.findByRole('textbox');
+  expect((input as HTMLInputElement).disabled).toBe(false);
+  fireEvent.change(input, { target: { value: 'Corrected' } });
+  fireEvent.click(screen.getByRole('button', { name: 'bots.import.submit' }));
+  await waitFor(() => expect(api.start).toHaveBeenCalledTimes(2));
+  const requests = vi.mocked(api.start).mock.calls.map(call => call[0]);
+  expect(requests[1]).toMatchObject({ previewId: 'preview-source-2', name: 'Corrected' });
+  expect(requests[1]!.requestId).not.toBe(requests[0]!.requestId);
+});
+
 it('uses the original portrait control and sends only the items still selected', async () => {
   const api: CompanionImportApi = { sources: vi.fn<CompanionImportApi['sources']>(async () => [{ id: 'source', name: 'Ada', kind: 'hermes' }]), preview: vi.fn<CompanionImportApi['preview']>(async () => ({ id: 'preview', name: 'Ada', source: { id: 'source', name: 'Ada', kind: 'hermes' }, entries: [
     { id: 'memory', category: 'memory', name: 'USER.md', selected: true },

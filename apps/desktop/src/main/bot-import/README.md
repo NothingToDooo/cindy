@@ -59,7 +59,18 @@ omitting it retains normal companion defaults, and a rejected request can be cor
   numeric-array checkpoints.
 - Selected variables, MCP env/headers, source credentials and automation assets
   use the existing account encrypted credential store. The teammate folder has
-  a non-secret `environment.json` binding. Cancellation of a variable does not
+  a non-secret `environment.json` binding. Variable/connection names in that file
+  are opaque hashes; original names remain private. Large environments use
+  atomically replaced, owner-scoped ciphertext files with bounded safeStorage
+  chunks (64 Ki characters each), yielding between crypto calls and asynchronous
+  disk operations. Encrypted batch/index/count/context metadata rejects mixed,
+  reordered or truncated chunks. Large JSON encode/decode/hash work runs in a
+  short-lived Node worker; checkpoint conversion yields between resource files
+  and reuses already captured bytes when publishing the environment.
+  Legacy single-value ciphertext and numeric-array snapshots remain readable;
+  normal writes automatically use the chunked format. Legacy decryption itself
+  remains synchronous until that first rewrite. This changes only the private
+  companion namespace, not provider/renderer credential storage. Cancellation of a variable does not
   secretly copy its expanded value into another selected connection.
   Public profile/memory/Skill text and routine names/prompts redact all known
   source credentials, including unchecked accounts; memory titles use the same
@@ -80,7 +91,9 @@ omitting it retains normal companion defaults, and a rejected request can be cor
   not block takeover. Identical duplicate values remain compatible.
   Selected environment references use case-insensitive names on Windows and
   case-sensitive names on macOS/Linux, including nested MCP and delivery settings.
-  Deleting a companion stages a non-secret owner-scoped cleanup record before the
+  Ordinary companions without a binding or vault-only checkpoint need no cleanup
+  writes or vault decryption. Deleting an imported companion stages a non-secret
+  owner-scoped cleanup record before the
   database deletion, then removes credentials only after the deletion succeeds.
   If SQLite fails, the surviving profile retains its environment. If vault cleanup
   fails or the app exits after commit, the record survives outside the deleted
@@ -161,8 +174,10 @@ omitting it retains normal companion defaults, and a rejected request can be cor
   `_meta`) and SDK-validated content/resource fields keep their protocol spelling;
   content types and audience/theme enums remain valid. Their text and structured
   payloads still use the credential mask, including identically named business keys.
-  Bounded locale/region settings such as LANG=en and REGION=us remain ordinary
-  configuration. Other short values are masked as whole tokens, not substrings
+  Bounded ordinary settings such as LANG=en, REGION=us, DEBUG=true, PORT=3000,
+  LOG_LEVEL=info and NODE_ENV=production retain their content meaning, including
+  when unchecked. Recognized booleans, port ranges and enums are configuration;
+  arbitrary unknown variables and explicit auth values remain private. Other short values are masked as whole tokens, not substrings
   inside words such as "status"; explicitly configured header/URL credentials are
   still included even when they equal a locale value. Numeric data and schema
   types remain intact. Discovery, dispatch and verification share paginated tool
@@ -184,7 +199,7 @@ host executes real MCP/HTTP reads and validates response data. The planner sees
 variable names and redacted task/script text, not credential values. HTTP checks
 reject redirects; Telegram checks read identity/destination without test sends.
 The MCP server's `readOnlyHint` only filters planning candidates; it does not
-authorize execution. Each planned MCP call uses the companion's existing
+authorize execution. Each planned MCP/HTTP call and literal monitor GET uses the companion's existing
 Auto/Ask/Full Access policy with its exact connection, tool and arguments. Auto
 uses the shared permission reviewer with the host-owned takeover intent; Ask and
 unavailable Auto review use the existing Desktop/Mobile confirmation route.
@@ -253,15 +268,30 @@ it cannot enable the target under a different account.
 An encrypted handover marker is installed before the target routine is published.
 For active source tasks it becomes ready only after verification, source pause and
 confirmed target activation. Ordinary editors and manual runs cannot bypass a
-pending handover; already queued work defers without executing. Lost marker writes
+pending handover; already queued work defers without executing. Explicit enable
+or run through the existing routine controls retries a transient failed takeover
+from its saved selection, verifies again and reconciles the updated revision.
+Changed definitions, missing dependencies and adapter requirements remain explicit
+failures; an originally unrequested takeover is not silently authorized. Lost marker writes
 keep the source paused for recovery. Already-paused source tasks remain disabled
 but retain normal later management. Earlier completed receipts can restore missing
 markers; failed checks or a skipped takeover of an active source cannot.
 Retries preserve edits, reuse the same teammate/routines, and do not recopy
 unselected items. Pending selected checkpoints are encrypted and recover after
 restart; handover reconciliation continues if the dialog/device link closes.
+A reconciliation batch makes at most three passes. Definitive failed verification
+is not retried by background passes, status polling or startup; after the bound,
+the result needs attention and requires an explicit retry. Current receipts avoid
+decrypting full environments on status/startup reads; legacy marker upgrades run
+once. This bounds repeated model calls and Ask prompts.
+Deletion first stops target routines, then uses the original native CLI to restore
+only source tasks this import paused, persisting each acknowledgement. Failed
+restoration aborts deletion before the profile/vault is removed, so retry retains
+the necessary credentials. Originally paused or non-taken-over tasks stay as-is.
 Definitive host input rejections keep their stable error through the Mobile
 Remote Resource boundary so the existing form can be edited and resubmitted.
+Expired or changed previews clear the frozen intent and refresh the existing
+source step on Desktop and Mobile; a new preview gets a fresh request.
 Unexpected/ambiguous failures still retain the original request for reconciliation.
 The optional public credential-alternative IDs are additive: older clients may
 ignore them, but the host still rejects a conflicting selection before writing.
@@ -291,3 +321,12 @@ acknowledgements. Desktop/Mobile component tests exercise deselection and the
 existing portrait picker. No test migrates the user's installed agents or sends
 real messages. Device visual checks and live provider OAuth refresh are separate
 from these fixture results.
+
+Large-data tests exercise multi-megabyte fixtures, bounded crypto calls, event-loop
+progress, worker conversion, legacy read/upgrade, interrupted atomic writes and
+owner loss. They use a test cipher, not the user's OS keychain. Source discovery
+still inspects bounded source trees sequentially for complete credential masking;
+large real-source discovery latency and peak memory are not claimed as benchmarked.
+Downgrading to a build predating chunked companion storage cannot read the new
+private format; hand automations back before downgrade and retain the current
+build/data for recovery.

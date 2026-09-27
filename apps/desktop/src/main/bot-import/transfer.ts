@@ -10,9 +10,11 @@ export interface ImportReceipt {
   copied: string[];
   environmentSaved?: boolean;
   checkpointSaved?: boolean;
+  /** Current bindings carry explicit handover markers; old receipts upgrade once. */
+  handoverMarkers?: true;
   /** Durable fence: a deleted companion's old preview/request must never recreate it. */
   cancelled?: boolean;
-  routines: Record<string, { id: string; phase: 'created' | 'verified' | 'pausing-source' | 'source-paused' | 'complete' }>;
+  routines: Record<string, { id: string; phase: 'created' | 'verified' | 'pausing-source' | 'source-paused' | 'complete'; sourceRestored?: boolean }>;
 }
 
 export interface TransferDeps {
@@ -45,7 +47,7 @@ export function validateImportSelection(value: CompanionImportSelection, snapsho
 }
 
 /** One receipt is shared by GUI, remote actions and command callers. Writes are serialized by the host. */
-export async function transferCompanion(snapshot: ImportSnapshot, selection: CompanionImportSelection, deps: TransferDeps): Promise<CompanionImportResult> {
+export async function transferCompanion(snapshot: ImportSnapshot, selection: CompanionImportSelection, deps: TransferDeps, reconcileOnly = false): Promise<CompanionImportResult> {
   const items = validateImportSelection(selection, snapshot);
   deps.assertOwner();
   const selectionHash = fingerprint([selection.name, selection.avatarImageBase64, selection.entryIds.toSorted(), selection.takeover, snapshot.source.kind, snapshot.source.agentId, snapshot.source.root]);
@@ -54,7 +56,7 @@ export async function transferCompanion(snapshot: ImportSnapshot, selection: Com
   if (existing && existing.selectionHash !== selectionHash) throw new CompanionImportError('REQUEST_ALREADY_USED');
   if (existing?.cancelled) return existing.result;
   if (existing?.result.status === 'complete') return existing.result;
-  const receipt: ImportReceipt = existing ?? { selectionHash, copied: [], routines: {}, result: {
+  const receipt: ImportReceipt = existing ?? { selectionHash, handoverMarkers: true, copied: [], routines: {}, result: {
     requestId: selection.requestId, botId: `import_${fingerprint(selection.requestId).slice(0, 24)}`, status: 'running', checks: [],
   } };
   const botId = receipt.result.botId;
@@ -118,6 +120,11 @@ export async function transferCompanion(snapshot: ImportSnapshot, selection: Com
     return !!item?.view.issues?.length || !!item?.view.dependsOn?.some(child => missingDependency(child, visited));
   };
   for (const item of items.filter(item => item.automation)) {
+    // Background reconciliation repairs only interrupted work. A definitive
+    // failed verification needs an explicit retry, never another model/Ask call.
+    const prior = receipt.routines[item.view.id];
+    if (reconcileOnly && receipt.result.checks.some(check => check.entryId === item.view.id && check.status === 'needs-attention')
+      && prior?.phase !== 'pausing-source' && prior?.phase !== 'source-paused') continue;
     const automation = item.automation!;
     if (!automation.input) {
       check(item.view.id, 'needs-attention', item.view.issues?.[0] ?? 'SOURCE_AUTOMATION_INVALID');

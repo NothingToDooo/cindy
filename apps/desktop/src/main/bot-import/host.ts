@@ -20,12 +20,13 @@ import { redactEnvironmentValues } from './process.js';
 import { discoverImportSources, inspectImportSource, type SourceReaderDeps } from './sources.js';
 import { readOpenClawCronDatabase } from './openclawCron.js';
 import { companionEnvironmentStore, recoverCompanionEnvironmentRemovals } from './runtime.js';
-import { deserializeImportSnapshot, fingerprint, serializeImportSnapshot } from './files.js';
+import { deserializeImportSnapshotAsync, fingerprint, serializeImportSnapshotAsync } from './files.js';
 import { transferCompanion, validateImportSelection, type ImportReceipt, type TransferDeps } from './transfer.js';
 import { CompanionImportError, type ImportSnapshot, type ImportSource } from './types.js';
 import { changeSourceAutomationState } from './takeover.js';
 import { verifyImportedAutomation } from './verification.js';
 import { projectImportedSkill } from './skillResources.js';
+import { assertImportedAutomationReady } from './automationRuntime.js';
 
 interface Owned<T> { owner: string; controller: string; value: T; createdAt: number }
 const sources = new Map<string, Owned<ImportSource>>();
@@ -140,6 +141,27 @@ export async function cancelCompanionImportsForDeletion(botId: string): Promise<
     receipt.result.checks = [...receipt.result.checks.filter(check => check.entryId !== 'import'),
       { entryId: 'import', status: 'needs-attention', message: 'IMPORT_CANCELLED' }];
     await saveReceipt(scope.root, receipt); scope.assert();
+    // The lifecycle has stopped/deleted target routines under the same profile
+    // lock. Restore only source tasks this import actually paused, before the
+    // profile/vault can be deleted; a failed handback remains visibly retryable.
+    const environment = await companionEnvironmentStore.read(scope.root, botId, scope.assert);
+    for (const [entryId, record] of Object.entries(receipt.routines)) {
+      if (record.sourceRestored || !['pausing-source', 'source-paused', 'complete'].includes(record.phase)) continue;
+      const takenOver = receipt.result.checks.some(check => check.entryId === entryId && check.status === 'taken-over');
+      if (record.phase === 'complete' && !takenOver) continue;
+      const binding = environment?.automations?.[record.id];
+      if (!environment || !binding) throw new CompanionImportError('CREDENTIAL_STORAGE_UNAVAILABLE');
+      const source = environment.source ?? (environment.pendingImport ? (await deserializeImportSnapshotAsync(environment.pendingImport.snapshotJson, scope.assert)).source : undefined)
+        ?? (await discoverImportSources(readers())).find(source => source.kind === binding.kind && source.root === binding.sourceRoot);
+      scope.assert();
+      if (!source) throw new CompanionImportError('SOURCE_COMMAND_UNAVAILABLE');
+      await companionEnvironmentStore.update(scope.root, botId, scope.assert, env => { env.automations![record.id]!.handover = 'pending'; });
+      const sourceId = binding.sourceId ?? (typeof binding.original.id === 'string' ? binding.original.id : '');
+      await changeSourceAutomationState(source, { view: { id: entryId, name: '', category: 'automations', selected: true },
+        automation: { sourceId, original: binding.original, fingerprint: fingerprint(binding.original) } }, true, readers(), scope.assert, false, environment.env);
+      record.sourceRestored = true;
+      await saveReceipt(scope.root, receipt); scope.assert();
+    }
   }
 }
 
@@ -149,7 +171,7 @@ export async function getCompanionImportResult(requestId: string): Promise<Compa
   if (jobs.has(`${scope.scope}:${requestId}`)) return receipt?.result;
   // Upgrade earlier import bindings only from a durable successful receipt.
   // Failed/skipped active-source handovers must never become executable here.
-  if (receipt && !receipt.cancelled) await withBotProfileLocks([receipt.result.botId], async () => {
+  if (receipt && !receipt.cancelled && !receipt.handoverMarkers) await withBotProfileLocks([receipt.result.botId], async () => {
     receipt = await readReceipt(scope.root, requestId); scope.assert();
     if (!receipt || receipt.cancelled) return;
     const currentReceipt = receipt;
@@ -163,15 +185,16 @@ export async function getCompanionImportResult(requestId: string): Promise<Compa
     if (ready.length) await companionEnvironmentStore.update(scope.root, receipt.result.botId, scope.assert, env => {
       for (const id of ready) if (env.automations?.[id]?.handover === undefined) env.automations![id]!.handover = 'ready';
     });
+    if (receipt.result.status !== 'running') { receipt.handoverMarkers = true; await saveReceipt(scope.root, receipt); }
   });
-  if (receipt && !receipt.cancelled && (receipt.result.status === 'running' || Object.values(receipt.routines).some(item => item.phase === 'pausing-source' || item.phase === 'source-paused')) && !jobs.has(`${scope.scope}:${requestId}`)) {
+  if (receipt && !receipt.cancelled && receipt.result.status === 'running' && !jobs.has(`${scope.scope}:${requestId}`)) {
     const environment = await companionEnvironmentStore.read(scope.root, receipt.result.botId, scope.assert);
     const pending = environment?.pendingImport;
     if (pending && pending.selection.requestId === requestId) {
-      const snapshot = deserializeImportSnapshot(pending.snapshotJson);
+      const snapshot = await deserializeImportSnapshotAsync(pending.snapshotJson, scope.assert);
       const controller = `recovery:${scope.scope}`;
       previews.set(pending.selection.previewId, { owner: scope.scope, controller, value: snapshot, createdAt: Date.now() });
-      return startCompanionImport(pending.selection, controller);
+      return startCompanionImport(pending.selection, controller, true);
     }
     await withBotProfileLocks([receipt.result.botId], async () => {
       receipt = await readReceipt(scope.root, requestId); scope.assert();
@@ -184,8 +207,36 @@ export async function getCompanionImportResult(requestId: string): Promise<Compa
   return receipt?.result;
 }
 
+/** Explicit enable/run reuses the saved import retry, without a second settings UI. */
+export async function ensureImportedAutomationReady(root: string, botId: string, routineId: string, assertOwner: () => void,
+  request?: { input?: RoutineInput; expectedRevision?: number }): Promise<number | void> {
+  assertOwner();
+  const scope = owner();
+  if (scope.root !== root) throw new CompanionImportError('OWNER_CHANGED');
+  const environment = await companionEnvironmentStore.read(root, botId, assertOwner);
+  const binding = environment?.automations?.[routineId];
+  if (!binding) return;
+  if (binding.issues?.length) throw new CompanionImportError(binding.issues[0]!);
+  if (binding.handover === 'ready') return;
+  const pending = environment?.pendingImport;
+  if (!pending?.selection.takeover) throw new CompanionImportError('AUTOMATION_HANDOVER_REQUIRED');
+  const current = (await routineTools.list(botId)).find(routine => routine.id === routineId); assertOwner();
+  const expectedInput = current && JSON.stringify(parseRoutineInput({ ...current, enabled: false }));
+  if (!current || request?.expectedRevision !== undefined && request.expectedRevision !== current.revision
+    || request?.input && JSON.stringify(parseRoutineInput({ ...request.input, enabled: false })) !== expectedInput)
+    throw new CompanionImportError('TARGET_AUTOMATION_CHANGED');
+  await startCompanionImport(pending.selection, `routine:${routineId}`);
+  await jobs.get(`${scope.scope}:${pending.selection.requestId}`);
+  assertOwner(); scope.assert();
+  await assertImportedAutomationReady(root, botId, routineId, assertOwner);
+  const latest = (await routineTools.list(botId)).find(routine => routine.id === routineId); assertOwner();
+  if (!latest || JSON.stringify(parseRoutineInput({ ...latest, enabled: false })) !== expectedInput)
+    throw new CompanionImportError('TARGET_AUTOMATION_CHANGED');
+  return latest.revision;
+}
+
 /** Main-owned work survives closing the import dialog. Repeated request IDs join the same work. */
-export async function startCompanionImport(selection: CompanionImportSelection, controller: string): Promise<CompanionImportResult> {
+export async function startCompanionImport(selection: CompanionImportSelection, controller: string, reconcileOnly = false): Promise<CompanionImportResult> {
   const scope = owner();
   if (!selection || typeof selection.previewId !== 'string') throw new CompanionImportError('INVALID_SELECTION');
   let snapshot: ImportSnapshot;
@@ -196,7 +247,7 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
     const pending = receipt ? (await companionEnvironmentStore.read(scope.root, receipt.result.botId, scope.assert))?.pendingImport : undefined;
     const intentKey = (value: CompanionImportSelection) => fingerprint({ ...value, entryIds: [...value.entryIds].sort() });
     if (!pending || !Array.isArray(selection.entryIds) || intentKey(pending.selection) !== intentKey(selection)) throw error;
-    snapshot = deserializeImportSnapshot(pending.snapshotJson);
+    snapshot = await deserializeImportSnapshotAsync(pending.snapshotJson, scope.assert);
   }
   const selected = validateImportSelection(selection, snapshot);
   if (selection.avatarImageBase64 !== undefined) {
@@ -252,7 +303,7 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
     },
     async saveCheckpoint(botId, items) {
       const previous = await companionEnvironmentStore.read(scope.root, botId, scope.assert);
-      const pendingImport = { selection, snapshotJson: serializeImportSnapshot({ ...snapshot, avatarImageBase64: selection.avatarImageBase64, items, publicationRedactions: publicationRedactions(items) }) };
+      const pendingImport = { selection, snapshotJson: await serializeImportSnapshotAsync({ ...snapshot, avatarImageBase64: selection.avatarImageBase64, items, publicationRedactions: publicationRedactions(items) }, scope.assert) };
       if (previous) await companionEnvironmentStore.update(scope.root, botId, scope.assert, environment => { environment.pendingImport = pendingImport; });
       else await companionEnvironmentStore.write(scope.root, botId, { version: 1, env: {}, mcp: [], credentials: [], pendingImport }, scope.assert);
     },
@@ -266,7 +317,7 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
         const originals = projectImportedSkill(item.files ?? [], slug, contentSecrets).originals;
         return originals ? [[slug, originals]] : [];
       }));
-      await companionEnvironmentStore.write(scope.root, botId, { version: 1,
+      await companionEnvironmentStore.write(scope.root, botId, { version: 1, source: snapshot.source,
         env,
         mcp: items.flatMap(item => {
           if (!item.mcp || item.view.dependsOn?.some(id => !chosen.has(id)) || item.view.issues?.length) return [];
@@ -283,7 +334,7 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
         documents: Object.fromEntries(items.flatMap(item => item.text === undefined ? [] : [[item.view.id, item.text]])),
         contentRedactions: publicationRedactions(items),
         sourceAutomations: items.flatMap(item => item.automation ? [{ entryId: item.view.id, kind: snapshot.source.kind, original: item.automation.original }] : []),
-        pendingImport: { selection, snapshotJson: serializeImportSnapshot({ ...snapshot, avatarImageBase64: selection.avatarImageBase64, items, publicationRedactions: publicationRedactions(items) }) },
+        pendingImport: previous?.pendingImport ?? { selection, snapshotJson: await serializeImportSnapshotAsync({ ...snapshot, avatarImageBase64: selection.avatarImageBase64, items, publicationRedactions: publicationRedactions(items) }, scope.assert) },
         automations: previous?.automations ?? {},
       }, scope.assert);
       const roleText = (role: 'identity' | 'user' | 'instructions') => redactText(items.filter(item => item.role === role).map(item => item.text).join('\n\n'));
@@ -313,7 +364,7 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
         environment.automations ??= {};
         environment.automations[creationId] ??= { kind: snapshot.source.kind,
           handover: item.view.enabled ? 'pending' : 'ready',
-          original: item.automation!.original, sourceRoot: snapshot.source.root, deliveries: item.automation!.deliveries,
+          original: item.automation!.original, sourceId: item.automation!.sourceId, sourceRoot: snapshot.source.root, deliveries: item.automation!.deliveries,
           issues: [...(item.view.issues ?? []), ...(item.view.dependsOn?.some(id => !selection.entryIds.includes(id)) ? ['AUTOMATION_DEPENDENCY_NOT_SELECTED'] : [])] };
       });
       const routine = await routineTools.createOnce(botId, publicRoutine(input), creationId); scope.assert();
@@ -357,7 +408,7 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
     },
   };
   const task = (async () => {
-    for (;;) {
+    for (let pass = 0; ; pass++) {
       scope.assert();
       // Share deletion's existing profile lock. It joins every write (including
       // checkpoint cleanup) before removing the profile or its private environment.
@@ -365,7 +416,12 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
       const botId = `import_${fingerprint(selection.requestId).slice(0, 24)}`;
       const result = await withBotProfileLocks([botId], async () => {
         scope.assert();
-        const result = await transferCompanion(snapshot, selection, transferDeps);
+        const result = await transferCompanion(snapshot, selection, transferDeps, reconcileOnly || pass > 0);
+        if (result.status === 'running' && pass >= 2) {
+          const receipt = await readReceipt(scope.root, selection.requestId); scope.assert();
+          if (receipt) { receipt.result.status = 'needs-attention'; await saveReceipt(scope.root, receipt); }
+          result.status = 'needs-attention';
+        }
         if (result.status === 'complete') await companionEnvironmentStore.update(scope.root, result.botId, scope.assert, env => { delete env.pendingImport; });
         return result;
       });

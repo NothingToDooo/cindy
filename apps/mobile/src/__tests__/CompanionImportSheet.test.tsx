@@ -79,3 +79,25 @@ it.each(['IMPORT_NAME_EXISTS', 'INVALID_SELECTION', 'PROFILE_TEXT_TOO_LARGE', 'S
   expect(requests[0]).toMatchObject({ name: 'Ada', entryIds: ['personal'], requestId: 'fixture-request-original' });
   expect(requests[1]).toMatchObject(code === 'INTERNAL' ? requests[0] : { name: 'Corrected name', entryIds: [], requestId: 'fixture-request-corrected' });
 });
+
+it.each(['PREVIEW_EXPIRED', 'SELECTION_CHANGED'])('refreshes source IDs and allows a new selection after %s', async code => {
+  let generation = 0;
+  h.uuid.mockReturnValueOnce('fixture-original-request').mockReturnValue('fixture-new-request');
+  h.invoke.mockImplementation(async (_host: string, _channel: string, args: any[]) => {
+    const id = args[0].ref.id;
+    return { blocks: [{ primitive: 'companion-import', data: id === 'sources' ? { sources: [{ id: `source-${++generation}`, name: 'Ada', kind: 'hermes' }] } : id.startsWith('preview:') ? { preview: { id: `preview-${generation}`, name: 'Ada', source: { id: `source-${generation}`, name: 'Ada', kind: 'hermes' }, entries: [] } } : { result: null } }] };
+  });
+  h.submit.mockRejectedValue(new Error(`[INVALID_PARAMS] ${code}`));
+  const container = document.createElement('div'); root = createRoot(container);
+  await act(async () => root!.render(createElement(CompanionImportSheet, { visible: true, deviceId: 'host', deviceName: 'Mac', online: true, onClose() {}, onCreated: h.created })));
+  const click = async (text: string) => { await act(async () => { const button = [...container.querySelectorAll('button')].find(button => button.textContent === text); expect(button).toBeDefined(); button!.click(); }); };
+  await click('Ada · Hermes'); await click('devices.companionImport.submit');
+  expect(generation).toBe(2);
+  await click('Ada · Hermes');
+  expect((container.querySelector('input') as HTMLInputElement).disabled).toBe(false);
+  await click('devices.companionImport.submit');
+  expect(h.submit.mock.calls.map(call => call[2].input)).toEqual([
+    expect.objectContaining({ requestId: 'fixture-original-request', previewId: 'preview-1' }),
+    expect.objectContaining({ requestId: 'fixture-new-request', previewId: 'preview-2' }),
+  ]);
+});

@@ -35,6 +35,26 @@ it('checks actual authenticated response data and refuses redirects/error envelo
   await expect(readImportHttpEvidence(new URL('/redirect', base), {})).rejects.toThrow();
 });
 
+it.each(['http', 'monitor'])('requires permission before a credential-bearing %s probe sends any network request', async kind => {
+  const env = { DATA_URL: 'https://example.invalid', DATA_TOKEN: 'fixture-private-token' };
+  vi.mocked(companionEnvironmentStore.read).mockResolvedValue({ version: 1, env, mcp: [], credentials: [] });
+  const fetch = vi.fn(async () => kind === 'http' ? Response.json({ rows: [] }) : new Response('healthy'));
+  vi.stubGlobal('fetch', fetch);
+  const oneShot = vi.fn().mockResolvedValue(JSON.stringify(kind === 'monitor' ? { localReminder: true, reads: [] } : { reads: [{ kind: 'http', baseVariable: 'DATA_URL', path: '/data', headers: { Authorization: { variable: 'DATA_TOKEN', prefix: 'Bearer ' } }, pointer: '/rows', array: true }] }));
+  vi.mocked(getMakerIfReady).mockReturnValue({ oneShot, getSession: vi.fn(), getSessionMeta: vi.fn().mockResolvedValue({ permissionMode: 'ask', agentKind: 'pi', model: 'fixture-model' }) } as never);
+  vi.mocked(getBotRemoteResourceSource).mockResolvedValue({ canonicalSessionId: 'fixture-session' } as never);
+  const item: ImportItem = { view: { id: 'job', name: 'Data', category: 'automations', selected: true, ...(kind === 'http' ? { dependsOn: ['env'] } : {}) }, automation: { sourceId: 'job', original: kind === 'monitor' ? { monitor_url: 'https://example.invalid/status?token=fixture-private-token' } : {}, fingerprint: 'fixture' } };
+  const selected: ImportItem[] = [{ view: { id: 'env', name: 'env', category: 'connections', selected: true }, env }];
+  confirmProbe.mockResolvedValueOnce({ kind: 'permission', behavior: 'deny' } as never);
+  expect((await verifyImportedAutomation('/fixture', 'bot', item, () => {}, selected)).verified).toBe(false);
+  expect(fetch).not.toHaveBeenCalled();
+  expect((await verifyImportedAutomation('/fixture', 'bot', item, () => {}, selected)).verified).toBe(true);
+  expect(fetch).toHaveBeenCalledTimes(1);
+  expect(confirmProbe).toHaveBeenCalledTimes(2);
+  expect(JSON.stringify(confirmProbe.mock.calls)).toContain('http_get');
+  expect(JSON.stringify(confirmProbe.mock.calls)).not.toContain('fixture-private-token');
+});
+
 it('verifies a selected skill bundled script using real HTTP without giving the planner its key', async () => {
   let authorized = false;
   server = createServer((req, res) => {

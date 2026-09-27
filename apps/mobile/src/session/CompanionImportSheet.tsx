@@ -43,6 +43,12 @@ export function CompanionImportSheet({ visible, onClose, onClosed, deviceId, dev
       // Only definitive preflight rejections unlock editing. An ambiguous ACK
       // keeps the same request ID and is reconciled before any retry.
       if (cause instanceof Error && /INVALID_SELECTION|PROFILE_TEXT_TOO_LARGE|IMPORT_NAME_EXISTS|SOURCE_SNAPSHOT_TOO_LARGE|SOURCE_TOO_MANY_FILES/.test(cause.message)) intent.current = undefined;
+      if (cause instanceof Error && /PREVIEW_EXPIRED|SELECTION_CHANGED/.test(cause.message)) {
+        intent.current = undefined;
+        if (alive.current) { setPreview(undefined); setResult(undefined); }
+        // Host restarts invalidate source IDs too. Reuse the existing source step.
+        try { const refreshed = await api.sources(); if (alive.current) setSources(refreshed); } catch { /* Existing source buttons allow another attempt. */ }
+      }
       if (alive.current) setError(true);
     }
     finally { lock.current = false; if (alive.current) setBusy(false); }

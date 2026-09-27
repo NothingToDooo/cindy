@@ -10003,8 +10003,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     },
     onBeforeDelete: async (botId) => {
       const owner = activeOwnerScopeKey();
-      await cancelCompanionImportsForDeletion(botId);
       await updateBotRoutineLifecycle(botId, 'delete');
+      await cancelCompanionImportsForDeletion(botId);
       const assertOwner = () => {
         if (isAppSessionBoundaryPending() || activeOwnerScopeKey() !== owner) throw new Error('Bot account changed during deletion');
       };

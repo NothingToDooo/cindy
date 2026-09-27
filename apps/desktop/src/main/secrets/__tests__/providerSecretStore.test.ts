@@ -39,12 +39,14 @@ vi.mock('../../logger', () => ({
 
 vi.mock('../../appSessionState', () => ({
   getActiveAppSession: () => ({ ...sessionState, generation: 0 }),
+  isAppSessionBoundaryPending: () => false,
   dataOwnerStorageKey: (ownerId: string) => ownerId,
   LOCAL_DATA_OWNER_ID: 'local-v1',
 }));
 
 import {
   createProviderSecretStore,
+  botEnvironmentSecretIo,
   readCustomProviderHeadersForMutation,
   readCustomProviderKeyForMutation,
   readGhostSecretStrict,
@@ -500,4 +502,37 @@ describe('providerSecretStore account boundary (clearAll + reconcileOwner)', () 
     expect(io.store.get('owner_user-A_provider_oauth_acme')).toBe('token-A');
     expect(io.store.get('owner_user-B_provider_oauth_acme')).toBe('token-B');
   });
+});
+
+
+it('checks companion environment presence without decrypting or unlocking the vault', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-bot-secret-presence-'));
+  const previous = { ...electronState };
+  const previousSession = { ...sessionState };
+  try {
+    electronState.userData = root; electronState.encryptionAvailable = false;
+    electronState.decryptString = () => { throw new Error('must not decrypt'); };
+    sessionState.mode = 'cloud'; sessionState.dataOwnerId = 'presence-owner';
+    const key = `bot_environment_${'a'.repeat(64)}`;
+    expect(botEnvironmentSecretIo.has(key)).toBe(false);
+    const directory = path.join(root, 'safe-storage');
+    fs.mkdirSync(directory);
+    fs.writeFileSync(path.join(directory, `${resolveOwnerScopedSecretStorageKey(key)}.enc`), 'encrypted fixture');
+    expect(botEnvironmentSecretIo.has(key)).toBe(true);
+    sessionState.dataOwnerId = 'different-owner';
+    expect(botEnvironmentSecretIo.has(key)).toBe(false);
+    expect(() => botEnvironmentSecretIo.has('../unexpected')).toThrow('Invalid companion secret key');
+    sessionState.dataOwnerId = 'presence-owner';
+    const scoped = resolveOwnerScopedSecretStorageKey(key)!;
+    fs.unlinkSync(path.join(directory, `${scoped}.enc`));
+    const temporary = `${scoped}.enc.aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.tmp`;
+    fs.writeFileSync(path.join(directory, temporary), 'encrypted interrupted fixture');
+    fs.writeFileSync(path.join(directory, 'unrelated.enc'), 'unrelated fixture');
+    expect(botEnvironmentSecretIo.has(key)).toBe(true);
+    expect(botEnvironmentSecretIo.remove(key)).toBe(true);
+    expect(fs.readdirSync(directory)).toEqual(['unrelated.enc']);
+  } finally {
+    Object.assign(electronState, previous); Object.assign(sessionState, previousSession);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

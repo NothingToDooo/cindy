@@ -14,8 +14,9 @@ const deletedCompanions = new Set<string>();
 const companionKey = (root: string, botId: string) => fingerprint([root, botId]);
 
 export const companionEnvironmentStore = createCompanionEnvironmentStore({
-  read: key => botEnvironmentSecretIo.read(key),
-  write: (key, value) => botEnvironmentSecretIo.write(key, value),
+  has: key => botEnvironmentSecretIo.has(key),
+  read: (key, assertOwner) => botEnvironmentSecretIo.read(key, assertOwner),
+  write: (key, value, assertOwner) => botEnvironmentSecretIo.write(key, value, assertOwner),
   remove: key => botEnvironmentSecretIo.remove(key),
 });
 

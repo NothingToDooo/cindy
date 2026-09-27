@@ -1,5 +1,6 @@
 import { expect, it } from 'vitest';
 import { importedProcessEnvironment, redactEnvironmentData, redactEnvironmentValues } from '../process.js';
+import { previewImportRedactions } from '../environmentSelection.js';
 import { connectionRedactions, importedContentRedactions } from '../connectionCatalog.js';
 
 it('masks encoded and decoded URL credentials without mutating the private connection', () => {
@@ -32,4 +33,16 @@ it.each(['darwin', 'win32'] as const)('inherits only OS basics and explicit impo
   expect(result).not.toHaveProperty('NODE_OPTIONS');
   expect(result).not.toHaveProperty('PYTHONPATH');
   if (platform === 'win32') { expect(result.SYSTEMROOT).toBe('fixture-system'); expect(result).not.toHaveProperty('Path'); }
+});
+
+it('preserves bounded ordinary settings even when deselected, while explicit same-value credentials stay masked', () => {
+  const env = { DEBUG: 'true', PORT: '3000', NODE_ENV: 'production', LOG_LEVEL: 'info', VERBOSE: 'false' };
+  const text = 'true false 3000 production info';
+  const secrets = previewImportRedactions([{ view: { id: 'config', name: 'config', category: 'connections', selected: false }, env }]);
+  expect(redactEnvironmentValues(text, secrets)).toBe(text);
+  expect(redactEnvironmentData({ true: 'true', port: '3000', number: 3000 }, env)).toEqual({ true: 'true', port: '3000', number: 3000 });
+  const privateValues = importedContentRedactions({ env: { ...env, API_KEY: '3000' }, mcp: [{ name: 'data', headers: { Authorization: 'Bearer true' } }], credentials: [] });
+  expect(redactEnvironmentValues('true 3000', privateValues)).not.toContain('true');
+  expect(redactEnvironmentValues('true 3000', privateValues)).not.toContain('3000');
+  expect(redactEnvironmentValues('fixture-private-value', { DEBUG: 'fixture-private-value' })).toBe('[DEBUG]');
 });

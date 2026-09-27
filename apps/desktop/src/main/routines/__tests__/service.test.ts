@@ -122,6 +122,24 @@ it('blocks enabling and manual runs until imported handover is ready while retai
   await vi.waitFor(() => expect(mock.scheduler.runNow).toHaveBeenCalledOnce());
 });
 
+it('uses the revision committed by an explicit handover retry when saving or manually running a routine', async () => {
+  const engine = await getRoutineEngine();
+  configureRoutineHost({
+    getBot: mock.getBot, getScheduler: () => mock.scheduler, getScheduleStorage: () => mock.storage,
+    assertImportedAutomationReady: async (_root, botId, id) => {
+      const current = engine.list(botId).find(routine => routine.id === id);
+      if (!current || current.enabled) return;
+      return (await engine.put(botId, { ...current, enabled: true }, id, current.revision)).revision;
+    },
+  });
+  const input = { name: 'Imported', prompt: 'Read data', enabled: false, triggers: [{ id: 'tick', kind: 'interval' as const, intervalMs: 60000 }] };
+  const saved = await routineTools.createOnce('bot', input, 'recovered-save-12345');
+  expect((await routineTools.save('bot', { ...input, enabled: true }, saved.id, saved.revision)).enabled).toBe(true);
+  const manual = await routineTools.createOnce('bot', input, 'recovered-run-12345');
+  await routineTools.runNow('bot', manual.id, manual.revision);
+  await vi.waitFor(() => expect(mock.scheduler.runNow).toHaveBeenCalledOnce());
+});
+
 it('defers a queued imported run during an unacknowledged handover without dispatching', async () => {
   configureRoutineHost({
     getBot: mock.getBot, getScheduler: () => mock.scheduler, getScheduleStorage: () => mock.storage,

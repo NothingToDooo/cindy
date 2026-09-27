@@ -50,6 +50,7 @@ export async function verifyImportedAutomation(root: string, botId: string, item
   try {
     const environment = await companionEnvironmentStore.read(root, botId, assertOwner);
     if (!environment || !item.automation) return { verified: false, reason: 'CREDENTIAL_STORAGE_UNAVAILABLE' };
+    const bot = await getBotRemoteResourceSource(botId); assertOwner();
     await verifyImportedDelivery(environment, item.automation.deliveries ?? [], assertOwner);
     const monitorUrl = item.automation.original.monitor_url;
     const contentSecrets = importedContentRedactions(environment, monitorUrl ? [string(monitorUrl)] : []);
@@ -60,7 +61,9 @@ export async function verifyImportedAutomation(root: string, botId: string, item
       const url = new URL(string(monitorUrl));
       if (!/^https?:$/.test(url.protocol) || url.username || url.password) throw new Error('Invalid monitor URL');
       assertOwner();
-      await readImportHttpEvidence(url, {}, false);
+      await withAuthorizedImportProbe(bot.canonicalSessionId!, { connection: 'monitor', tool: 'http_get',
+        endpoint: redactEnvironmentValues(url.href, contentSecrets), arguments: { method: 'GET' } }, assertOwner,
+      async (signal, assertCurrent) => { await assertCurrent(); return readImportHttpEvidence(url, {}, false, signal); });
       assertOwner(); monitorVerified = true;
     }
     const connections: Array<{ name: string; tools: Array<{ name: string; description?: string; inputSchema: unknown }> }> = [];
@@ -165,7 +168,6 @@ export async function verifyImportedAutomation(root: string, botId: string, item
       return { name: redactEnvironmentValues(name, contentSecrets), source: redactEnvironmentValues(source.slice(0, limit), contentSecrets), complete: source.length <= limit };
     });
     const maker = getMakerIfReady();
-    const bot = await getBotRemoteResourceSource(botId); assertOwner();
     const meta = bot.canonicalSessionId ? await maker?.getSessionMeta(bot.canonicalSessionId) : undefined;
     assertOwner();
     if (!maker || !meta) return { verified: false, reason: 'VERIFICATION_MODEL_UNAVAILABLE' };
@@ -221,7 +223,10 @@ export async function verifyImportedAutomation(root: string, botId: string, item
           coveredVariables.push(header.variable);
         }
         assertOwner();
-        data = await readImportHttpEvidence(url, headers);
+        data = await withAuthorizedImportProbe(bot.canonicalSessionId!, { connection: base.variable, tool: 'http_get',
+          endpoint: redactEnvironmentValues(url.href, contentSecrets),
+          arguments: { method: 'GET', headers: redactEnvironmentData(headers, contentSecrets) } }, assertOwner,
+        async (signal, assertCurrent) => { await assertCurrent(); return readImportHttpEvidence(url, headers, true, signal); });
         coveredVariables.push(base.variable);
       } else return { verified: false, reason: 'AUTOMATION_READ_NOT_VERIFIED' };
       assertOwner();
@@ -237,8 +242,8 @@ export async function verifyImportedAutomation(root: string, botId: string, item
 }
 
 /** Bounded, non-redirecting GET; auth bindings are validated by the caller. */
-export async function readImportHttpEvidence(url: URL, headers: Record<string, string>, requireJson = true): Promise<unknown> {
-  const response = await fetch(url, { headers, redirect: 'error', signal: AbortSignal.timeout(30_000) });
+export async function readImportHttpEvidence(url: URL, headers: Record<string, string>, requireJson = true, signal?: AbortSignal): Promise<unknown> {
+  const response = await fetch(url, { headers, redirect: 'error', signal: AbortSignal.any([AbortSignal.timeout(30_000), ...(signal ? [signal] : [])]) });
   if (!response.ok || requireJson && !response.headers.get('content-type')?.includes('json')) { await response.body?.cancel(); throw new Error('AUTOMATION_DATA_READ_FAILED'); }
   const reader = response.body?.getReader();
   if (!reader) throw new Error('AUTOMATION_DATA_READ_FAILED');

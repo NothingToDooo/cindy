@@ -24,6 +24,26 @@ function harness() {
   return { deps, receipt: () => receipt };
 }
 
+it('does not rerun failed verification while reconciling another task whose source pause is pending', async () => {
+  const { deps } = harness();
+  const first = structuredClone(snapshot.items.find(item => item.automation)!);
+  const second = structuredClone(first); second.view.id = 'second'; second.automation!.sourceId = 'second';
+  const source = { ...snapshot, items: [...snapshot.items.filter(item => !item.automation), first, second] };
+  const chosen = { ...selection, entryIds: [...selection.entryIds, 'second'] };
+  vi.mocked(deps.createRoutine).mockImplementation(async (_bot, _input, id) => id);
+  vi.mocked(deps.verifyAutomation).mockImplementation(async (_bot, item) => ({ verified: item.view.id === 'second', reason: 'AUTOMATION_DATA_READ_FAILED' }));
+  vi.mocked(deps.pauseSource).mockRejectedValue(new CompanionImportError('SOURCE_HANDOVER_PENDING'));
+  expect((await transferCompanion(source, chosen, deps)).status).toBe('running');
+  expect(deps.verifyAutomation).toHaveBeenCalledTimes(2);
+  await transferCompanion(source, chosen, deps, true);
+  await transferCompanion(source, chosen, deps, true);
+  expect(deps.verifyAutomation).toHaveBeenCalledTimes(2);
+  expect(deps.pauseSource).toHaveBeenCalledTimes(3);
+  // Only a new explicit retry may attempt the failed read again.
+  await transferCompanion(source, chosen, deps);
+  expect(deps.verifyAutomation).toHaveBeenCalledTimes(3);
+});
+
 it('rejects an explicitly empty avatar before creating any receipt or credential checkpoint', async () => {
   const { deps, receipt } = harness();
   await expect(transferCompanion(snapshot, { ...selection, avatarImageBase64: '' }, deps)).rejects.toThrow('INVALID_SELECTION');

@@ -28,7 +28,7 @@ import { botProfiles } from '../localDb/schema.js';
 
 /** Bootstrap supplies live getters without a service -> scheduler -> IPC dependency cycle. */
 export interface RoutineHostDeps {
-  assertImportedAutomationReady?: typeof import('../bot-import/automationRuntime.js').assertImportedAutomationReady;
+  assertImportedAutomationReady?: typeof import('../bot-import/host.js').ensureImportedAutomationReady;
   prepareImportedAutomation?: typeof import('../bot-import/automationRuntime.js').prepareImportedAutomation;
   finishImportedAutomation?: typeof import('../bot-import/automationRuntime.js').finishImportedAutomation;
   recoverImports?: () => Promise<void>;
@@ -416,13 +416,16 @@ export const routineTools = {
   list: (botId: string) => withBot(botId, (engine) => engine.list(botId)),
   createOnce: (botId: string, input: RoutineInput, creationId: string) =>
     withBot(botId, async (engine, scope) => {
-      if (input.enabled) await getRoutineHost().assertImportedAutomationReady?.(ownerScopedUserDataPath(), botId, creationId, () => assertScope(scope));
+      if (input.enabled) await getRoutineHost().assertImportedAutomationReady?.(ownerScopedUserDataPath(), botId, creationId, () => assertScope(scope), { input });
       assertScope(scope);
       return engine.createOnce(botId, input, creationId);
     }),
   save: (botId: string, input: RoutineInput, id?: string, expectedRevision?: number) =>
     withBot(botId, async (engine, scope) => {
-      if (id && input.enabled) await getRoutineHost().assertImportedAutomationReady?.(ownerScopedUserDataPath(), botId, id, () => assertScope(scope));
+      if (id && input.enabled) {
+        const recoveredRevision = await getRoutineHost().assertImportedAutomationReady?.(ownerScopedUserDataPath(), botId, id, () => assertScope(scope), { input, expectedRevision });
+        if (recoveredRevision !== undefined) expectedRevision = recoveredRevision;
+      }
       assertScope(scope);
       return engine.put(botId, input, id, expectedRevision);
     }),
@@ -431,7 +434,8 @@ export const routineTools = {
       await engine.remove(botId, id, () => cleanBackingSchedules(scope, [id], true), expectedRevision);
     }),
   runNow: (botId: string, id: string, expectedRevision?: number) => withBot(botId, async (engine, scope) => {
-    await getRoutineHost().assertImportedAutomationReady?.(ownerScopedUserDataPath(), botId, id, () => assertScope(scope));
+    const recoveredRevision = await getRoutineHost().assertImportedAutomationReady?.(ownerScopedUserDataPath(), botId, id, () => assertScope(scope), { expectedRevision });
+    if (recoveredRevision !== undefined) expectedRevision = recoveredRevision;
     assertScope(scope);
     return engine.runNow(botId, id, expectedRevision);
   }),

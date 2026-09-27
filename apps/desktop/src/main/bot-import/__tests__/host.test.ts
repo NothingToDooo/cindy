@@ -8,6 +8,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { Routine, RoutineInput } from '@cindy/maker-scheduler';
 import { createCompanionEnvironmentStore } from '../environment.js';
 import type { ImportSnapshot } from '../types.js';
+import { CompanionImportError } from '../types.js';
 
 const h = vi.hoisted(() => ({ root: '', botId: '', created: false, verified: false, sourceEnabled: true, failReadyWrite: false, boundary: false,
   snapshot: null as unknown as ImportSnapshot, store: null as unknown as ReturnType<typeof createCompanionEnvironmentStore>,
@@ -29,7 +30,7 @@ vi.mock('../../maker-ipc/botProfileFolder.js', () => ({ BOT_PROFILE_TEXT_MAX_BYT
 vi.mock('@cindy/mcps', () => ({ resolveLiziMcpSessionContext: () => ({ sessionId: 'chat' }) }));
 vi.mock('../sources.js', () => ({ discoverImportSources: vi.fn(async () => [h.snapshot.source]), inspectImportSource: vi.fn(async () => h.snapshot) }));
 vi.mock('../openclawCron.js', () => ({ readOpenClawCronDatabase: vi.fn() }));
-vi.mock('../verification.js', () => ({ verifyImportedAutomation: async () => ({ verified: h.verified, reason: 'AUTOMATION_DATA_READ_FAILED' }) }));
+vi.mock('../verification.js', () => ({ verifyImportedAutomation: vi.fn(async () => ({ verified: h.verified, reason: 'AUTOMATION_DATA_READ_FAILED' })) }));
 vi.mock('../takeover.js', () => ({ changeSourceAutomationState: async (_source: unknown, _item: unknown, enabled: boolean, _readers: unknown, _owner: unknown, _resume: boolean, env: Record<string, string>) => { h.pause(enabled); h.sourceEnabled = enabled; h.sourceEnvironment = env; } }));
 vi.mock('../runtime.js', () => ({ recoverCompanionEnvironmentRemovals: vi.fn(async () => {}),
   readCompanionSessionEnvironment: async () => ({ identity: h.root, botId: h.botId, userData: h.root, assertOwner() {}, environment: await h.store.read(h.root, h.botId, () => {}) }),
@@ -54,16 +55,18 @@ vi.mock('../../routines/service.js', () => ({
     h.routines = h.routines.map(row => row.id === id ? { ...row, ...input, revision: row.revision + 1 } : row);
   } }),
 }));
-import { listCompanionImportSources, previewCompanionImport, startCompanionImport, getCompanionImportResult, recoverCompanionImports, cancelCompanionImportsForDeletion } from '../host.js';
+import { listCompanionImportSources, previewCompanionImport, startCompanionImport, getCompanionImportResult, recoverCompanionImports, cancelCompanionImportsForDeletion, ensureImportedAutomationReady } from '../host.js';
 import { withBotProfileLocks } from '../../maker-ipc/botProfileLock.js';
 import { assertImportedAutomationReady, prepareImportedAutomation } from '../automationRuntime.js';
 import { decodeBotAvatarImage } from '../../localDb/ipc/botAvatarSelection.js';
 import { createCompanionConnectionsProvider } from '../connectionProvider.js';
 import { discoverImportSources, inspectImportSource } from '../sources.js';
+import { verifyImportedAutomation } from '../verification.js';
 
 beforeEach(async () => {
   h.root = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-import-host-test-'));
-  h.created = false; h.verified = false; h.sourceEnabled = true; h.failReadyWrite = false; h.boundary = false; h.routines = []; h.pause.mockClear(); h.sourceEnvironment = {};
+  h.created = false; h.verified = false; h.sourceEnabled = true; h.failReadyWrite = false; h.boundary = false; h.routines = []; h.pause.mockReset(); h.sourceEnvironment = {};
+  vi.mocked(verifyImportedAutomation).mockClear();
   h.writeProfile.mockReset().mockResolvedValue(undefined); h.importDocument.mockReset().mockResolvedValue(undefined);
   vi.mocked(decodeBotAvatarImage).mockReset();
   vi.mocked(discoverImportSources).mockReset().mockImplementation(async () => [h.snapshot.source]);
@@ -78,7 +81,66 @@ beforeEach(async () => {
     automation: { sourceId: 'task', fingerprint: 'fixture', original: { enabled: true }, input: { name: 'Report', prompt: 'Read data', enabled: false, triggers: [{ id: 'tick', kind: 'interval', intervalMs: 60000 }] } },
   }] };
 });
-afterEach(async () => { await fs.rm(h.root, { recursive: true, force: true }); });
+afterEach(async () => { vi.restoreAllMocks(); await fs.rm(h.root, { recursive: true, force: true }); });
+
+it('bounds background handover reconciliation and does not restart it on status polling or startup', async () => {
+  h.verified = true;
+  h.pause.mockImplementation(() => { throw new CompanionImportError('SOURCE_HANDOVER_PENDING'); });
+  const realTimeout = globalThis.setTimeout;
+  vi.spyOn(globalThis, 'setTimeout').mockImplementation(((callback: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => realTimeout(callback, ms === 5000 ? 0 : ms, ...args)) as typeof setTimeout);
+  const [source] = await listCompanionImportSources('fixture');
+  const preview = await previewCompanionImport(source!.id, 'fixture');
+  const selection = { requestId: 'bounded-request-12345', previewId: preview.id, name: 'Ada', entryIds: ['task'], takeover: true };
+  await startCompanionImport(selection, 'fixture');
+  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('needs-attention'));
+  expect(h.pause).toHaveBeenCalledTimes(3);
+  expect(verifyImportedAutomation).toHaveBeenCalledTimes(1);
+  await recoverCompanionImports();
+  await getCompanionImportResult(selection.requestId);
+  expect(h.pause).toHaveBeenCalledTimes(3);
+  expect(h.sourceEnabled).toBe(true);
+  // A user retry can finish the original handover once its source is ready.
+  h.pause.mockImplementation(() => {});
+  await startCompanionImport(selection, 'fixture');
+  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('complete'));
+  expect(verifyImportedAutomation).toHaveBeenCalledTimes(1);
+});
+
+it('hands taken-over source tasks back before deletion and retains the vault if restoration fails', async () => {
+  h.verified = true;
+  const [source] = await listCompanionImportSources('fixture');
+  const preview = await previewCompanionImport(source!.id, 'fixture');
+  const selection = { requestId: 'handback-request-12345', previewId: preview.id, name: 'Ada', entryIds: ['task'], takeover: true };
+  const accepted = await startCompanionImport(selection, 'fixture');
+  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('complete'));
+  expect(h.sourceEnabled).toBe(false);
+  // The real lifecycle deletes/stops target routines before the handback hook.
+  h.routines = [];
+  h.pause.mockImplementationOnce(() => { throw new CompanionImportError('SOURCE_COMMAND_UNAVAILABLE'); });
+  await expect(withBotProfileLocks([accepted.botId], () => cancelCompanionImportsForDeletion(accepted.botId))).rejects.toThrow('SOURCE_COMMAND_UNAVAILABLE');
+  expect(h.created).toBe(true);
+  expect(await h.store.read(h.root, accepted.botId, () => {})).toBeDefined();
+  await withBotProfileLocks([accepted.botId], () => cancelCompanionImportsForDeletion(accepted.botId));
+  expect(h.sourceEnabled).toBe(true);
+  const calls = h.pause.mock.calls.length;
+  await cancelCompanionImportsForDeletion(accepted.botId);
+  expect(h.pause).toHaveBeenCalledTimes(calls);
+  await h.store.stageRemoval(h.root, accepted.botId, () => {});
+  await h.store.finishRemoval(h.root, accepted.botId, () => {});
+});
+
+it('does not resume source tasks that were imported paused or without takeover', async () => {
+  h.sourceEnabled = false;
+  h.snapshot.items[0]!.view.enabled = false;
+  h.snapshot.items[0]!.automation!.original.enabled = false;
+  const [source] = await listCompanionImportSources('fixture');
+  const preview = await previewCompanionImport(source!.id, 'fixture');
+  const selection = { requestId: 'paused-request-12345', previewId: preview.id, name: 'Ada', entryIds: ['task'], takeover: false };
+  const accepted = await startCompanionImport(selection, 'fixture');
+  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('complete'));
+  await cancelCompanionImportsForDeletion(accepted.botId);
+  expect(h.pause).not.toHaveBeenCalled();
+});
 
 it.each(['', ' ', 'invalid-image'])('rejects avatar %j before persisting credentials and lets the same request be corrected', async avatarImageBase64 => {
   h.snapshot.items = [{ view: { id: 'env', name: 'Key', category: 'connections', selected: true }, env: { KEY: 'fixture-private-key' } }];
@@ -183,7 +245,7 @@ it.each(['hermes', 'openclaw'] as const)('masks %s names from real source files 
 
 it.each([false, true])('redacts all known credentials from profile/memory copies while importing only selected connections (deselected: %s)', async deselected => {
   const secrets = ['fake-env-key', 'fake-local-key', 'fake-header-token', 'fake/url+key', 'fake-access-token', 'fake-refresh-token', '123:fake-telegram-token'];
-  const text = `简短一点，带点幽默。status en us\n${secrets.join('\n')}\nfake-unselected-key`;
+  const text = `简短一点，带点幽默。status en us true 3000\n${secrets.join('\n')}\nfake-unselected-key`;
   const documents: ImportSnapshot['items'] = [
     { view: { id: 'soul', name: 'SOUL.md', category: 'personality', selected: true }, role: 'identity', text },
     { view: { id: 'user', name: 'USER.md', category: 'memory', selected: true }, role: 'user', text },
@@ -192,7 +254,7 @@ it.each([false, true])('redacts all known credentials from profile/memory copies
     { view: { id: 'ordinary', name: 'ordinary.md', category: 'memory', selected: true }, text: 'Keep this paragraph exactly.\nSecond line.' },
   ];
   h.snapshot.items = [...documents,
-    { view: { id: 'env', name: 'env', category: 'connections', selected: true }, env: { DATA_TOKEN: secrets[0]!, LANG: 'en', REGION: 'us' } },
+    { view: { id: 'env', name: 'env', category: 'connections', selected: true }, env: { DATA_TOKEN: secrets[0]!, LANG: 'en', REGION: 'us', DEBUG: 'true', PORT: '3000' } },
     { view: { id: 'mcp', name: 'Data', category: 'connections', selected: true }, mcp: { name: 'Data', url: 'https://example.invalid/mcp?token=fake%2Furl%2Bkey', env: { KEY: secrets[1]!, REFERENCED: '${DATA_TOKEN}' }, headers: { Authorization: `Bearer ${secrets[2]}` } } },
     { view: { id: 'oauth', name: 'Auth', category: 'connections', selected: true }, credential: { format: 'native-auth', value: { value: { access_token: secrets[4], nested: { refreshToken: secrets[5] } } } } },
     { view: { id: 'telegram', name: 'Telegram', category: 'connections', selected: true }, credential: { format: 'telegram', value: { token: secrets[6], account: 'default' } } },
@@ -209,7 +271,7 @@ it.each([false, true])('redacts all known credentials from profile/memory copies
   for (const secret of secrets) expect(publicText).not.toContain(secret);
   expect(publicText).not.toContain('fake-unselected-key');
   for (const field of ['identitySource', 'userContextSource', 'systemPromptOverride']) {
-    expect(profile[field]).toContain('简短一点，带点幽默。status en us');
+    expect(profile[field]).toContain('简短一点，带点幽默。status en us true 3000');
   }
   expect(h.importDocument.mock.calls.find(call => call[1] === 'ordinary')?.[3]).toBe(documents[4]!.text);
   const stored = (await h.store.read(h.root, result.botId, () => {}))!;
@@ -467,12 +529,23 @@ it('persists a failed handover, blocks use, and unlocks the same routine only af
   await expect(assertImportedAutomationReady(h.root, routine.botId, routine.id, () => {})).rejects.toThrow('AUTOMATION_HANDOVER_REQUIRED');
   expect(await prepareImportedAutomation(h.root, { ...routine, enabled: true }, 'run', new AbortController().signal, () => {})).toMatchObject({ deferred: true });
   h.verified = true;
-  await startCompanionImport(selection, 'fixture');
+  await expect(ensureImportedAutomationReady(h.root, routine.botId, routine.id, () => {}, { input: { ...routine, prompt: 'Different operation', enabled: true }, expectedRevision: routine.revision })).rejects.toThrow('TARGET_AUTOMATION_CHANGED');
+  expect(h.pause).not.toHaveBeenCalled();
+  await ensureImportedAutomationReady(h.root, routine.botId, routine.id, () => {}, { input: { ...routine, enabled: true }, expectedRevision: routine.revision });
   await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('complete'));
   expect(h.routines).toHaveLength(1); expect(h.routines[0]?.enabled).toBe(true);
   expect(h.pause).toHaveBeenCalledExactlyOnceWith(false);
   await expect(assertImportedAutomationReady(h.root, routine.botId, routine.id, () => {})).resolves.toBeUndefined();
-  // Earlier successful receipts repair missing state without rerunning a takeover.
+  // Status/startup reads do not decrypt the full environment for current receipts.
+  const privateRead = vi.spyOn(h.store, 'read');
+  await getCompanionImportResult(selection.requestId);
+  await recoverCompanionImports();
+  expect(privateRead).not.toHaveBeenCalled(); privateRead.mockRestore();
+  // Earlier successful receipts repair missing state once without rerunning a takeover.
+  const legacyReceiptFile = path.join(h.root, 'companion-imports', `${selection.requestId}.json`);
+  const legacyReceipt = JSON.parse(await fs.readFile(legacyReceiptFile, 'utf8'));
+  delete legacyReceipt.handoverMarkers;
+  await fs.writeFile(legacyReceiptFile, JSON.stringify(legacyReceipt));
   await h.store.update(h.root, routine.botId, () => {}, env => { delete env.automations![routine.id]!.handover; });
   await getCompanionImportResult(selection.requestId);
   await expect(assertImportedAutomationReady(h.root, routine.botId, routine.id, () => {})).resolves.toBeUndefined();

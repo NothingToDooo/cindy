@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { constants, promises as fs } from 'node:fs';
 import path from 'node:path';
+import { encodeEnvironment, decodeEnvironment } from './environmentJson.js';
 import { CompanionImportError, type ImportFile, type ImportItem, type ImportSnapshot } from './types.js';
 
 const MAX_FILE_BYTES = 16 * 1024 * 1024;
@@ -49,6 +50,42 @@ export function reserveSnapshotItems(items: ImportItem[], budget: ImportReadBudg
 export function serializeImportSnapshot(snapshot: ImportSnapshot): string {
   return JSON.stringify({ ...snapshot, items: mapItemBytes(snapshot.items,
     bytes => ({ type: 'Buffer', encoding: 'base64', data: bytes.toString('base64') })) });
+}
+/** Runtime checkpoint conversion yields between resources and moves large JSON
+ * work off Main. Synchronous helpers remain for small fixtures/legacy callers. */
+export async function serializeImportSnapshotAsync(snapshot: ImportSnapshot, assertOwner: () => void): Promise<string> {
+  const items: unknown[] = [];
+  const encode = (bytes: Buffer) => ({ type: 'Buffer', encoding: 'base64', data: bytes.toString('base64') });
+  for (const item of snapshot.items) {
+    assertOwner();
+    const files: unknown[] = [];
+    for (const file of item.files ?? []) {
+      assertOwner(); files.push({ ...file, bytes: encode(file.bytes) });
+      await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    items.push({ ...item, ...(item.files ? { files } : {}), ...(item.asset ? { asset: { ...item.asset, bytes: encode(item.asset.bytes) } } : {}) });
+    await new Promise<void>(resolve => setImmediate(resolve));
+  }
+  return (await encodeEnvironment({ ...snapshot, items }, assertOwner)).text;
+}
+export async function deserializeImportSnapshotAsync(text: string, assertOwner: () => void): Promise<ImportSnapshot> {
+  const snapshot = await decodeEnvironment<ImportSnapshot>(text, assertOwner);
+  const bytes = (value: unknown): Buffer => {
+    const record = value as { type?: string; encoding?: string; data?: unknown };
+    if (record?.type === 'Buffer' && Array.isArray(record.data)) return Buffer.from(record.data);
+    if (record?.type === 'Buffer' && record.encoding === 'base64' && typeof record.data === 'string') return Buffer.from(record.data, 'base64');
+    throw new CompanionImportError('CREDENTIAL_STORAGE_INVALID');
+  };
+  for (const item of snapshot.items) {
+    assertOwner();
+    if (item.files) for (const file of item.files) {
+      assertOwner(); file.bytes = bytes(file.bytes);
+      await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    if (item.asset) item.asset.bytes = bytes(item.asset.bytes);
+    await new Promise<void>(resolve => setImmediate(resolve));
+  }
+  assertOwner(); return snapshot;
 }
 export function deserializeImportSnapshot(text: string): ImportSnapshot {
   return JSON.parse(text, (_key, value: unknown) => {

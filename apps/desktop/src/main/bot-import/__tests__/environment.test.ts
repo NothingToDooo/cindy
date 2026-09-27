@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createCompanionEnvironmentStore } from '../environment.js';
+import { companionEnvironmentKey, createCompanionEnvironmentStore } from '../environment.js';
 import { runImportedProcess } from '../process.js';
 
 let root: string;
@@ -58,11 +58,73 @@ it('retains credentials before deletion commits and retries failed cleanup after
 
 it('retains pending cleanup if ownership changes while checking the committed profile state', async () => {
   const remove = vi.fn(() => true);
-  const store = createCompanionEnvironmentStore({ read: () => null, write: () => true, remove });
+  const store = createCompanionEnvironmentStore({ read: () => 'existing-private-checkpoint', write: () => true, remove });
   await store.stageRemoval(root, 'fixture', () => {});
   let current = true;
   const assertOwner = () => { if (!current) throw new Error('owner changed'); };
   await expect(store.recoverRemovals(root, assertOwner, async () => { current = false; return false; })).rejects.toThrow('owner changed');
   expect(remove).not.toHaveBeenCalled();
   await expect(fs.access(path.join(root, 'companion-import-cleanups/fixture.json'))).resolves.toBeUndefined();
+});
+
+it('does no cleanup writes for ordinary companions even when the cleanup path is a file', async () => {
+  const file = path.join(root, 'companion-import-cleanups');
+  await fs.writeFile(file, 'unrelated file');
+  const io = { has: vi.fn(() => false), read: vi.fn(() => { throw new Error('vault locked'); }), write: vi.fn(() => true), remove: vi.fn(() => true) };
+  const store = createCompanionEnvironmentStore(io);
+  await store.stageRemoval(root, 'ordinary', () => {});
+  await store.finishRemoval(root, 'ordinary', () => {});
+  await store.recoverRemovals(root, () => {}, async () => false);
+  expect(await fs.readFile(file, 'utf8')).toBe('unrelated file');
+  expect(await fs.readdir(root)).toEqual(['companion-import-cleanups']);
+  expect(io.write).not.toHaveBeenCalled(); expect(io.remove).not.toHaveBeenCalled();
+  expect(io.read).not.toHaveBeenCalled();
+});
+
+it('still stages a vault-only checkpoint left before the binding was written', async () => {
+  const values = new Map([[companionEnvironmentKey('fixture'), 'private-checkpoint']]);
+  const store = createCompanionEnvironmentStore({ read: key => values.get(key) ?? null, write: () => true, remove: key => values.delete(key) });
+  await store.stageRemoval(root, 'fixture', () => {});
+  await store.finishRemoval(root, 'fixture', () => {});
+  expect(values.size).toBe(0);
+});
+
+it('keeps credential-bearing connection and variable names out of the binding without changing private originals', async () => {
+  const values = new Map<string, string>();
+  const io = { read: (key: string) => values.get(key) ?? null, write: (key: string, value: string) => { values.set(key, value); return true; }, remove: () => true };
+  const environment = { version: 1 as const, env: { 'name-with-fixture-secret': 'fixture-secret' }, credentials: [], mcp: [{ name: 'fixture-secret', url: 'https://example.invalid/mcp/fixture-secret', headers: { Authorization: 'Bearer fixture-secret' } }] };
+  await createCompanionEnvironmentStore(io).write(root, 'fixture', environment, () => {});
+  const text = await fs.readFile(path.join(root, 'bots/fixture/environment.json'), 'utf8');
+  expect(text).not.toContain('fixture-secret');
+  const manifest = JSON.parse(text);
+  expect(manifest.connections).toHaveLength(1); expect(manifest.variables).toHaveLength(1);
+  expect(await createCompanionEnvironmentStore(io).read(root, 'fixture', () => {})).toEqual(environment);
+});
+
+it('joins asynchronous writes before committed deletion removes credentials', async () => {
+  const values = new Map<string, string>();
+  let release!: () => void;
+  let pending = false; let writingStarted = false;
+  const barrier = new Promise<void>(resolve => { release = resolve; });
+  const io = {
+    read: (key: string) => values.get(key) ?? null,
+    write: async (key: string, value: string) => { if (pending) { writingStarted = true; await barrier; } values.set(key, value); return true; },
+    remove: (key: string) => { values.delete(key); return true; },
+  };
+  const store = createCompanionEnvironmentStore(io);
+  const environment = { version: 1 as const, env: { TOKEN: 'fixture-only-secret' }, mcp: [], credentials: [] };
+  await store.write(root, 'fixture', environment, () => {});
+  await store.stageRemoval(root, 'fixture', () => {});
+  pending = true; let current = true;
+  const writing = store.write(root, 'fixture', environment, () => { if (!current) throw new Error('companion deleted'); });
+  const rejected = expect(writing).rejects.toThrow('companion deleted');
+  await vi.waitFor(() => expect(writingStarted).toBe(true));
+  current = false;
+  let removed = false;
+  const removal = store.finishRemoval(root, 'fixture', () => {}).then(() => { removed = true; });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(removed).toBe(false);
+  release();
+  await rejected; await removal;
+  expect(values.size).toBe(0);
 });
