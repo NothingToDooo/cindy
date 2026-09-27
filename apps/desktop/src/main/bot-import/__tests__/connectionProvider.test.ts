@@ -13,7 +13,7 @@ import { redactEnvironmentData } from '../process.js';
 import { withImportedConnection } from '../connections.js';
 import * as connectionModule from '../connections.js';
 import { connectionRedactions, redactImportedTool } from '../connectionCatalog.js';
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import { CallToolResultSchema, type Tool } from '@modelcontextprotocol/sdk/types.js';
 let root: string | undefined;
 afterEach(async () => { vi.unstubAllEnvs(); if (root) await fs.rm(root, { recursive: true, force: true }); });
 
@@ -72,6 +72,52 @@ it('preserves catalog enums and normal results with short locale variables, and 
     expect(result.structuredContent).toEqual({ status: 'success', region: 'us', language: 'en' });
     expect(JSON.stringify(result)).not.toContain(env.PRIVATE);
     expect(JSON.stringify(result)).toContain('status en us');
+  } finally { imported.mockRestore(); await client.close(); await config.instance.close(); }
+});
+
+it.each([true, false])('preserves MCP response syntax and isError=%s when environment values collide with protocol names', async isError => {
+  const wireNames = ['content', 'structuredContent', 'isError', '_meta', 'type', 'text', 'data', 'mimeType', 'resource', 'uri', 'annotations', 'audience', 'priority', 'user', 'icons', 'src', 'theme', 'dark'];
+  const env = Object.fromEntries([...wireNames, 'fixture-private-token'].map((value, index) => [`SETTING_${index}`, value]));
+  const connection = { name: 'fixture', url: 'https://example.invalid/mcp' };
+  const tool: Tool = { name: 'read_result', inputSchema: { type: 'object' } };
+  const payload = wireNames.join(' ') + ' fixture-private-token';
+  const original = {
+    content: [
+      { type: 'text', text: payload, annotations: { audience: ['user'], priority: 0.5 }, _meta: { content: payload } },
+      { type: 'image', data: 'AA==', mimeType: 'image/png' },
+      { type: 'audio', data: 'AA==', mimeType: 'audio/wav' },
+      { type: 'resource', resource: { uri: 'file:///result', mimeType: 'text/plain', text: payload, _meta: { text: payload } } },
+      { type: 'resource_link', name: 'report', uri: 'file:///report', description: payload, icons: [{ src: 'https://example.invalid/icon.png', theme: 'dark' }] },
+    ],
+    structuredContent: { content: payload, nested: { isError: 'fixture-private-token' }, count: 2 },
+    isError, _meta: { content: payload }, 'fixture-private-token': payload,
+  };
+  const before = structuredClone(original);
+  const callTool = vi.fn(async () => CallToolResultSchema.parse(original));
+  const imported = vi.spyOn(connectionModule, 'withImportedConnection').mockImplementation(async (_server, _env, _assert, run) => run({ listTools: async () => ({ tools: [tool] }), callTool } as never));
+  vi.mocked(readCompanionSessionEnvironment).mockResolvedValue({ identity: 'envelope-fixture', botId: 'bot', userData: '/fixture', assertOwner() {}, environment: { version: 1, env, mcp: [connection], credentials: [] } });
+  const config = createCompanionConnectionsProvider().toClaudeSdkConfig!({} as never) as { instance: McpServer };
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'fixture', version: '1' });
+  await config.instance.connect(serverTransport); await client.connect(clientTransport);
+  try {
+    const published = (await client.listTools()).tools[1]!;
+    const result = CallToolResultSchema.parse(await client.callTool({ name: published.name, arguments: {} }));
+    expect(result.isError).toBe(isError);
+    expect(result.content.map(block => block.type)).toEqual(['text', 'image', 'audio', 'resource', 'resource_link']);
+    expect(result.content[0]).toMatchObject({ text: expect.any(String), annotations: { audience: ['user'], priority: 0.5 } });
+    expect(result.content[1]).toMatchObject({ data: 'AA==', mimeType: 'image/png' });
+    expect(result.content[2]).toMatchObject({ data: 'AA==', mimeType: 'audio/wav' });
+    expect(result.content[3]).toMatchObject({ resource: { uri: 'file:///result', text: expect.any(String) } });
+    expect(result.content[4]).toMatchObject({ icons: [{ src: 'https://example.invalid/icon.png', theme: 'dark' }] });
+    expect(result.structuredContent).toMatchObject({ count: 2, nested: expect.any(Object) });
+    expect(result.structuredContent).not.toHaveProperty('content');
+    expect(result.structuredContent?.nested).not.toHaveProperty('isError');
+    expect(result._meta).toBeDefined();
+    expect(result._meta).not.toHaveProperty('content');
+    for (const name of wireNames) expect(JSON.stringify([result.structuredContent, result._meta])).not.toContain(name);
+    expect(JSON.stringify(result)).not.toContain('fixture-private-token');
+    expect(original).toEqual(before);
   } finally { imported.mockRestore(); await client.close(); await config.instance.close(); }
 });
 

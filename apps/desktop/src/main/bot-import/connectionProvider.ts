@@ -1,5 +1,5 @@
 import { ensureBotWorkspaceDir } from '../maker-ipc/botProfileFolder.js';
-import { importedProcessEnvironment, runImportedProcess, redactEnvironmentValues, redactEnvironmentData } from './process.js';
+import { importedProcessEnvironment, runImportedProcess, redactEnvironmentValues } from './process.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, type Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { McpProvider } from '@cindy/maker-core';
@@ -7,7 +7,7 @@ import { resolveLiziMcpSessionContext } from '@cindy/mcps';
 import { readCompanionSessionEnvironment } from './runtime.js';
 import { IMPORTED_TOOL_LIMIT, listImportedTools, withImportedConnection } from './connections.js';
 import { fingerprint } from './files.js';
-import { connectionRedactions, publicConnectionName, redactImportedTool, restoreImportedArguments } from './connectionCatalog.js';
+import { connectionRedactions, publicConnectionName, redactImportedResult, redactImportedTool, restoreImportedArguments } from './connectionCatalog.js';
 
 export const COMPANION_CONNECTIONS_MCP_NAME = 'companion_connections';
 
@@ -69,14 +69,7 @@ export function createCompanionConnectionsProvider(): McpProvider {
             const tool = tools.find(item => toolName(connection.name, item.name, publicConnectionName(item.name, secrets)) === request.params.name);
             return tool ? client.callTool({ name: tool.name, arguments: restoreImportedArguments(request.params.arguments ?? {}, tool.inputSchema, secrets) }, undefined, { timeout: 120_000 }) : undefined;
           }, { identity: scope.identity, signal: extra.signal });
-          if (result) {
-            const redacted = redactEnvironmentData(result, secrets);
-            // Preserve MCP content discriminators even if a source variable happens
-            // to contain "text". Business strings and structured data stay redacted.
-            const originalContent = result.content;
-            if (Array.isArray(originalContent) && Array.isArray(redacted.content)) redacted.content = redacted.content.map((block, index) => ({ ...block, type: originalContent[index]!.type }));
-            return redacted;
-          }
+          if (result) return redactImportedResult(result, secrets);
         }
         throw new Error('Companion tool unavailable');
       });

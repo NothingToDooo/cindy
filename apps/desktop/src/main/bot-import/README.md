@@ -125,7 +125,11 @@ omitting it retains normal companion defaults, and a rejected request can be cor
   inside the host. The connection configuration itself is not modified.
   Required property names use the same masking as schema keys, and host dispatch
   restores schema-defined argument keys privately (including nested arrays) for
-  runtime calls and verification probes. Response object keys are masked as well.
+  runtime calls and verification probes. Business response/meta object keys are
+  masked as well. MCP envelope keys (`content`, `structuredContent`, `isError`,
+  `_meta`) and SDK-validated content/resource fields keep their protocol spelling;
+  content types and audience/theme enums remain valid. Their text and structured
+  payloads still use the credential mask, including identically named business keys.
   Bounded locale/region settings such as LANG=en and REGION=us remain ordinary
   configuration. Other short values are masked as whole tokens, not substrings
   inside words such as "status"; explicitly configured header/URL credentials are

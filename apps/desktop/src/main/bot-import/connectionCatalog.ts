@@ -104,3 +104,28 @@ export function redactImportedTool(tool: Tool, secrets: Record<string, string>):
   if (tool.outputSchema) result.outputSchema = redactSchema(tool.outputSchema, secrets) as Tool['outputSchema'];
   return result;
 }
+
+/** The SDK has validated content block fields. Preserve wire syntax only at
+ * those protocol positions; arbitrary structured payload/meta keys stay private. */
+export function redactImportedResult<T extends Record<string, unknown>>(result: T, secrets: Record<string, string>): T {
+  const envelope = new Set(['content', 'structuredContent', 'isError', '_meta', 'toolResult']);
+  const redacted = Object.fromEntries(Object.entries(result).map(([key, value]) => [
+    envelope.has(key) ? key : redactEnvironmentValues(key, secrets), redactEnvironmentData(value, secrets),
+  ]));
+  const fields = (value: Record<string, unknown>) => Object.fromEntries(Object.entries(value)
+    .map(([key, child]) => [key, redactEnvironmentData(child, secrets)]));
+  if (Array.isArray(result.content)) redacted.content = result.content.map(block => {
+    const content = fields(block);
+    content.type = block.type;
+    if (block.resource) content.resource = fields(block.resource);
+    if (block.annotations) {
+      content.annotations = { ...fields(block.annotations),
+        ...(block.annotations.audience === undefined ? {} : { audience: [...block.annotations.audience] }) };
+    }
+    if (Array.isArray(block.icons)) content.icons = block.icons.map((icon: Record<string, unknown>) => ({
+      ...fields(icon), ...(icon.theme === undefined ? {} : { theme: icon.theme }),
+    }));
+    return content;
+  });
+  return redacted as T;
+}
