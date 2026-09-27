@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
+import { execFileSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import path from 'node:path';
 const mocks = vi.hoisted(() => ({
@@ -15,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   writeFile: vi.fn(),
   ownerProof: vi.fn(),
   probeOwner: vi.fn(),
+  release: vi.fn(),
 }));
 vi.mock('../../scheduler-host/proc-util.js', () => ({ killProcessTree: mocks.killTree }));
 vi.mock('node:fs/promises', async (original) => ({
@@ -51,6 +53,7 @@ vi.mock('../llamaCppDownloads.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../llamaCppDownloads.js')>()),
   downloadLlamaCppAsset: mocks.download,
   resolveHfRepository: mocks.resolve,
+  resolveLlamaCppRelease: mocks.release,
 }));
 import { createLlamaCppService, managedModelId } from '../llamaCppService.js';
 
@@ -85,6 +88,52 @@ afterEach(async () => {
 });
 
 describe('managed llama.cpp model lifecycle', () => {
+  it.each(['write', 'rename', 'success'])(
+    'cleans only unpublished installation after %s',
+    async (stage) => {
+      const fs = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+      const source = path.join(root, 'archive-source');
+      await mkdir(source);
+      await writeFile(
+        path.join(source, process.platform === 'win32' ? 'llama-server.exe' : 'llama-server'),
+        'stub',
+      );
+      mocks.release.mockResolvedValue({ name: 'runtime.tar', version: 'test', size: 10 });
+      mocks.download.mockImplementation(async (_asset, dest) => {
+        execFileSync(process.platform === 'win32' ? 'tar.exe' : '/usr/bin/tar', [
+          '-cf',
+          dest,
+          '-C',
+          source,
+          '.',
+        ]);
+      });
+      const error = Object.assign(new Error('manifest publication failed'), { code: 'ENOSPC' });
+      mocks.writeFile.mockImplementation(async (file, data, options) => {
+        if (stage === 'write' && String(file).endsWith('current.json')) throw error;
+        return fs.writeFile(file, data, options);
+      });
+      mocks.rename.mockImplementation(async (from, to) => {
+        if (stage === 'rename' && String(to).endsWith('current.json')) throw error;
+        return fs.rename(from, to);
+      });
+      const runtime = path.join(root, 'llamacpp-runtime');
+      await mkdir(runtime);
+      await mkdir(path.join(runtime, 'unrelated-installation'));
+      const service = createLlamaCppService(root);
+      if (stage === 'success') {
+        await service.install();
+        expect((await service.snapshot()).installed).toBe(true);
+        expect((await readdir(runtime)).some((name) => name.startsWith('test-install-'))).toBe(
+          true,
+        );
+      } else {
+        await expect(service.install()).rejects.toBe(error);
+        expect(await readdir(runtime)).toEqual(['unrelated-installation']);
+      }
+      expect((await readdir(runtime)).some((name) => name.startsWith('install-'))).toBe(false);
+    },
+  );
   it.each(['missing', 'ended', 'unknown', 'corrupt'])(
     'checks configuration ownership before any mutation: %s',
     async (state) => {

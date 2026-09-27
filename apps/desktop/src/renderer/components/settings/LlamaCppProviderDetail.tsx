@@ -33,6 +33,7 @@ export function LlamaCppProviderDetail({ onChanged }: { onChanged: () => void })
   const [file, setFile] = useState('');
   const [busy, setBusy] = useState<'install' | 'start' | 'files' | 'download' | 'stop'>();
   const [error, setError] = useState(false);
+  const [pollError, setPollError] = useState(false);
   const [pending, setPending] = useState<LlamaCppDownloadInput>();
   const [failed, setFailed] = useState<LlamaCppDownloadInput>();
   const alive = useRef(true);
@@ -42,7 +43,10 @@ export function LlamaCppProviderDetail({ onChanged }: { onChanged: () => void })
   const refresh = async () => {
     const current = ++revision.current;
     const next = await api.llamaCppStatus();
-    if (alive.current && current === revision.current) setState(next);
+    if (alive.current && current === revision.current) {
+      setState(next);
+      setPollError(false);
+    }
   };
   useEffect(() => {
     alive.current = true;
@@ -52,7 +56,7 @@ export function LlamaCppProviderDetail({ onChanged }: { onChanged: () => void })
       try {
         await refresh();
       } catch {
-        if (!disposed) setError(true);
+        if (!disposed) setPollError(true);
       }
       if (!disposed) timer = setTimeout(() => void read(), 1000);
     };
@@ -163,7 +167,7 @@ export function LlamaCppProviderDetail({ onChanged }: { onChanged: () => void })
           {t('settings.providers.llamacpp.ownedElsewhere')}
         </p>
       )}
-      {error && !failed && (
+      {(error || pollError) && !failed && (
         <p role="alert" className="text-12" style={{ color: 'var(--error-flat)' }}>
           {t('settings.providers.llamacpp.failed')}
         </p>

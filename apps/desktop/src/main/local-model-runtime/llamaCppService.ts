@@ -258,6 +258,7 @@ export function createLlamaCppService(
       const asset = await resolveLlamaCppRelease(signal);
       await mkdir(root, { recursive: true });
       const staging = await mkdtemp(path.join(root, 'install-'));
+      let unpublished: string | undefined;
       try {
         const archive = path.join(staging, asset.name);
         operation!.total = asset.size;
@@ -275,6 +276,7 @@ export function createLlamaCppService(
         const destination = path.join(root, `${asset.version}-${path.basename(staging)}`);
         signal.throwIfAborted();
         await rename(unpacked, destination);
+        unpublished = destination;
         const manifest = path.join(root, 'current.json');
         await writeFile(
           path.join(staging, 'current.json'),
@@ -284,8 +286,13 @@ export function createLlamaCppService(
           }),
         );
         await rename(path.join(staging, 'current.json'), manifest);
+        unpublished = undefined;
       } finally {
-        await rm(staging, { recursive: true, force: true });
+        try {
+          if (unpublished) await rm(unpublished, { recursive: true, force: true });
+        } finally {
+          await rm(staging, { recursive: true, force: true });
+        }
       }
     });
   }

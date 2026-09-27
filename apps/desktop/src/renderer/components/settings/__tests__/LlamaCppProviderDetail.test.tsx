@@ -40,6 +40,14 @@ function api(installed = false) {
   return maker;
 }
 describe('llama.cpp uses the Ollama detail flow', () => {
+  it('clears a transient polling error after status recovers', async () => {
+    const maker = api(true);
+    maker.llamaCppStatus.mockRejectedValueOnce(new Error('temporary I/O failure'));
+    render(<LlamaCppProviderDetail onChanged={() => {}} />);
+    await screen.findByRole('alert');
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull(), { timeout: 2500 });
+    expect(screen.getByText('Test model')).toBeTruthy();
+  });
   it('explains and blocks configuration in a borrowing instance', async () => {
     const maker = api(true);
     maker.llamaCppStatus.mockResolvedValue({
