@@ -693,6 +693,7 @@ import { setClaudeSupportedModelsListener } from '@cindy/maker-core';
 import {
   noteAnthropicSdkSupportedModels,
   clearAnthropicDiscoveredModels,
+  requestAnthropicModelProbe,
 } from './maker-host/model-discovery/anthropic.js';
 import {
   clearXaiDiscoveredModels,
@@ -5092,6 +5093,9 @@ const registerIpcHandlers = () => {
     if (!status.loggedIn) {
       resetProviderModelAutoRefreshCooldowns('anthropic');
       void clearAnthropicDiscoveredModels().catch(() => undefined);
+    } else {
+      // 登录(含在终端里登录)后主动读一次清单;未绑定 Cindy 使用许可时内部跳过。
+      requestAnthropicModelProbe();
     }
   });
   // 启动时后台读一次(不阻塞):已连接的用户由 provider 目录加载等这次结果;

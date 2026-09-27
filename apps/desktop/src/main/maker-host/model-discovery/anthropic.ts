@@ -3,10 +3,12 @@ import { pickModelMetadata } from '@cindy/model-providers';
  * model-discovery/anthropic —— Anthropic(Claude.ai 订阅)模型清单的动态发现。
  * ---------------------------------------------------------------------------
  * 2026-07-19 模型列表统一重构:anthropic 供应商的清单**唯一来源是动态发现**,
- * 产品目录静态段已退役(bundled 恒为空;Registry presence 仍会实体化已知型号)。
+ * 产品目录静态段已退役(bundled 恒为空);2026-09-27 起 Registry 也不再补入 SDK
+ * 没返回的型号,只给返回的型号补资料。
  *
- *   **SDK `supportedModels()`**(每次 claude-code 会话 init 后捕获,经
- *   maker-core setClaudeSupportedModelsListener):effort 档 / fastMode 是 SDK 明说的,
+ *   **SDK `supportedModels()`**(claude-code 会话 init 后捕获;maker 就绪、登录 / 认领后
+ *   与手动刷新时由 requestAnthropicModelProbe 主动读取,两者经 maker-core
+ *   setClaudeSupportedModelsListener 汇入同一入口):effort 档 / fastMode 是 SDK 明说的,
  *   逐字段可信。上一次成功结果持久化为磁盘缓存,启动即恢复。
  *
  * Claude 订阅凭证只在内置 Claude Code CLI 里(claude-native-cli),Cindy 不带它
@@ -49,6 +51,7 @@ import type { CatalogModel, Effort } from '@cindy/model-providers';
 import { createLogger } from '../../logger.js';
 import {
   getActiveCatalog,
+  getCindyAnthropicModelName,
   getCindyModelContextWindow,
   getCindyModelEffortBaseline,
   setAnthropicDiscoveredModels,
@@ -107,6 +110,65 @@ function generationCanApply(generation: number, models: CatalogModel[]): boolean
  */
 function normalizeModelId(raw: string): string {
   return raw.replace(/\[[^\]]*\]$/, '').replace(/-20\d{6}$/, '');
+}
+
+/** 已记录过的目录未登记 / 无法解析的 SDK 简称条目,避免每个会话 init 重复打日志。 */
+const unresolvedAliasLogged = new Set<string>();
+
+/**
+ * SDK 条目 → 目录模型 id;无法确定时返回 null(该条目不进清单)。
+ *
+ * 显式 `claude-*` id 原样归一化。SDK 对每个系列的当前型号常只报简称
+ * (`default` / `opus` / `sonnet` …),具体版本只写在 description 开头
+ * (如 "Opus 5.5 · …" / "Opus 4.7 with 1M context · …")。简称按说明里的系列与版本
+ * 拼出 `claude-<系列>-<主>-<次>`(Anthropic 的 id 规则)。目录尚未登记的新版本
+ * (如 Fable 5.2)照样按说明生成 id 并显示,资料用未知模型的默认值,绝不映射到相邻旧版本。
+ * 只有无法从说明确定版本时才放弃:简称与说明的系列不一致(opus 却写 Sonnet)、
+ * 版本号多于两段或说明缺失。
+ */
+function resolveSdkModelId(value: string, description: unknown): string | null {
+  const normalized = normalizeModelId(value);
+  if (normalized.startsWith('claude')) return normalized;
+  const alias = normalized.toLowerCase();
+  const match =
+    typeof description === 'string'
+      ? /^(?:Claude\s+)?([A-Za-z]+)\s+(\d+)(?:\.(\d+))?(?![\w.])/.exec(description.trim())
+      : null;
+  const family = match?.[1]?.toLowerCase();
+  const id =
+    match && family && (alias === 'default' || alias === family)
+      ? `claude-${family}-${match[2]}${match[3] !== undefined ? `-${match[3]}` : ''}`
+      : null;
+  const known = id !== null && getCindyAnthropicModelName(id) !== null;
+  if (known) return id;
+  const logKey = `${value}\u0000${String(description)}`;
+  if (!unresolvedAliasLogged.has(logKey)) {
+    unresolvedAliasLogged.add(logKey);
+    log.info(
+      id
+        ? 'anthropic SDK model alias resolved to a model not yet in the catalog'
+        : 'anthropic SDK model alias has no parsable version; skipped',
+      { value, candidate: id },
+    );
+  }
+  return id;
+}
+
+/**
+ * SDK 的 displayName 对系列当前型号常只给系列名("Fable" / "Opus"),简称条目还会给
+ * "Default (recommended)"。不含版本号的名称不能区分同系列型号,不作为该型号的名称。
+ */
+function isVersionedModelName(name: string): boolean {
+  return /\d/.test(name);
+}
+
+/** claude-fable-5-1 → "Fable 5.1";不符合 `claude-<系列>-<主>[-<次>]` 时返回 null。 */
+function labelFromClaudeModelId(id: string): string | null {
+  const match = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?$/.exec(id);
+  if (!match) return null;
+  const family = match[1]!;
+  const version = match[3] !== undefined ? `${match[2]}.${match[3]}` : match[2];
+  return `${family[0]!.toUpperCase()}${family.slice(1)} ${version}`;
 }
 
 /**
@@ -175,8 +237,11 @@ function fallbackEffortBaseline(id: string): { efforts: Effort[]; defaultEffort:
 }
 
 /**
- * SDK `supportedModels()` 条目 → 映射结果。纯函数。
- * 只收 `claude` 开头的显式版本 id(规则 10:禁止 opus/sonnet 裸别名进目录)。
+ * SDK `supportedModels()` 条目 → 映射结果。只读目录,无副作用(除一次性日志)。
+ * 目录只收显式版本 id(规则 10:禁止 opus/sonnet 裸别名进目录):SDK 简称条目经
+ * resolveSdkModelId 按说明里的版本解析为具体 id,确定不了版本才跳过。这份清单是 Anthropic
+ * 成员的唯一来源,目录不再补入 SDK 没返回的型号。
+ * 名称:SDK 的 displayName 含版本号才采用;只给系列名时用目录名称,目录未登记则按 id 推导。
  * ModelInfo 的能力字段全部 optional:字段在场时 SDK 是能力权威(supportsEffort=false =
  * 不可调);**字段缺席 = 该字段未知**,按 modelRegistry 基线 / 确定性默认合成,
  * 合并时保留该字段已精化的旧值——不能把「CLI 没填」解读成「不支持」而抹掉档位。
@@ -196,9 +261,13 @@ export function mapAnthropicSdkModels(raw: unknown): SdkMappedModel[] {
       supportsFastMode?: unknown;
     };
     if (typeof e.value !== 'string' || e.value.length === 0) continue;
-    const id = normalizeModelId(e.value);
-    if (!id.startsWith('claude') || seen.has(id)) continue;
+    const id = resolveSdkModelId(e.value, e.description);
+    if (!id || seen.has(id)) continue;
     seen.add(id);
+    const reportedName =
+      typeof e.displayName === 'string' && isVersionedModelName(e.displayName)
+        ? e.displayName
+        : undefined;
     const hasEffortInfo = e.supportsEffort !== undefined || e.supportedEffortLevels !== undefined;
     const hasFastModeInfo = e.supportsFastMode !== undefined;
     const fallback = fallbackEffortBaseline(id);
@@ -228,13 +297,13 @@ export function mapAnthropicSdkModels(raw: unknown): SdkMappedModel[] {
       model: {
         id,
         discoveredMetadata: pickModelMetadata({
-          name: e.displayName,
+          name: reportedName,
           description: e.description,
           efforts:
             e.supportsEffort === false ? [] : (toEfforts(e.supportedEffortLevels) ?? undefined),
           supportsFastMode: e.supportsFastMode,
         }),
-        name: typeof e.displayName === 'string' && e.displayName.length > 0 ? e.displayName : id,
+        name: reportedName ?? getCindyAnthropicModelName(id) ?? labelFromClaudeModelId(id) ?? id,
         group: 'anthropic',
         sortOrder: out.length,
         ...(typeof e.description === 'string' && e.description.length > 0
@@ -465,10 +534,22 @@ export async function loadAnthropicModelsFromDiskCache(): Promise<void> {
       // 里(命中目录的窗口不进那张表)时,会得到一个「已核实」的猜测值 —— 例如 Haiku 残留
       // 200K 而运行期真实 1M,反倒把上报值压小。这也是上面那条刷新不变量的要求。
       const { contextWindowVerified: _staleProvenance, ...rest } = model;
+      // 旧版缓存会把 SDK 的系列名("Fable")当型号名落盘;按当前口径丢弃不含版本号的名称。
+      const cachedName = model.discoveredMetadata?.name;
+      const staleName = cachedName !== undefined && !isVersionedModelName(cachedName);
+      const { name: _staleName, ...cachedMetadata } = model.discoveredMetadata ?? {};
       return {
         ...rest,
+        ...(staleName || !isVersionedModelName(model.name)
+          ? {
+              name:
+                getCindyAnthropicModelName(model.id) ??
+                labelFromClaudeModelId(model.id) ??
+                model.id,
+            }
+          : {}),
         discoveredMetadata:
-          model.discoveredMetadata ??
+          (model.discoveredMetadata && (staleName ? cachedMetadata : model.discoveredMetadata)) ??
           pickModelMetadata({
             contextWindow: explicitWindows.get(model.id),
             efforts: restoredExplicitEffortIds.has(model.id) ? model.efforts : undefined,
@@ -590,6 +671,32 @@ export function noteAnthropicSdkSupportedModels(raw: unknown): void {
   void applyModels(models, true, generation, explicitEffortIds, explicitFastModeIds).catch(
     (err) => {
       log.warn('apply anthropic SDK models failed', { error: String(err) });
+    },
+  );
+}
+
+/** 主动清单探测(生产 = maker.refreshAgentLocalModels('claude-code')),maker 就绪后注入。 */
+let modelProbe: (() => Promise<boolean>) | null = null;
+
+export function setAnthropicModelProbe(probe: (() => Promise<boolean>) | null): void {
+  modelProbe = probe;
+}
+
+/**
+ * 请求一次主动清单探测(启动、登录 / 认领后):清单只来自 SDK,没有这一步时新登录或
+ * 没有缓存的用户要等跑过一次 Claude Code 任务才看得到模型。结果经
+ * noteAnthropicSdkSupportedModels 与会话 init 捕获走同一套门控与合并。未登录或 maker
+ * 未就绪时跳过;失败只记日志。
+ */
+export function requestAnthropicModelProbe(): void {
+  const probe = modelProbe;
+  if (!probe || !hasClaudeNativeLogin()) return;
+  void probe().then(
+    (applied) => {
+      if (!applied) log.info('anthropic model probe returned no model list');
+    },
+    (err: unknown) => {
+      log.warn('anthropic model probe failed', { error: String(err) });
     },
   );
 }

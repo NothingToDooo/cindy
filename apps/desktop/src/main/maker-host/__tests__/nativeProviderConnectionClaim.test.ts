@@ -25,6 +25,7 @@ const h = vi.hoisted(() => ({
   loadXaiDiskCache: vi.fn(async () => false),
   refreshXaiMediaModels: vi.fn(async () => true),
   loadAnthropicDiskCache: vi.fn(async () => {}),
+  requestAnthropicModelProbe: vi.fn(),
   codexLoginWithSideEffects: vi.fn(async () => false),
   codexLoginReadOnly: vi.fn(() => false),
 }));
@@ -73,6 +74,7 @@ vi.mock('../grok-oauth-login.js', () => ({
 
 vi.mock('../model-discovery/anthropic.js', () => ({
   loadAnthropicModelsFromDiskCache: h.loadAnthropicDiskCache,
+  requestAnthropicModelProbe: h.requestAnthropicModelProbe,
 }));
 vi.mock('../model-discovery/xai.js', () => ({
   clearXaiDiscoveredModels: vi.fn(),
@@ -164,6 +166,7 @@ beforeEach(() => {
   h.loadXaiDiskCache.mockClear();
   h.refreshXaiMediaModels.mockClear();
   h.loadAnthropicDiskCache.mockClear();
+  h.requestAnthropicModelProbe.mockClear();
   h.codexLoginWithSideEffects.mockClear();
   h.codexLoginReadOnly.mockClear();
 });
@@ -202,10 +205,13 @@ describe('native provider connection claim on read', () => {
     expect(getNativeProviderAuthSource('anthropic')).toBe('native-harness-inherited');
     // 启动期那次磁盘清单加载因未绑定而早退了,绑定刚建立时必须补一次(PR #548 review)。
     await vi.waitFor(() => expect(h.loadAnthropicDiskCache).toHaveBeenCalledTimes(1));
+    // 成员只来自 SDK 清单:补载缓存后还要主动读一次最新清单(新账号可能没有缓存)。
+    await vi.waitFor(() => expect(h.requestAnthropicModelProbe).toHaveBeenCalledTimes(1));
 
     // 已绑定后不再重复认领,也不再重复加载。
     await connectedMap();
     expect(h.loadAnthropicDiskCache).toHaveBeenCalledTimes(1);
+    expect(h.requestAnthropicModelProbe).toHaveBeenCalledTimes(1);
   });
 
   it('首次认领要等磁盘清单补载完成后再返回本次 provider 快照', async () => {

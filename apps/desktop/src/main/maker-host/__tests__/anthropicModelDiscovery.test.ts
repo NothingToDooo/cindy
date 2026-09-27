@@ -266,6 +266,64 @@ describe('mapAnthropicSdkModels', () => {
     expect(out[0].model.name).toBe('Sonnet 5'); // dated 先出现,first-wins
   });
 
+  it('SDK 系列简称按说明里的版本解析为目录已登记的具体 id,名称取目录', () => {
+    setActiveCatalog(BUNDLED_CATALOG);
+    const out = mapAnthropicSdkModels([
+      { value: 'default', displayName: 'Default (recommended)', description: 'Opus 5.5 with 1M context · Most capable' },
+      // Claude Code 2.1.280 实报形态:简称可带 [1m],显式 id 的 displayName 只有系列名。
+      { value: 'opus[1m]', displayName: 'Opus (1M context)', description: 'Opus 5.5 with 1M context · Best for everyday, complex tasks' },
+      { value: 'claude-fable-5-1[1m]', displayName: 'Fable', description: 'Fable 5.1 · Most capable for your hardest and longest-running tasks' },
+      { value: 'sonnet', displayName: 'Sonnet', description: 'Sonnet 5 · Efficient for routine tasks' },
+      { value: 'haiku', displayName: 'Haiku', description: 'Haiku 4.5 · Fastest for quick answers' },
+      { value: 'claude-opus-4-5', displayName: 'Opus 4.5', description: 'Newer version available' },
+    ]);
+    expect(out.map(({ model }) => [model.id, model.name])).toEqual([
+      ['claude-opus-5-5', 'Opus 5.5'],
+      ['claude-fable-5-1', 'Fable 5.1'],
+      ['claude-sonnet-5', 'Sonnet 5'],
+      ['claude-haiku-4-5', 'Haiku 4.5'],
+      ['claude-opus-4-5', 'Opus 4.5'],
+    ]);
+    // 只有系列名的 displayName 不是供应商对具体型号的命名,不进入实报资料。
+    expect(out[0]!.model.discoveredMetadata?.name).toBeUndefined();
+    expect(out[1]!.model.discoveredMetadata?.name).toBeUndefined();
+    expect(out[4]!.model.discoveredMetadata?.name).toBe('Opus 4.5');
+  });
+
+  it('目录未登记的新版本照样显示,id 与名称按说明里的版本生成(Fable 5.2 不被显示成 5.1)', () => {
+    setActiveCatalog(BUNDLED_CATALOG);
+    const out = mapAnthropicSdkModels([
+      // 简称指向目录还不认识的 5.2:按说明生成 claude-fable-5-2,不映射到已登记的 5.1。
+      { value: 'fable', displayName: 'Fable', description: 'Fable 5.2 · Newest' },
+      { value: 'claude-fable-5-1', displayName: 'Fable', description: 'Fable 5.1 · Previous' },
+    ]);
+    expect(out.map(({ model }) => [model.id, model.name])).toEqual([
+      ['claude-fable-5-2', 'Fable 5.2'],
+      ['claude-fable-5-1', 'Fable 5.1'],
+    ]);
+    // 目录未知:资料用未知模型默认值,窗口不标记为已核实。
+    expect(out[0]!.model.contextWindowVerified).toBeUndefined();
+
+    // 显式 id 形态同理,名称按 id 推导,不取目录里 5.1 的名称。
+    const explicit = mapAnthropicSdkModels([
+      { value: 'claude-fable-5-2[1m]', displayName: 'Fable', description: 'Fable 5.2 · Newest' },
+    ]);
+    expect(explicit.map(({ model }) => [model.id, model.name])).toEqual([
+      ['claude-fable-5-2', 'Fable 5.2'],
+    ]);
+  });
+
+  it('简称与说明的系列不符、版本多于两段或缺说明时放弃,不猜', () => {
+    setActiveCatalog(BUNDLED_CATALOG);
+    const out = mapAnthropicSdkModels([
+      { value: 'opus', displayName: 'Opus', description: 'Sonnet 5 · Best for everyday tasks' },
+      { value: 'sonnet', displayName: 'Sonnet', description: 'Sonnet 5.0.1 · Patch' },
+      { value: 'haiku', displayName: 'Haiku' },
+      { value: 'opusplan', displayName: 'Opus Plan', description: 'Opus 5.5 in plan mode' },
+    ]);
+    expect(out).toEqual([]);
+  });
+
   it('[1m] 长上下文后缀归一并去重(顶栏误报「已断开」回归):目录基线按裸 id 命中', () => {
     const out = mapAnthropicSdkModels([
       { value: 'claude-fable-5[1m]', displayName: 'Fable 5' },
@@ -389,6 +447,35 @@ describe('noteAnthropicSdkSupportedModels(登录态门控 + 合并纪律)', () =
       efforts: ['low', 'high'],
       supportsFastMode: true,
     });
+  });
+
+  it('旧版缓存里只有系列名的型号名称在恢复时改用目录名称', async () => {
+    setActiveCatalog(BUNDLED_CATALOG);
+    const cacheDir = path.join(TEST_USER_DATA, 'model-discovery');
+    await fsp.mkdir(cacheDir, { recursive: true });
+    await fsp.writeFile(
+      path.join(cacheDir, 'anthropic-models.json'),
+      JSON.stringify({
+        fetchedAt: '2026-09-26T10:58:52.989Z',
+        models: [
+          {
+            id: 'claude-fable-5-1',
+            discoveredMetadata: { name: 'Fable', description: 'Fable 5.1 · Most capable' },
+            name: 'Fable',
+            group: 'anthropic',
+            contextWindow: 1_000_000,
+            efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+            defaultEffort: 'high',
+            supportsFastMode: false,
+            status: 'active',
+          },
+        ],
+      }),
+      'utf-8',
+    );
+
+    await loadAnthropicModelsFromDiskCache();
+    expect(anthropicModel('claude-fable-5-1')?.name).toBe('Fable 5.1');
   });
 
   it('未连接本机 Claude Code 登录时不加载残留磁盘缓存', async () => {

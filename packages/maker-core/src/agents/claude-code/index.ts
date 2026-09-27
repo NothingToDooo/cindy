@@ -822,6 +822,9 @@ const CLAUDE_EFFORTS: EffortDescriptor[] = [
  */
 let supportedModelsListener: ((models: unknown[]) => void) | null = null;
 
+/** 主动清单探测(ClaudeCodeAgent.refreshLocalModels)的上限:CLI 冷启动通常几秒内应答。 */
+const SUPPORTED_MODELS_PROBE_TIMEOUT_MS = 30_000;
+
 /** host 注入 SDK supportedModels 捕获回调;传 null 解除。 */
 export function setClaudeSupportedModelsListener(
   listener: ((models: unknown[]) => void) | null,
@@ -1003,6 +1006,75 @@ export class ClaudeCodeAgent extends BaseAgent {
    */
   override listAgentCommands(): AgentBuiltinCommand[] {
     return CLAUDE_CODE_AGENT_COMMANDS;
+  }
+
+  /** 同一时刻只跑一个清单探测;并发调用共享结果。 */
+  private supportedModelsProbe: Promise<boolean> | null = null;
+
+  /**
+   * 主动读取 Claude 订阅的模型清单:用本机 CLI 自己的登录起一个空闲 Query,只调
+   * SDK `supportedModels()`,不发送任何消息、不产生模型调用,读完立即关闭。
+   * 结果经 setClaudeSupportedModelsListener 交给 host,与会话 init 捕获同一入口。
+   * 未登录订阅、未接监听器或探测失败时返回 false,不抛错。
+   */
+  override async refreshLocalModels(): Promise<boolean> {
+    if (!supportedModelsListener) return false;
+    this.supportedModelsProbe ??= this.probeSupportedModels().finally(() => {
+      this.supportedModelsProbe = null;
+    });
+    return this.supportedModelsProbe;
+  }
+
+  private async probeSupportedModels(): Promise<boolean> {
+    // oauth-bearer 形态下 auth adapter 只按本机 Claude Code 订阅登录作答。
+    const authState = await this.deps.auth.getState({ credentialMode: 'oauth-bearer' });
+    if (!authState.authenticated) return false;
+    const env = await buildClaudeEnv(this.deps.auth, this.deps.runtimeConfig, {
+      credentialMode: 'oauth-bearer',
+      nativeCliAuth: true,
+      subagentModel: null,
+    });
+    const abortController = new AbortController();
+    const idleInput = createAsyncQueue<never>();
+    const q = sdkQuery({
+      prompt: idleInput as unknown as Parameters<typeof sdkQuery>[0]['prompt'],
+      options: {
+        abortController,
+        // 空目录语义:不读任何项目级设置,清单只由账号与用户级设置决定。
+        cwd: os.tmpdir(),
+        pathToClaudeCodeExecutable: this.deps.binaryPath,
+        env,
+      },
+    });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const models = await Promise.race([
+        q.supportedModels(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error('supportedModels probe timed out')),
+            SUPPORTED_MODELS_PROBE_TIMEOUT_MS,
+          );
+        }),
+      ]);
+      if (!Array.isArray(models)) return false;
+      supportedModelsListener?.(models);
+      return true;
+    } catch (error) {
+      this.deps.logger
+        .child('claude-code/supportedModels')
+        .warn('probe failed', { error: String(error) });
+      return false;
+    } finally {
+      if (timer) clearTimeout(timer);
+      idleInput.end();
+      try {
+        q.close();
+      } catch {
+        /* 探测进程已退出 */
+      }
+      abortController.abort();
+    }
   }
 
   /**
