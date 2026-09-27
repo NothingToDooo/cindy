@@ -53,7 +53,11 @@ export async function verifyImportedAutomation(root: string, botId: string, item
       const tools = await withImportedConnection(server, environment.env, assertOwner, async client => (await client.listTools({}, { timeout: 15_000 })).tools);
       connections.push({ name: server.name, tools: tools.filter(tool => tool.annotations?.readOnlyHint === true).map(tool => ({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema })) });
     }
-    const referencedIds = new Set(item.view.dependsOn ?? []);
+    // Delivery credentials are required for selection/handover, but are not data
+    // reads. Remove only delivery roots before expanding read dependencies: a
+    // shared variable (or a credential referenced by a skill) must still be checked.
+    const deliveryIds = new Set(item.automation.deliveries?.map(delivery => delivery.connectionId));
+    const referencedIds = new Set((item.view.dependsOn ?? []).filter(id => !deliveryIds.has(id)));
     const skills = selectedItems.filter(dependency => dependency.view.category === 'skills' && (referencedIds.has(dependency.view.id) || item.automation!.input?.prompt.includes(dependency.view.name)));
     for (const skill of skills) referencedIds.add(skill.view.id);
     for (let previous = -1; previous !== referencedIds.size;) {
@@ -104,7 +108,7 @@ export async function verifyImportedAutomation(root: string, botId: string, item
         await verifyLocalImportedScripts(root, botId, sourceRoot, job, environment, assertOwner);
         return { verified: true };
       }
-      return { verified: plan.localReminder === true && !job.script && !job.monitor_script && !job.monitor_url && !item.view.dependsOn?.length,
+      return { verified: plan.localReminder === true && !job.script && !job.monitor_script && !job.monitor_url && !referencedIds.size,
         reason: 'AUTOMATION_READ_NOT_VERIFIED' };
     }
     for (const read of plan.reads) {

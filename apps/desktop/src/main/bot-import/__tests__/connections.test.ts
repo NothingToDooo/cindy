@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { withImportedConnection } from '../connections.js';
+import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 let directory: string | undefined;
 afterEach(async () => { vi.unstubAllEnvs(); if (directory) await fs.rm(directory, { recursive: true, force: true }); });
 it('queries a real stdio MCP subprocess with the imported credential after a new connection', async () => {
@@ -34,7 +35,7 @@ readline.createInterface({input:process.stdin}).on('line', line => {
   expect(payload(first).isolated).toBe(true);
   expect(payload(second).reads).toBe(2);
   // A failed request discards the cached subprocess and leaves no fixture running.
-  await expect(withImportedConnection(connection, {}, () => {}, async () => { throw new Error('fixture disconnect'); }, scope)).rejects.toThrow('CONNECTION_FAILED');
+  await expect(withImportedConnection(connection, {}, () => {}, () => { throw new Error('fixture disconnect'); }, scope)).rejects.toThrow('CONNECTION_FAILED');
 });
 
 it('terminates an idle credential subprocess after its owner changes and evicts it without affecting another owner', async () => {
@@ -68,5 +69,68 @@ readline.createInterface({input:process.stdin}).on('line', line => {
   } finally {
     current = false;
     for (const scope of [old, other]) await withImportedConnection(server, {}, () => {}, async () => { throw new Error('fixture cleanup'); }, scope).catch(() => {});
+  }
+});
+
+it.each([
+  { failure: 'abort', failing: 0, warm: false }, { failure: 'abort', failing: 1, warm: true },
+  { failure: 'error', failing: 0, warm: true }, { failure: 'error', failing: 1, warm: false },
+])('isolates $failure in concurrent MCP caller $failing (cached beforehand: $warm)', async ({ failure, failing, warm }) => {
+  directory = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-import-parallel-mcp-test-'));
+  const file = path.join(directory, 'server.cjs');
+  await fs.writeFile(file, `const readline = require('node:readline'); let held; let reads = 0;
+const respond = (id, result) => process.stdout.write(JSON.stringify({jsonrpc:'2.0',id,result})+'\\n');
+const payload = () => ({content:[{type:'text',text:JSON.stringify({pid:process.pid,reads:++reads,authenticated:process.env.DATA_TOKEN === 'fixture-token'})}]});
+readline.createInterface({input:process.stdin}).on('line', line => {
+ const r = JSON.parse(line); if (!('id' in r)) return;
+ if (r.method === 'initialize') return respond(r.id,{protocolVersion:'2024-11-05',capabilities:{tools:{}},serverInfo:{name:'fixture',version:'1'}});
+ if (r.params?.name === 'hold') { held = r.id; return; }
+ if (r.params?.name === 'release' && held !== undefined) { respond(held,payload()); held = undefined; }
+ respond(r.id,payload());
+});`);
+  const server = { name: 'fixture', command: process.execPath, args: [file] };
+  const environment = { DATA_TOKEN: 'fixture-token' };
+  const identity = directory;
+  const controllers = [new AbortController(), new AbortController()];
+  const latch = <T,>() => {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>(done => { resolve = done; });
+    return { promise, resolve };
+  };
+  const ready = [latch<{ client: Client; pid: number }>(), latch<{ client: Client; pid: number }>()];
+  const failures = [latch<void>(), latch<void>()];
+  const payload = (value: unknown) => JSON.parse((value as { content: Array<{ text: string }> }).content[0]!.text) as { pid: number; authenticated: boolean };
+  const initial = warm ? payload(await withImportedConnection(server, environment, () => {}, client => client.callTool({ name: 'identity', arguments: {} }), { identity, signal: new AbortController().signal })) : undefined;
+  // Start both before either initialize response: an initializing cache slot must
+  // already be reserved, just like an established connection with an active call.
+  const calls = controllers.map((controller, index) => withImportedConnection(server, environment, () => {}, async client => {
+    const info = payload(await client.callTool({ name: 'identity', arguments: {} }));
+    const held = client.callTool({ name: 'hold', arguments: {} });
+    ready[index]!.resolve({ client, pid: info.pid });
+    return Promise.race([held, failures[index]!.promise.then(() => { throw new Error('fixture-request-failure'); })]);
+  }, { identity, signal: controller.signal }));
+  const settled = calls.map(call => Promise.allSettled([call]).then(results => results[0]!));
+  const healthy = 1 - failing;
+  try {
+    const active = await Promise.all(ready.map(item => item.promise));
+    if (initial) expect(active[0]!.pid).toBe(initial.pid);
+    expect(active[0]!.pid).not.toBe(active[1]!.pid);
+    if (failure === 'abort') controllers[failing]!.abort();
+    else failures[failing]!.resolve();
+    expect(await settled[failing]).toMatchObject({ status: 'rejected', reason: { code: 'CONNECTION_FAILED' } });
+    await active[healthy]!.client.callTool({ name: 'release', arguments: {} });
+    const result = await settled[healthy]!;
+    expect(result.status).toBe('fulfilled');
+    if (result.status !== 'fulfilled') throw result.reason;
+    expect(payload(result.value)).toMatchObject({ pid: active[healthy]!.pid, authenticated: true });
+    // The temporary parallel transport is closed even after success.
+    expect(() => process.kill(active[1]!.pid, 0)).toThrow();
+    const next = payload(await withImportedConnection(server, environment, () => {}, client => client.callTool({ name: 'identity', arguments: {} }), { identity, signal: new AbortController().signal }));
+    if (failing === 1) expect(next.pid).toBe(active[0]!.pid);
+    else expect(next.pid).not.toBe(active[0]!.pid);
+  } finally {
+    controllers.forEach(controller => controller.abort());
+    await Promise.allSettled(calls);
+    await withImportedConnection(server, environment, () => {}, async () => { throw new Error('fixture cleanup'); }, { identity, signal: new AbortController().signal }).catch(() => {});
   }
 });

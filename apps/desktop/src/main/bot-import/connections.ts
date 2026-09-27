@@ -7,21 +7,16 @@ import type { ImportedMcpServer } from './types.js';
 import { CompanionImportError } from './types.js';
 import { fingerprint } from './files.js';
 
-interface Connection { client: Client; close(): Promise<void>; users: number; idle?: ReturnType<typeof setTimeout> }
-const connections = new Map<string, Promise<Connection>>();
+interface Connection { client: Client; close(): Promise<void>; idle?: ReturnType<typeof setTimeout> }
+interface CachedConnection { pending: Promise<Connection>; inUse: boolean }
+const connections = new Map<string, CachedConnection>();
 
-/** Uses the imported connection on the owning computer, with its private headers/env. */
-export async function withImportedConnection<T>(
+async function connectImportedConnection(
   server: ImportedMcpServer,
   environment: Record<string, string>,
   assertOwner: () => void,
-  run: (client: Client) => Promise<T>,
-  scope?: { identity: string; signal: AbortSignal },
-): Promise<T> {
-  assertOwner();
-  scope?.signal.throwIfAborted();
-  const key = scope ? fingerprint([scope.identity, server]) : undefined;
-  const connect = async (): Promise<Connection> => {
+  evict: () => void,
+): Promise<Connection> {
   const client = new Client({ name: 'cindy-companion', version: '1.0.0' });
   const transport = server.command
     ? new StdioClientTransport({ command: server.command, args: server.args ?? [],
@@ -33,14 +28,14 @@ export async function withImportedConnection<T>(
   let closing: Promise<void> | undefined;
   const close = () => {
     clearInterval(ownerTimer); clearTimeout(connected.idle);
+    evict();
     return closing ??= (async () => { await client.close().catch(() => {}); await transport.close().catch(() => {}); })();
   };
-  const connected: Connection = { client, close, users: 0 };
+  const connected: Connection = { client, close };
   // Own the fence for the entire connection lifetime, including cached idle time
   // and initialization. Per-call cancellation still settles the in-flight work.
   const ownerTimer = setInterval(() => {
     try { assertOwner(); } catch {
-      if (key && connections.get(key) === pending) connections.delete(key);
       void close();
     }
   }, 250);
@@ -54,23 +49,46 @@ export async function withImportedConnection<T>(
     return connected;
   } catch { await close(); throw new CompanionImportError('CONNECTION_FAILED'); }
   finally { clearTimeout(timer); }
-  };
-  let pending = key ? connections.get(key) : undefined;
-  if (!pending) {
-    if (key && connections.size >= 128) throw new CompanionImportError('CONNECTION_LIMIT');
-    pending = connect();
-    if (key) {
-      connections.set(key, pending);
-      void pending.catch(() => { if (connections.get(key) === pending) connections.delete(key); });
+}
+
+/** Reuse idle connections; concurrent callers own independent cancellable transports. */
+export async function withImportedConnection<T>(
+  server: ImportedMcpServer,
+  environment: Record<string, string>,
+  assertOwner: () => void,
+  run: (client: Client) => Promise<T>,
+  scope?: { identity: string; signal: AbortSignal },
+): Promise<T> {
+  assertOwner();
+  scope?.signal.throwIfAborted();
+  const key = scope ? fingerprint([scope.identity, server]) : undefined;
+  let cached = key ? connections.get(key) : undefined;
+  let pending: Promise<Connection>;
+  if (cached && !cached.inUse) {
+    // Reserve before awaiting initialization so simultaneous callers cannot share
+    // a transport that either one may close on cancellation or request failure.
+    cached.inUse = true;
+    pending = cached.pending;
+  } else {
+    const cacheable = !!key && !cached;
+    if (cacheable && connections.size >= 128) throw new CompanionImportError('CONNECTION_LIMIT');
+    cached = undefined;
+    const evict = () => {
+      if (key && cached && connections.get(key) === cached) connections.delete(key);
+    };
+    pending = connectImportedConnection(server, environment, assertOwner, evict);
+    void pending.catch(evict);
+    if (cacheable) {
+      cached = { pending, inUse: true };
+      connections.set(key!, cached);
     }
   }
   const connection = await pending;
-  clearTimeout(connection.idle); connection.users++;
+  clearTimeout(connection.idle);
   let invalid = false;
   let rejectBoundary: ((error: Error) => void) | undefined;
   const discard = () => {
     invalid = true;
-    if (key && connections.get(key) === pending) connections.delete(key);
     void connection.close();
     rejectBoundary?.(new CompanionImportError('CONNECTION_CANCELLED'));
   };
@@ -79,7 +97,11 @@ export async function withImportedConnection<T>(
   scope?.signal.addEventListener('abort', discard, { once: true });
   try {
     assertOwner(); scope?.signal.throwIfAborted();
-    const result = await Promise.race([run(connection.client), new Promise<never>((_, reject) => { rejectBoundary = reject; })]);
+    const boundary = new Promise<never>((_, reject) => { rejectBoundary = reject; });
+    const result = await Promise.race([boundary, Promise.resolve().then(() => {
+      assertOwner(); scope?.signal.throwIfAborted();
+      return run(connection.client);
+    })]);
     assertOwner(); return result;
   } catch {
     discard();
@@ -87,11 +109,10 @@ export async function withImportedConnection<T>(
     throw new CompanionImportError('CONNECTION_FAILED');
   } finally {
     clearInterval(timer); scope?.signal.removeEventListener('abort', discard);
-    connection.users--;
-    if (!key || invalid) await connection.close();
-    else if (connection.users === 0) {
+    if (!cached || invalid) await connection.close();
+    else {
+      cached.inUse = false;
       connection.idle = setTimeout(() => {
-        if (connections.get(key) === pending) connections.delete(key);
         void connection.close();
       }, 5 * 60_000);
       connection.idle.unref();

@@ -7,8 +7,11 @@ import { getMakerIfReady } from '../../maker-host/index.js';
 import { getBotRemoteResourceSource } from '../../localDb/ipc/bots.js';
 import { companionEnvironmentStore } from '../runtime.js';
 import { matchesReadEvidence, readImportHttpEvidence, verifyImportedAutomation } from '../verification.js';
+import { normalizeAutomation } from '../sourceAutomations.js';
+import { resolveImportEnvironmentDependencies } from '../environmentSelection.js';
+import type { ImportItem, ImportSource } from '../types.js';
 let server: Server | undefined;
-afterEach(async () => { if (server) await new Promise<void>(resolve => { server!.closeAllConnections(); server!.close(() => resolve()); }); });
+afterEach(async () => { vi.unstubAllGlobals(); if (server) await new Promise<void>(resolve => { server!.closeAllConnections(); server!.close(() => resolve()); }); server = undefined; });
 it('checks actual authenticated response data and refuses redirects/error envelopes', async () => {
   server = createServer((req, res) => {
     if (req.url === '/redirect') { res.writeHead(302, { location: '/data' }); res.end(); return; }
@@ -50,6 +53,47 @@ it('verifies a selected skill bundled script using real HTTP without giving the 
   expect(prompt).toContain('DATA_TOKEN');
   expect(prompt).not.toContain('fixture-private-token');
   expect(prompt).not.toContain('UNSELECTED_TOKEN');
+});
+
+it.each(['hermes', 'openclaw'] as const)('allows a %s reminder with a verified Telegram destination without skipping data or delivery checks', async kind => {
+  const token = '12345:fixture-private-token';
+  const selected: ImportItem[] = [
+    { view: { id: 'token', name: 'TELEGRAM_BOT_TOKEN', category: 'connections', selected: true }, env: { TELEGRAM_BOT_TOKEN: token } },
+    { view: { id: 'telegram', name: 'Telegram', category: 'connections', selected: true, dependsOn: ['token'] }, credential: { format: 'telegram', value: { token: '${TELEGRAM_BOT_TOKEN}', account: 'default' } } },
+    { view: { id: 'api', name: 'DATA_URL', category: 'connections', selected: true }, env: { DATA_URL: 'https://example.invalid' } },
+  ];
+  vi.mocked(companionEnvironmentStore.read).mockResolvedValue({ version: 1, env: { TELEGRAM_BOT_TOKEN: token, DATA_URL: 'https://example.invalid' }, mcp: [], credentials: [{ id: 'telegram', format: 'telegram', value: { token, account: 'default' } }] });
+  const oneShot = vi.fn().mockResolvedValue(JSON.stringify({ localReminder: true, reads: [] }));
+  vi.mocked(getMakerIfReady).mockReturnValue({ oneShot, getSessionMeta: vi.fn().mockResolvedValue({ agentKind: 'pi', model: 'fixture-model' }) } as never);
+  vi.mocked(getBotRemoteResourceSource).mockResolvedValue({ canonicalSessionId: 'fixture-session' } as never);
+  const fetch = vi.fn(async (url: string) => {
+    const method = new URL(url).pathname.split('/').at(-1);
+    const result = method === 'getMe' ? { id: 12345, is_bot: true }
+      : method === 'getChat' ? { id: 123, type: 'private' } : undefined;
+    expect(result).toBeDefined(); // Never send a test message during takeover.
+    return Response.json({ ok: true, result });
+  });
+  vi.stubGlobal('fetch', fetch);
+  const source: ImportSource = { kind, agentId: 'main', name: 'Fixture', root: '/fixture', workspace: '/fixture', configFile: '/fixture/config' };
+  const reminder = (prompt: string) => resolveImportEnvironmentDependencies([normalizeAutomation(source, {
+    id: 'reminder', name: 'Reminder', prompt, payload: { message: prompt }, schedule: { kind: 'interval', minutes: 5 },
+    deliver: 'telegram:123', delivery: { mode: 'announce', channel: 'telegram', to: '123' },
+  }, selected, 'UTC')], selected)[0]!;
+  const item = reminder('Remind me to stretch');
+  expect(item.view.dependsOn).toEqual(['telegram']);
+  expect((await verifyImportedAutomation('/fixture', 'bot', item, () => {}, selected)).verified).toBe(true);
+  expect(fetch.mock.calls.map(([url]) => new URL(url).pathname.split('/').at(-1))).toEqual(['getMe', 'getChat']);
+  expect(oneShot.mock.calls[0]![1]).not.toContain('TELEGRAM_BOT_TOKEN');
+  expect(oneShot.mock.calls[0]![1]).not.toContain(token);
+  // A variable also used for data is still required, even if delivery uses it too.
+  for (const prompt of ['Read Telegram data using TELEGRAM_BOT_TOKEN', 'Read DATA_URL']) {
+    expect((await verifyImportedAutomation('/fixture', 'bot', reminder(prompt), () => {}, selected)).verified).toBe(false);
+  }
+  // Delivery validation remains mandatory and must precede planning.
+  oneShot.mockClear();
+  fetch.mockResolvedValue(Response.json({ ok: false }, { status: 403 }));
+  expect((await verifyImportedAutomation('/fixture', 'bot', item, () => {}, selected)).verified).toBe(false);
+  expect(oneShot).not.toHaveBeenCalled();
 });
 
 it.skipIf(process.platform === 'win32')('checks a local script without executing it, and refuses invalid or data-dependent scripts', async () => {

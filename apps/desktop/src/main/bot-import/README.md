@@ -54,6 +54,9 @@ theme tokens. No new native Mobile dependencies or fingerprint inputs are added.
   and cancellation still terminate discovery. Cached connections retain their
   owner check during idle time; an account change closes their credential-bearing
   subprocess/transport and removes the cache entry.
+  Sequential calls reuse the cached connection. Overlapping calls use independent
+  transports, including during initialization; cancellation or failure closes only
+  that caller's transport. Temporary parallel connections close after completion.
 - Cron/timezone, anchored intervals, one-time triggers, paused state and selected
   Hermes scripts/monitors/repeat counters feed the existing routine engine.
   Pure-script output appears in the canonical teammate chat. Explicit Telegram
@@ -65,6 +68,9 @@ uses the teammate's current model to plan bounded read-only probes, then the
 host executes real MCP/HTTP reads and validates response data. The planner sees
 variable names and redacted task/script text, not credential values. HTTP checks
 reject redirects; Telegram checks read identity/destination without test sends.
+Verified delivery-only credentials are excluded from data-read dependencies, so
+local reminders can retain their Telegram destination. Variables also referenced
+by the task or its skills still require data verification.
 For scripts classified as local-only with no data/connection dependency, the same
 runtime interpreter parses the selected script without executing business actions.
 This checks availability and syntax, not a full business execution; scripts with
