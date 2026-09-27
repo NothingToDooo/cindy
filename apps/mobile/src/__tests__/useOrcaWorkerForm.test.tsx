@@ -269,3 +269,36 @@ it('still restores remembered choices when the Agent list lands before the memor
     vi.mocked(AsyncStorage.getItem).mockImplementation(async (key: string) => storage.get(key) ?? null);
   }
 });
+
+it('treats a timed-out Worker archive as unconfirmed and rechecks the team', async () => {
+  const { Alert } = await import('react-native');
+  const { useSessionOrcaCollab } = await import('@/session/useSessionOrcaCollab');
+  let collab: ReturnType<typeof useSessionOrcaCollab> | null = null;
+  const listWorkers = vi.fn(async () => []);
+  const maker = {
+    ...fakeMaker(),
+    orca: {
+      listWorkers,
+      getCollaborationSettings: vi.fn(async () => ({})),
+      getTeamByWorkerSession: vi.fn(async () => null),
+      archiveWorker: vi.fn(async () => { throw new Error('[INVOKE_TIMEOUT] timed out'); }),
+    },
+  } as unknown as MobileMakerTransport;
+  function Host() {
+    collab = useSessionOrcaCollab({
+      maker, deviceId: 'dev-1', sessionId: 'lead-1', prefsScope: 'user-1', enabled: true,
+      session: { id: 'lead-1', orcaRole: 'lead', workspaceKind: 'project', workingDir: '/repo', agentKind: 'codex' } as never,
+      sheetView: null, sheetOpen: false, setSheetView: () => undefined, setSheetOpen: () => undefined, openSession: () => undefined,
+    });
+    return null;
+  }
+  await act(async () => root.render(<Host />));
+  const loads = listWorkers.mock.calls.length;
+  const worker = { workerId: 'w-1', sessionId: 's-1', role: 'developer', label: null, status: 'idle' as const, focused: false, agentKind: 'codex' as const, model: null, effort: null, title: null };
+  act(() => collab!.pressWorker({ ...worker, focused: true }));
+  act(() => vi.mocked(Alert.alert).mock.calls.at(-1)![2]!.find((button) => button.style === 'destructive')!.onPress?.());
+  const confirm = vi.mocked(Alert.alert).mock.calls.at(-1)![2]!.find((button) => button.style === 'destructive')!;
+  await act(async () => { confirm.onPress?.(); await flush(); });
+  expect(collab!.error).toMatch(/timed out|超时/);
+  expect(listWorkers.mock.calls.length).toBeGreaterThan(loads);
+});

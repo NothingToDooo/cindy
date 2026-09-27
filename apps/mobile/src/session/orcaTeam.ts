@@ -122,6 +122,7 @@ const ORCA_ERROR_CODES = [
   'WORKER_CREATION_IN_PROGRESS',
   'WORKER_NOT_FOUND',
   'ORCA_CREATE_UNCONFIRMED',
+  'ORCA_ACTION_UNCONFIRMED',
 ] as const;
 
 export function isOrcaUnsupportedError(error: unknown): boolean {
@@ -130,6 +131,11 @@ export function isOrcaUnsupportedError(error: unknown): boolean {
 
 export function isOrcaDuplicateLabelError(error: unknown): boolean {
   return formatRemoteError(error).includes('DUPLICATE_LABEL');
+}
+
+/** 超时不是权威失败:主机可能仍在执行,结果以回查到的状态为准。 */
+export function isOrcaAmbiguousTimeout(error: unknown): boolean {
+  return isAmbiguousTimeout(error);
 }
 
 function isAmbiguousTimeout(error: unknown): boolean {

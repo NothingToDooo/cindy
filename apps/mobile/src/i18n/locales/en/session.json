@@ -619,7 +619,8 @@
       "PRECONDITION_FAILED": "Collaboration mode is off, or this task doesn't support collaboration.",
       "WORKER_CREATION_IN_PROGRESS": "A Worker with the same name is being created. Try again shortly.",
       "WORKER_NOT_FOUND": "This Worker no longer exists. The list was refreshed.",
-      "ORCA_CREATE_UNCONFIRMED": "Creating the Worker timed out and couldn't be confirmed. Check the Worker list first, and retry only if no new Worker appears."
+      "ORCA_CREATE_UNCONFIRMED": "Creating the Worker timed out and couldn't be confirmed. Check the Worker list first, and retry only if no new Worker appears.",
+      "ORCA_ACTION_UNCONFIRMED": "The request timed out, so the result isn't confirmed yet. The list has been refreshed; go by what it shows now."
     }
   }
 }

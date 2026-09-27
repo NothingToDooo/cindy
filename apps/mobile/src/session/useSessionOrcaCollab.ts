@@ -17,6 +17,7 @@ import {
   convergeOrcaWorkerModel,
   createOrcaWorker,
   describeOrcaError,
+  isOrcaAmbiguousTimeout,
   enableOrcaTeam,
   isOrcaCollabEligible,
   orcaAgentKindForSession,
@@ -534,7 +535,11 @@ export function useSessionOrcaCollab(params: {
       void refreshTeam();
       return true;
     } catch (err) {
-      setError(describeOrcaError(err, fallbackKey));
+      // 超时不当作失败:主机可能仍在执行(结束协同会逐个关闭 Worker)。只读回查团队,提示以列表为准。
+      setError(describeOrcaError(
+        isOrcaAmbiguousTimeout(err) ? new Error('[ORCA_ACTION_UNCONFIRMED] timed out') : err,
+        fallbackKey,
+      ));
       void refreshTeam();
       return false;
     } finally {
