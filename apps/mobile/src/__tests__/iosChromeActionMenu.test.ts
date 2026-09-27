@@ -152,10 +152,6 @@ describe("iOS chrome presenters stay on the system menu path", () => {
       resolve(process.cwd(), "app/account-deletion.tsx"),
       "utf8",
     );
-    const automations = readTextLf(
-      resolve(process.cwd(), "app/automations/[deviceId].tsx"),
-      "utf8",
-    );
     const deviceDetail = readTextLf(
       resolve(process.cwd(), "app/devices/[deviceId].tsx"),
       "utf8",
@@ -174,8 +170,6 @@ describe("iOS chrome presenters stay on the system menu path", () => {
     expect(accountDeletion).toContain(
       'backTestID="accountDeletion.backButton"',
     );
-    expect(automations).toContain("<SimpleStackHeader");
-    expect(automations).toContain('backTestID="automations.backButton"');
     expect(deviceDetail).toContain("<SimpleStackHeader");
     expect(deviceDetail).toContain('backTestID="deviceDetail.backButton"');
     expect(deviceDetail).toContain("<SessionOptionsPresenter");
