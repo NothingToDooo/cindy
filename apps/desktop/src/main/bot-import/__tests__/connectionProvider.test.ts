@@ -77,11 +77,11 @@ it('preserves catalog enums and normal results with short locale variables, and 
 
 it('redacts resolved catalog credentials without changing schema syntax, tool dispatch or connection configuration', async () => {
   const env = { TOKEN: 'fixture-global-token', TYPE: 'object' };
-  const connection = { name: 'fixture-server', url: 'https://fixture-user:fixture-password@example.invalid/mcp?key=fixture-url-key',
+  const connection = { name: 'fixture-server', url: 'https://fixture-user:fixture-password@example.invalid/mcp/fixture-path%2Ftoken?key=fixture-url-key',
     env: { TOKEN: 'fixture-local-token' }, headers: { Authorization: 'Bearer fixture-header-token', 'X-Api-Key': 'fixture-api-key' } };
-  const secrets = [env.TOKEN, connection.env.TOKEN, connection.headers.Authorization, 'fixture-header-token', connection.headers['X-Api-Key'], connection.url, 'fixture-user', 'fixture-password', 'fixture-url-key'];
+  const secrets = [env.TOKEN, connection.env.TOKEN, connection.headers.Authorization, 'fixture-header-token', connection.headers['X-Api-Key'], connection.url, 'fixture-user', 'fixture-password', 'fixture-url-key', 'fixture-path%2Ftoken', 'fixture-path/token'];
   const echo = secrets.join(' ');
-  const secretKey = `argument_${connection.env.TOKEN}`;
+  const secretKey = 'argument_fixture-path/token';
   const tool: Tool = { name: `read_${connection.env.TOKEN}`, title: echo, description: echo,
     inputSchema: { type: 'object', properties: { query: { type: 'string', description: echo, default: echo }, count: { type: 'integer', minimum: 1 },
       nested: { type: 'array', items: { type: 'object', properties: { [secretKey]: { type: 'string' } }, required: [secretKey] } } }, required: ['query'], additionalProperties: false },

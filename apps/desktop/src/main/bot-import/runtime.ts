@@ -6,12 +6,27 @@ import { botEnvironmentSecretIo } from '../secrets/providerSecretStore.js';
 import { createCompanionEnvironmentStore } from './environment.js';
 import { fingerprint } from './files.js';
 import { CompanionImportError } from './types.js';
+import { closeInvalidImportedConnections } from './connections.js';
+
+// Bot IDs are not reused. Retain a process-local deletion fence so a delayed DB
+// read or saved runtime scope cannot reopen a deleted companion's connection.
+const deletedCompanions = new Set<string>();
+const companionKey = (root: string, botId: string) => fingerprint([root, botId]);
 
 export const companionEnvironmentStore = createCompanionEnvironmentStore({
   read: key => botEnvironmentSecretIo.read(key),
   write: (key, value) => botEnvironmentSecretIo.write(key, value),
   remove: key => botEnvironmentSecretIo.remove(key),
 });
+
+/** Called only after profile deletion commits; failed deletions retain access. */
+export async function finishCompanionEnvironmentRemoval(root: string, botId: string, assertOwner: () => void): Promise<void> {
+  assertOwner();
+  deletedCompanions.add(companionKey(root, botId));
+  await closeInvalidImportedConnections();
+  assertOwner();
+  await companionEnvironmentStore.finishRemoval(root, botId, assertOwner);
+}
 
 export async function recoverCompanionEnvironmentRemovals(): Promise<void> {
   const owner = activeOwnerScopeKey();
@@ -31,13 +46,17 @@ export async function recoverCompanionEnvironmentRemovals(): Promise<void> {
 export async function readCompanionSessionEnvironment(sessionId: string) {
   const owner = activeOwnerScopeKey();
   const userData = ownerScopedUserDataPath();
+  let botId: string | undefined;
   const assertOwner = () => {
     if (isAppSessionBoundaryPending() || activeOwnerScopeKey() !== owner)
       throw new CompanionImportError('OWNER_CHANGED');
+    if (botId && deletedCompanions.has(companionKey(userData, botId)))
+      throw new CompanionImportError('COMPANION_DELETED');
   };
   assertOwner();
   const [link] = await getDbClient().drizzle.select({ botId: botSessionLinks.botId })
     .from(botSessionLinks).innerJoin(botProfiles, eq(botProfiles.id, botSessionLinks.botId)).innerJoin(sessions, eq(sessions.id, botSessionLinks.sessionId)).where(and(eq(botSessionLinks.sessionId, sessionId), isNull(botSessionLinks.archivedAt), eq(botProfiles.status, 'active'), eq(sessions.status, 'active'), ne(botSessionLinks.role, 'history'))).limit(1);
+  botId = link?.botId;
   assertOwner();
   if (!link) return undefined;
   const environment = await companionEnvironmentStore.read(userData, link.botId, assertOwner);

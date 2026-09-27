@@ -38,6 +38,21 @@ it('counts configuration includes and memory against the same source budget', as
 });
 
 describe('installed agent imports', () => {
+  it.each(['hermes', 'openclaw'] as const)('retains selected %s source OAuth privately without turning it into runtime API credentials', async kind => {
+    const profile = { provider: 'anthropic', type: 'oauth', access: 'fixture-source-oauth-access', refresh: 'fixture-source-oauth-refresh' };
+    await write(`.${kind}/${kind === 'hermes' ? 'config.yaml' : 'openclaw.json'}`, '{}');
+    await write(kind === 'hermes' ? '.hermes/auth.json' : '.openclaw/agents/main/agent/auth-profiles.json', JSON.stringify(kind === 'hermes' ? { providers: { anthropic: profile } } : { profiles: { 'anthropic:source': profile } }));
+    const reader = deps(); const [source] = await discoverImportSources(reader);
+    const snapshot = await inspectImportSource(source!, reader);
+    const credential = snapshot.items.find(item => item.credential?.format === 'native-auth')!;
+    expect(credential.credential?.value).toMatchObject({ value: profile });
+    expect(credential.view.selected).toBe(true);
+    expect(credential.view.issues).toContain('NATIVE_AUTH_REFRESH_REQUIRED');
+    expect(selectedImportEnvironment([credential])).toEqual({});
+    for (const secret of [profile.access, profile.refresh]) expect(JSON.stringify(snapshot.items.map(item => item.view))).not.toContain(secret);
+    const selection = { requestId: 'fixture-oauth-request', previewId: 'preview', name: 'Ada', takeover: false, entryIds: [] };
+    expect(validateImportSelection(selection, snapshot).some(item => item.credential)).toBe(false);
+  });
   it('keeps secret references unexpanded until the final env and connection selection', async () => {
     await write('.hermes/config.yaml', 'name: Ada\nmcp_servers:\n  data:\n    url: https://example.invalid/mcp\n    headers:\n      Authorization: Bearer ${DATA_TOKEN}\n');
     await write('.hermes/.env', 'DATA_TOKEN=fake-selected-secret\nTELEGRAM_BOT_TOKEN=12345:fake-telegram-token');

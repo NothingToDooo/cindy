@@ -92,6 +92,10 @@ theme tokens. No new native Mobile dependencies or fingerprint inputs are added.
   and cancellation still terminate discovery. Cached connections retain their
   owner check during idle time; an account change closes their credential-bearing
   subprocess/transport and removes the cache entry.
+  After companion deletion commits, its runtime scopes are invalidated and all
+  of its transports (idle, initializing and parallel) are closed before vault
+  cleanup. A delayed scope cannot reopen them; another companion remains usable.
+  A failed database deletion retains the profile's connections and credentials.
   Sequential calls reuse the cached connection. Overlapping calls use independent
   transports, including during initialization; cancellation or failure closes only
   that caller's transport. Temporary parallel connections close after completion.
@@ -99,7 +103,8 @@ theme tokens. No new native Mobile dependencies or fingerprint inputs are added.
   a plan selecting an absent tool still fails verification, and owner loss propagates.
   Public tool catalogs and takeover planning redact metadata/schema keys and string values
   against imported variables, connection-local env, resolved headers (including
-  authorization payloads), and credential-bearing URL components. The same values
+  authorization payloads), and credential-bearing URL components, including
+  encoded/decoded path segments. The same values
   are masked in tool responses. JSON Schema type syntax remains intact; names
   containing credentials use public aliases and resolve to original names only
   inside the host. The connection configuration itself is not modified.
@@ -194,6 +199,12 @@ The optional public credential-alternative IDs are additive: older clients may
 ignore them, but the host still rejects a conflicting selection before writing.
 
 An imported definition is not automatically equivalent to every source runtime.
+Selected source OAuth profiles remain private encrypted migration data under this
+import's explicit retain-selected-data requirement; they are not promoted to API
+key variables or used to implement Cindy's subscription login/refresh. Import
+does not read the Claude CLI credential store or change Cindy's normal
+subscription authentication path. Preserving a source profile does not mean its
+OAuth refresh is supported or its subscription can be used by another harness.
 The preview/result explicitly retains and identifies configurations requiring
 an adapter: native subscription OAuth refresh, source-specific tool policies,
 per-job model/context/workspace overrides, staggered schedules, and delivery

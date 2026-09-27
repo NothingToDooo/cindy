@@ -162,18 +162,19 @@ it.each(['hermes', 'openclaw'] as const)('allows a %s reminder with a verified T
 it('finds a second-page read tool, redacts its catalog before planning and forwards its original identity privately', async () => {
   const token = 'fixture-connection-token';
   const header = 'fixture-header-token';
-  const mcp = [{ name: `source_${token}`, url: 'https://example.invalid/mcp', env: { PRIVATE: token }, headers: { Authorization: `Bearer ${header}` } }];
+  const mcp = [{ name: `source_${token}`, url: 'https://example.invalid/mcp/fixture%2Fpath-token', env: { PRIVATE: token }, headers: { Authorization: `Bearer ${header}` } }];
   vi.mocked(companionEnvironmentStore.read).mockResolvedValue({ version: 1, env: {}, mcp, credentials: [] });
   const toolName = `read_${token}`;
   const callTool = vi.fn(async () => ({ structuredContent: { rows: [{ count: 7 }] } }));
   const listTools = vi.fn(async ({ cursor }: { cursor?: string }) => cursor
-    ? { tools: [{ name: toolName, description: `${token} ${header}`, inputSchema: { type: 'object', properties: { [token]: { type: 'string', default: header } }, required: [token] }, annotations: { readOnlyHint: true } }] }
+    ? { tools: [{ name: toolName, description: `${token} ${header} fixture/path-token fixture%2Fpath-token`, inputSchema: { type: 'object', properties: { [token]: { type: 'string', default: header } }, required: [token] }, annotations: { readOnlyHint: true } }] }
     : { tools: [{ name: 'write_data', inputSchema: { type: 'object' } }], nextCursor: 'page-2' });
   const imported = vi.spyOn(connectionModule, 'withImportedConnection').mockImplementation(async (_server, _env, _assert, run) => run({
     listTools, callTool,
   } as never));
   const oneShot = vi.fn(async (_agent, prompt: string) => {
     expect(prompt).not.toContain(token); expect(prompt).not.toContain(header);
+    expect(prompt).not.toContain('fixture/path-token'); expect(prompt).not.toContain('fixture%2Fpath-token');
     const context = JSON.parse(prompt.slice(prompt.lastIndexOf('\n') + 1));
     const connection = context.connections[0];
     const argument = Object.keys(connection.tools[0].inputSchema.properties)[0]!;
@@ -190,6 +191,8 @@ it('finds a second-page read tool, redacts its catalog before planning and forwa
     expect(confirmProbe).toHaveBeenCalledOnce();
     expect(JSON.stringify(confirmProbe.mock.calls)).not.toContain(token);
     expect(JSON.stringify(confirmProbe.mock.calls)).not.toContain(header);
+    expect(JSON.stringify(confirmProbe.mock.calls)).not.toContain('fixture/path-token');
+    expect(JSON.stringify(confirmProbe.mock.calls)).not.toContain('fixture%2Fpath-token');
     expect(confirmProbe.mock.invocationCallOrder[0]).toBeLessThan(callTool.mock.invocationCallOrder[0]!);
     // A server's readOnlyHint cannot override denial of this exact planned call.
     confirmProbe.mockResolvedValueOnce({ kind: 'permission', behavior: 'deny' } as never);

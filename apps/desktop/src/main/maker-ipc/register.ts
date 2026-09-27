@@ -1,4 +1,4 @@
-import { companionEnvironmentStore } from '../bot-import/runtime.js';
+import { companionEnvironmentStore, finishCompanionEnvironmentRemoval } from '../bot-import/runtime.js';
 import { setImportProbeConfirmation } from '../bot-import/probeAuthorization.js';
 import { requestHostInteraction } from './interactionRouter.js';
 import { cancelCompanionImportsForDeletion } from '../bot-import/host.js';
@@ -9953,7 +9953,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       assertOwner();
       await companionEnvironmentStore.stageRemoval(ownerScopedUserDataPath(), botId, assertOwner);
     },
-    onDeleted: (botId, assertOwner) => companionEnvironmentStore.finishRemoval(ownerScopedUserDataPath(), botId, assertOwner),
+    onDeleted: (botId, assertOwner) => finishCompanionEnvironmentRemoval(ownerScopedUserDataPath(), botId, assertOwner),
   });
   const delegationForRestore = botDelegationServiceHolder;
   void restoreBotRuntimeForCurrentOwner();

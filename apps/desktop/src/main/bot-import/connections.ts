@@ -11,6 +11,15 @@ import { fingerprint } from './files.js';
 interface Connection { client: Client; close(): Promise<void>; idle?: ReturnType<typeof setTimeout> }
 interface CachedConnection { pending: Promise<Connection>; inUse: boolean }
 const connections = new Map<string, CachedConnection>();
+const liveConnections = new Set<{ assertOwner(): void; close(): Promise<void> }>();
+
+/** Deletion invalidates the companion fence before draining transports, including
+ * idle, initializing and uncached parallel clients. Other companions stay open. */
+export async function closeInvalidImportedConnections(): Promise<void> {
+  await Promise.all([...liveConnections].map(async connection => {
+    try { connection.assertOwner(); } catch { await connection.close(); }
+  }));
+}
 
 export const IMPORTED_TOOL_LIMIT = 1000;
 
@@ -46,9 +55,14 @@ async function connectImportedConnection(
   const close = () => {
     clearInterval(ownerTimer); clearTimeout(connected.idle);
     evict();
-    return closing ??= (async () => { await client.close().catch(() => {}); await transport.close().catch(() => {}); })();
+    return closing ??= (async () => {
+      try { await client.close().catch(() => {}); await transport.close().catch(() => {}); }
+      finally { liveConnections.delete(lifetime); }
+    })();
   };
   const connected: Connection = { client, close };
+  const lifetime = { assertOwner, close };
+  liveConnections.add(lifetime);
   // Own the fence for the entire connection lifetime, including cached idle time
   // and initialization. Per-call cancellation still settles the in-flight work.
   const ownerTimer = setInterval(() => {

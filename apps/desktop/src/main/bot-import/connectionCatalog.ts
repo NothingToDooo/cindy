@@ -14,7 +14,7 @@ export function connectionRedactions(server: ImportedMcpServer, environment: Rec
     }
   }
   if (server.url) {
-    values.push(...urlCredentialValues(server.url));
+    values.push(...urlCredentialValues(server.url, true));
   }
   return Object.fromEntries([...new Set(values)].filter(Boolean).map((value, index) => [`connection_credential_${index}`, value]));
 }
