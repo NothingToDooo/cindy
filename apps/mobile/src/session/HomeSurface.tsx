@@ -2841,6 +2841,7 @@ function HomeScreenContent({ active = true, onModeChange, width, onDismiss, newS
           <NativePullDownMenu
             actions={homeScopePullDownActions}
             onAction={handleHomeScopeAction}
+            style={styles.headerTitleSlot}
           >
             <Pressable
               accessibilityLabel={t('devices.list.a11y.selectScope')}
@@ -4573,6 +4574,11 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     alignItems: 'center',
     flexDirection: 'row',
     gap: spacing.xs,
+  },
+  // 菜单外层替标题占住顶栏中间的剩余宽度,长设备名在这里截断而不是挤开右侧按钮。
+  headerTitleSlot: {
+    flex: 1,
+    minWidth: 0,
   },
   headerTitleWrap: {
     alignItems: 'center',

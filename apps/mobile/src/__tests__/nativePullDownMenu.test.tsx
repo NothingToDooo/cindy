@@ -8,6 +8,7 @@ import { palettes } from "@/theme/tokens";
 const native = vi.hoisted(() => ({
   mode: "light" as "light" | "dark",
   actions: [] as MenuAction[],
+  style: undefined as unknown,
 }));
 vi.mock("react-native", () => ({
   Platform: { OS: "ios" },
@@ -22,8 +23,9 @@ vi.mock("@/platform/chrome/AnchoredPullDownMenu", () => ({
   AnchoredPullDownMenu: () => null,
 }));
 vi.mock("@react-native-menu/menu", () => ({
-  MenuView: ({ actions }: { actions: MenuAction[] }) => {
+  MenuView: ({ actions, style }: { actions: MenuAction[]; style?: unknown }) => {
     native.actions = actions;
+    native.style = style;
     return null;
   },
 }));
@@ -90,6 +92,34 @@ describe("disabled triggers", () => {
     );
     expect(html).toBe("<span>trigger</span>");
     expect(native.actions).toEqual([]);
+  });
+
+  it("honors a trigger that marks itself disabled", () => {
+    native.actions = [];
+    const html = renderToStaticMarkup(
+      createElement(NativePullDownMenu, {
+        actions: [{ id: "clear", title: "Clear" }],
+        children: createElement("button", { disabled: true }, "options"),
+        onAction: vi.fn(),
+      }),
+    );
+    expect(html).toBe('<button disabled="">options</button>');
+    expect(native.actions).toEqual([]);
+  });
+});
+
+describe("trigger layout", () => {
+  it("hands the caller's layout style to the menu wrapper", () => {
+    const style = { flex: 1, minWidth: 0 };
+    renderToStaticMarkup(
+      createElement(NativePullDownMenu, {
+        actions: [{ id: "all", title: "All" }],
+        children: createElement("span", null, "title"),
+        onAction: vi.fn(),
+        style,
+      }),
+    );
+    expect(native.style).toBe(style);
   });
 });
 

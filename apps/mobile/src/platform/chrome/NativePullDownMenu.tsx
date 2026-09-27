@@ -1,6 +1,12 @@
 import { MenuView, type MenuAction } from "@react-native-menu/menu";
-import { type ReactNode } from "react";
-import { NativeModules, Platform, UIManager } from "react-native";
+import { isValidElement, type ReactNode } from "react";
+import {
+  NativeModules,
+  Platform,
+  UIManager,
+  type StyleProp,
+  type ViewStyle,
+} from "react-native";
 import { AnchoredPullDownMenu } from "@/platform/chrome/AnchoredPullDownMenu";
 import { useTheme, type ThemeColors } from "@/theme";
 
@@ -75,6 +81,12 @@ function toMenuAction(
   };
 }
 
+/** 子控件自己标了 disabled(如忙碌中的按钮)同样视为禁用。 */
+function childDisabled(children: ReactNode): boolean {
+  if (!isValidElement(children)) return false;
+  return (children.props as { disabled?: unknown }).disabled === true;
+}
+
 /**
  * 收起时完全是调用方原来的按钮/标题;iOS 点开是系统 UIMenu 下拉,Android 是 Cindy 自绘
  * 的同交互菜单(AnchoredPullDownMenu)。iOS 尚未编进 MenuView 的包只渲染 children,
@@ -87,21 +99,32 @@ export function NativePullDownMenu({
   disabled = false,
   longPress = false,
   onAction,
+  style,
   testID,
 }: {
   /** Android 触发器整块作为一个读屏按钮;不传时取子元素的 accessibilityLabel。 */
   accessibilityLabel?: string;
   actions: readonly NativePullDownAction[];
   children: ReactNode;
-  /** 触发控件禁用时不挂菜单:菜单接管整块点按,不会看子控件的 disabled。 */
+  /** 触发控件禁用时不挂菜单:菜单接管整块点按。子元素自带 disabled 时也会读取。 */
   disabled?: boolean;
   longPress?: boolean;
   onAction(id: string): void;
+  /**
+   * 菜单外层在父布局里的样式。外层替代子元素成为父布局的直接子节点,子元素原本
+   * 依赖父布局的样式(如 flex: 1 占满标题区)要同时交给这里。
+   */
+  style?: StyleProp<ViewStyle>;
   testID?: string;
 }) {
   const { colors } = useTheme();
   // 没有可选项(如只有一块显示器)时同样不挂菜单:菜单接管整块点按,挂着就会点出空菜单。
-  if (disabled || actions.length === 0 || !usesNativePullDownMenu())
+  if (
+    disabled ||
+    childDisabled(children) ||
+    actions.length === 0 ||
+    !usesNativePullDownMenu()
+  )
     return children;
   if (Platform.OS === "android") {
     return (
@@ -110,6 +133,7 @@ export function NativePullDownMenu({
         actions={actions}
         longPress={longPress}
         onAction={onAction}
+        style={style}
         testID={testID}
       >
         {children}
@@ -123,6 +147,7 @@ export function NativePullDownMenu({
         if (nativeEvent.event) onAction(nativeEvent.event);
       }}
       shouldOpenOnLongPress={longPress}
+      style={style}
       testID={testID}
     >
       {children}

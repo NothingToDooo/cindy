@@ -23,6 +23,8 @@ import {
   StyleSheet,
   View,
   useWindowDimensions,
+  type StyleProp,
+  type ViewStyle,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Check, ChevronLeft, ChevronRight, Minus } from "lucide-react-native";
@@ -70,6 +72,7 @@ export function AnchoredPullDownMenu({
   children,
   longPress = false,
   onAction,
+  style,
   testID,
 }: {
   accessibilityLabel?: string;
@@ -77,6 +80,8 @@ export function AnchoredPullDownMenu({
   children: ReactNode;
   longPress?: boolean;
   onAction(id: string): void;
+  /** 触发器在父布局里的样式(如 flex: 1);外层替子元素占据父布局里的位置。 */
+  style?: StyleProp<ViewStyle>;
   testID?: string;
 }) {
   const styles = useThemedStyles(makeStyles);
@@ -107,13 +112,14 @@ export function AnchoredPullDownMenu({
         collapsable={false}
         onLongPress={longPress ? show : undefined}
         onPress={longPress ? undefined : show}
-        style={({ pressed }) => (pressed ? styles.triggerPressed : null)}
+        style={({ pressed }) => [style, pressed && styles.triggerPressed]}
         testID={testID}
       >
         {/* 触发器外观仍是调用方的按钮;它不再单独响应触摸或读屏,整块由外层 Pressable 接管。 */}
         <View
           importantForAccessibility="no-hide-descendants"
           pointerEvents="none"
+          style={style ? styles.triggerFill : undefined}
         >
           {children}
         </View>
@@ -390,6 +396,9 @@ function MenuRow({
 
 const makeStyles = (colors: ThemeColors) =>
   StyleSheet.create({
+    triggerFill: {
+      flexGrow: 1,
+    },
     triggerPressed: {
       opacity: 0.72,
     },
