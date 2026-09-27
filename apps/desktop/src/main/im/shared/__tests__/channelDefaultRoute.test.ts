@@ -45,6 +45,9 @@ describe('im default route record', () => {
   it('round-trips and rejects malformed records', () => {
     const json = buildImDefaultRouteRecord('fp', OLD, { route: NEW, fp: 'fp-new' });
     expect(parseImDefaultRouteRecord(json)).toEqual({ v: 1, fp: 'fp', route: OLD, pendingRoute: NEW, pendingFp: 'fp-new' });
+    expect(
+      parseImDefaultRouteRecord(buildImDefaultRouteRecord('fp', OLD, { route: NEW, fp: 'fp-new', rev: 7 })),
+    ).toEqual({ v: 1, fp: 'fp', route: OLD, pendingRoute: NEW, pendingFp: 'fp-new', pendingRev: 7 });
     expect(parseImDefaultRouteRecord(buildImDefaultRouteRecord('fp', OLD))).toEqual({ v: 1, fp: 'fp', route: OLD });
     expect(parseImDefaultRouteRecord(null)).toBeNull();
     expect(parseImDefaultRouteRecord('not json')).toBeNull();
@@ -87,8 +90,21 @@ describe('decideImDefaultRoute', () => {
     ).toEqual({ kind: 'manual' });
   });
 
-  it('only adopts the record when the task already runs the new default', () => {
-    expect(decide({ record: record(), current: NEW, target: NEW })).toEqual({ kind: 'adopt' });
+  it('adopts the record when the task still runs the recorded route', () => {
+    expect(decide({ record: record(), current: OLD, target: OLD })).toEqual({ kind: 'adopt' });
+  });
+
+  it('adopts the record when its own pending target already landed on the task', () => {
+    // 发送路径替本功能应用了意图、记录还没跟上: 仍是跟随中的任务, 只补指纹。
+    expect(
+      decide({ record: record({ pendingRoute: NEW, pendingFp: 'fp-older' }), current: NEW, target: NEW }),
+    ).toEqual({ kind: 'adopt' });
+  });
+
+  it('does not adopt a manual pick that happens to equal the new default', () => {
+    // 用户单独改成 NEW、默认随后也改到 NEW: 不能洗成跟随, 否则下次默认变化会盖掉用户的选择
+    // (chatgpt-codex-connector P2, PR #5155)。
+    expect(decide({ record: record(), current: NEW, target: NEW })).toEqual({ kind: 'manual' });
   });
 
   it('does not re-register its own pending switch to the same target', () => {
@@ -98,6 +114,33 @@ describe('decideImDefaultRoute', () => {
         current: OLD,
         target: NEW,
         pendingIntent: NEW,
+      }),
+    ).toEqual({ kind: 'staged' });
+  });
+
+  it('treats a user re-pick of the same route as a manual choice', () => {
+    // 自动切换未生效时用户又明确挑了同一模型/来源: 意图被顶掉但值一模一样,
+    // 只靠路由值会误认成自己的意图(greptile P1, PR #5155)。注册修订号每次
+    // set/clear 都推进, 对不上就按用户选择对待, 并清掉过时的待生效声称。
+    expect(
+      decide({
+        record: record({ pendingRoute: NEW, pendingFp: 'fp-new', pendingRev: 3 }),
+        current: OLD,
+        target: NEW,
+        pendingIntent: NEW,
+        pendingRev: 4,
+      }),
+    ).toEqual({ kind: 'manual', clearStalePending: true });
+  });
+
+  it('recognizes its own staged switch by registration revision', () => {
+    expect(
+      decide({
+        record: record({ pendingRoute: NEW, pendingFp: 'fp-new', pendingRev: 3 }),
+        current: OLD,
+        target: NEW,
+        pendingIntent: NEW,
+        pendingRev: 3,
       }),
     ).toEqual({ kind: 'staged' });
   });

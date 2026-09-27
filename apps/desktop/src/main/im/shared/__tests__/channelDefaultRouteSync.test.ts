@@ -13,7 +13,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   fingerprint: vi.fn(() => 'fp-new'),
   resolveDefaults: vi.fn(),
-  listProviders: vi.fn(async () => [] as unknown[]),
+  rawDefault: vi.fn(),
+  listProviders: vi.fn(async (): Promise<unknown[] | null> => []),
   applyRoute: vi.fn(),
   readPendingRoute: vi.fn(() => undefined as unknown),
   cancelPending: vi.fn(),
@@ -45,6 +46,7 @@ vi.mock('@cindy/model-providers', async (importOriginal) => ({
 vi.mock('../../defaultSessionSettings', () => ({
   getImDefaultEffortFor: vi.fn(() => 'high'),
   readImDefaultSettingsFingerprint: mocks.fingerprint,
+  readImRawDefaultRoute: mocks.rawDefault,
   resolveImSessionDefaults: mocks.resolveDefaults,
 }));
 vi.mock('../../../maker-ipc/register', () => ({
@@ -107,6 +109,7 @@ async function insertTask(
     remoteHostId?: string | null;
     marker?: boolean;
     status?: 'active' | 'archived';
+    fastMode?: boolean;
   } = {},
 ): Promise<void> {
   const source = opts.source ?? 'feishu';
@@ -119,6 +122,7 @@ async function insertTask(
     model: route.model,
     providerId: route.providerId,
     effort: route.effort,
+    fastMode: opts.fastMode === true,
     permissionMode: 'auto',
     workingDir: '/tmp/im',
     source,
@@ -159,6 +163,7 @@ beforeEach(() => {
   raw.exec(createTableSql());
   db = drizzle(raw);
   mocks.fingerprint.mockReturnValue('fp-new');
+  mocks.rawDefault.mockReturnValue(OLD);
   mocks.readPendingRoute.mockReturnValue(undefined);
   mocks.resolveDefaults.mockResolvedValue({ ...NEW, permissionMode: 'auto', fastMode: false, fingerprint: 'fp-new' });
   mocks.applyRoute.mockImplementation(async (id: string, route: ImDefaultRoute) => {
@@ -198,11 +203,22 @@ describe('syncUnderLock', () => {
     expect(record).toEqual({ v: 1, fp: 'fp-old', route: OLD, pendingRoute: NEW, pendingFp: 'fp-new' });
   });
 
+  it('keeps the task\'s own Fast setting when following the new default', async () => {
+    // 渠道默认不存 Fast —— 跟随切换只换路由, 任务单独开过的 Fast 不能被清掉
+    // (chatgpt-codex-connector P2, PR #5155)。
+    await insertTask('t1', OLD, { fastMode: true });
+    await sync().syncUnderLock('t1');
+
+    expect(mocks.applyRoute).toHaveBeenCalledWith('t1', { ...NEW, fastMode: true }, 'claude-code');
+  });
+
   it('remembers the staged intent as registered, then does not re-register it', async () => {
     await insertTask('t1', OLD);
     const rerouted: ImDefaultRoute = { ...NEW, providerId: 'openai-copy' };
     mocks.applyRoute.mockResolvedValue('staged');
-    mocks.readPendingRoute.mockReturnValueOnce(undefined).mockReturnValue(rerouted);
+    mocks.readPendingRoute
+      .mockReturnValueOnce(undefined)
+      .mockReturnValue({ ...rerouted, rev: 5 });
     await sync().syncUnderLock('t1');
 
     expect(parseImDefaultRouteRecord((await rowOf('t1')).imDefaultRoute)).toEqual({
@@ -211,6 +227,7 @@ describe('syncUnderLock', () => {
       route: OLD,
       pendingRoute: rerouted,
       pendingFp: 'fp-new',
+      pendingRev: 5,
     });
     // 下一条消息: 不重新登记, 只尝试应用自己登记的意图(仍忙 → 继续等)。
     mocks.applyRoute.mockClear();
@@ -230,6 +247,20 @@ describe('syncUnderLock', () => {
       fp: 'fp-new',
       route: rerouted,
     });
+  });
+
+  it('clears its stale claim but leaves the intent alone when the user re-picked the same route', async () => {
+    // 自动切换未生效时用户又明确挑了同值: 注册修订号变了, 这是用户的选择
+    // (greptile P1, PR #5155) —— 不登记不应用, 只清掉自己的过时声称。
+    await insertTask('t1', OLD, {
+      record: buildImDefaultRouteRecord('fp-old', OLD, { route: NEW, fp: 'fp-new', rev: 3 }),
+    });
+    mocks.readPendingRoute.mockReturnValue({ ...NEW, rev: 4 });
+    await sync().syncUnderLock('t1');
+
+    expect(mocks.applyRoute).not.toHaveBeenCalled();
+    expect(mocks.cancelPending).not.toHaveBeenCalled();
+    expect((await rowOf('t1')).imDefaultRoute).toBe(buildImDefaultRouteRecord('fp-old', OLD));
   });
 
   it('withdraws its staged intent without blocking when applying it fails', async () => {
@@ -276,12 +307,21 @@ describe('syncUnderLock', () => {
     expect((await rowOf('t1')).imDefaultRoute).toBe(buildImDefaultRouteRecord('fp-old', OLD));
   });
 
-  it('only adopts the new fingerprint when the task already runs the new default', async () => {
-    await insertTask('t1', NEW);
+  it('adopts the new fingerprint only when the task still runs the recorded route', async () => {
+    await insertTask('t1', NEW, { record: buildImDefaultRouteRecord('fp-old', NEW) });
     await sync().syncUnderLock('t1');
 
     expect(mocks.applyRoute).not.toHaveBeenCalled();
     expect(parseImDefaultRouteRecord((await rowOf('t1')).imDefaultRoute)).toEqual({ v: 1, fp: 'fp-new', route: NEW });
+  });
+
+  it('does not re-adopt a manual pick that happens to equal the new default', async () => {
+    // 记录的路由是 OLD, 任务当前跑 NEW(用户单独挑的, 恰好与新默认一致): 不能洗成跟随。
+    await insertTask('t1', NEW);
+    await sync().syncUnderLock('t1');
+
+    expect(mocks.applyRoute).not.toHaveBeenCalled();
+    expect((await rowOf('t1')).imDefaultRoute).toBe(buildImDefaultRouteRecord('fp-old', OLD));
   });
 
   it('does nothing while the settings fingerprint is unchanged', async () => {
@@ -325,6 +365,7 @@ describe('previewSwitchTarget', () => {
 describe('backfillLegacyImDefaultRoutes', () => {
   it('records only legacy tasks of this channel that still run the old default', async () => {
     mocks.resolveDefaults.mockResolvedValue({ ...OLD, permissionMode: 'auto', fastMode: false, fingerprint: 'fp-old' });
+    mocks.fingerprint.mockReturnValue('fp-old');
     await insertTask('legacy-default', OLD, { record: null });
     await insertTask('legacy-pinned', { ...OLD, providerId: 'xd' }, { record: null });
     await insertTask('legacy-changed', { ...OLD, model: 'claude-sonnet-5' }, { record: null });
@@ -342,6 +383,68 @@ describe('backfillLegacyImDefaultRoutes', () => {
     expect((await rowOf('legacy-changed')).imDefaultRoute).toBeNull();
     expect((await rowOf('legacy-other-channel')).imDefaultRoute).toBeNull();
     expect((await rowOf('recorded')).imDefaultRoute).toBe(buildImDefaultRouteRecord('fp-old', OLD));
+  });
+
+  it('keeps an effort-only manual change out when the old default still resolves to its own route', async () => {
+    mocks.resolveDefaults.mockResolvedValue({ ...OLD, permissionMode: 'auto', fastMode: false, fingerprint: 'fp-old' });
+    mocks.fingerprint.mockReturnValue('fp-old');
+    await insertTask('legacy-effort-changed', { ...OLD, effort: 'low' }, { record: null });
+
+    await expect(backfillLegacyImDefaultRoutes('feishu', CONFIG)).resolves.toBe(0);
+    expect((await rowOf('legacy-effort-changed')).imDefaultRoute).toBeNull();
+  });
+
+  it('matches by the saved raw default when the old default fell back to another route', async () => {
+    // 旧默认的来源断开/模型下架后解析会回落到别的路由, 拿回落值匹配历史任务永远
+    // 匹配不到, 它们会永久失去跟随资格(chatgpt-codex-connector P2, PR #5155)。
+    mocks.fingerprint.mockReturnValue('fp-old');
+    mocks.rawDefault.mockReturnValue({ ...OLD, providerId: 'openai', effort: 'xhigh' });
+    mocks.resolveDefaults.mockResolvedValue({ ...NEW, permissionMode: 'auto', fastMode: false, fingerprint: 'fp-old' });
+    // 历史任务还停在旧默认的模型/来源上; effort 是当年按目录 reconcile 过的, 不必等于原始设置。
+    await insertTask('legacy-broken-default', { ...OLD, providerId: 'openai', effort: 'high' }, { record: null });
+    await insertTask('legacy-on-fallback', NEW, { record: null });
+    await insertTask('legacy-off-raw', { ...OLD, providerId: 'other' }, { record: null });
+
+    await expect(backfillLegacyImDefaultRoutes('feishu', CONFIG)).resolves.toBe(2);
+
+    expect(parseImDefaultRouteRecord((await rowOf('legacy-broken-default')).imDefaultRoute)).toEqual({
+      v: 1,
+      fp: 'fp-old',
+      route: { ...OLD, providerId: 'openai', effort: 'high' },
+    });
+    expect((await rowOf('legacy-on-fallback')).imDefaultRoute).not.toBeNull();
+    expect((await rowOf('legacy-off-raw')).imDefaultRoute).toBeNull();
+  });
+
+  it('matches by the saved raw default when the old default cannot be resolved at all', async () => {
+    // 旧默认坏到解析不出来(如全部模型被停用): 不能把保存也堵死, 按原始默认认领。
+    mocks.fingerprint.mockReturnValue('fp-old');
+    mocks.resolveDefaults.mockRejectedValue(new Error('im default session has no enabled chat model'));
+    await insertTask('legacy-default', OLD, { record: null });
+
+    await expect(backfillLegacyImDefaultRoutes('feishu', CONFIG)).resolves.toBe(1);
+    expect(parseImDefaultRouteRecord((await rowOf('legacy-default')).imDefaultRoute)).toEqual({
+      v: 1,
+      fp: 'fp-old',
+      route: OLD,
+    });
+  });
+
+  it('fails instead of reporting done when the provider catalog is unavailable', async () => {
+    // 返回 0 会被调用方当成「补完了」照常提交新默认, 还停在旧默认上的老任务之后只
+    // 能按新默认匹配, 永久失去跟随资格 —— 必须抛错让本次保存失败重试(PR #5155 P2)。
+    await insertTask('legacy-default', OLD, { record: null });
+    mocks.listProviders.mockResolvedValue(null);
+
+    await expect(backfillLegacyImDefaultRoutes('feishu', CONFIG)).rejects.toThrow(/provider catalog unavailable/);
+    expect((await rowOf('legacy-default')).imDefaultRoute).toBeNull();
+  });
+
+  it('does not need the catalog when no legacy task is left', async () => {
+    await insertTask('recorded', OLD);
+    mocks.listProviders.mockResolvedValue(null);
+
+    await expect(backfillLegacyImDefaultRoutes('feishu', CONFIG)).resolves.toBe(0);
   });
 });
 

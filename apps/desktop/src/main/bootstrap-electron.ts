@@ -4702,14 +4702,30 @@ const registerIpcHandlers = () => {
       const channel = parseImDefaultSettingsChannel(rawChannel);
       const parsedPatch = parseImDefaultSettingsPatch(patch);
       // 写新设置之前按旧默认给老任务补跟随记录(见 prepareImDefaultSettingsChange)。
-      await prepareImDefaultSettingsChange(channel);
+      // 回填失败必须挡住本次保存: 记录补不上就提交新默认的话, 还停在旧默认上的
+      // 老任务之后只能按新默认匹配, 永久失去跟随资格(PR #5155 review P2)。
+      try {
+        await prepareImDefaultSettingsChange(channel);
+      } catch (err) {
+        throwIpcError(
+          'INTERNAL',
+          `渠道默认未保存：旧任务的跟随记录补全失败，请重试（${err instanceof Error ? err.message : String(err)}）`,
+        );
+      }
       writeImDefaultSettingsPatch(parsedPatch, channel);
       return imDefaultSettingsWire(channel);
     },
   );
   ipcMain.handle(MAKER_IPC_INVOKE.IM_DEFAULT_SETTINGS_RESET, async (_e, rawChannel: unknown) => {
     const channel = parseImDefaultSettingsChannel(rawChannel);
-    await prepareImDefaultSettingsChange(channel);
+    try {
+      await prepareImDefaultSettingsChange(channel);
+    } catch (err) {
+      throwIpcError(
+        'INTERNAL',
+        `渠道默认未重置：旧任务的跟随记录补全失败，请重试（${err instanceof Error ? err.message : String(err)}）`,
+      );
+    }
     if (channel) {
       resetImDefaultSettingsChannel(channel);
     } else {

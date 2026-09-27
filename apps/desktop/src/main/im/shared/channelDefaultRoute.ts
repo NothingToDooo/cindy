@@ -29,6 +29,12 @@ export interface ImDefaultRouteRecord {
   pendingRoute?: ImDefaultRoute;
   /** 登记该意图时的设置指纹 —— 设置没再变就不重复登记。 */
   pendingFp?: string;
+  /**
+   * 登记该意图时 pending 注册表的修订号。用户重新挑选(哪怕选了同一模型/来源)
+   * 会推进修订号 —— 光比路由值分不出「自己的意图」和「用户挑了同值」,后者必须
+   * 按用户选择对待,不能被下一次默认变化覆盖。
+   */
+  pendingRev?: number;
 }
 
 const AGENT_KINDS: readonly AgentKind[] = ['claude-code', 'codex', 'pi'];
@@ -79,12 +85,14 @@ export function parseImDefaultRouteRecord(json: string | null | undefined): ImDe
   const pendingRoute = r.pendingRoute === undefined ? undefined : parseRoute(r.pendingRoute);
   if (pendingRoute === null) return null;
   const pendingFp = typeof r.pendingFp === 'string' ? r.pendingFp : undefined;
+  const pendingRev = typeof r.pendingRev === 'number' && Number.isFinite(r.pendingRev) ? r.pendingRev : undefined;
   return {
     v: 1,
     fp: r.fp,
     route,
     ...(pendingRoute ? { pendingRoute } : {}),
     ...(pendingRoute && pendingFp ? { pendingFp } : {}),
+    ...(pendingRoute && pendingRev !== undefined ? { pendingRev } : {}),
   };
 }
 
@@ -95,13 +103,19 @@ export function serializeImDefaultRouteRecord(record: ImDefaultRouteRecord): str
 export function buildImDefaultRouteRecord(
   fp: string,
   route: ImDefaultRoute,
-  pending?: { route: ImDefaultRoute; fp: string },
+  pending?: { route: ImDefaultRoute; fp: string; rev?: number },
 ): string {
   return serializeImDefaultRouteRecord({
     v: 1,
     fp,
     route,
-    ...(pending ? { pendingRoute: pending.route, pendingFp: pending.fp } : {}),
+    ...(pending
+      ? {
+          pendingRoute: pending.route,
+          pendingFp: pending.fp,
+          ...(pending.rev !== undefined ? { pendingRev: pending.rev } : {}),
+        }
+      : {}),
   });
 }
 
@@ -137,8 +151,12 @@ export type ImDefaultRouteDecision =
   | { kind: 'staged' }
   /** 仍跟随默认, 需要切到新默认。 */
   | { kind: 'switch' }
-  /** 用户单独改过(已生效或已挑选待生效): 不动。 */
-  | { kind: 'manual' };
+  /**
+   * 用户单独改过(已生效或已挑选待生效): 不动。
+   * `clearStalePending` = 记录里挂着的待生效意图已被用户的选择顶掉,
+   * 顺手清掉这条过时声称, 免得用户的选择落地后被误认成「跟随中的切换落地」。
+   */
+  | { kind: 'manual'; clearStalePending?: true };
 
 /**
  * `current` 取 DB 持久路由: 用户的选择要么已落库, 要么是待应用的切换意图;
@@ -152,15 +170,32 @@ export function decideImDefaultRoute(input: {
   targetFp: string;
   /** 会话上待应用的切换意图目标(无则 undefined)。 */
   pendingIntent?: ImDefaultRoute;
+  /** 当前待应用意图在 pending 注册表的修订号(读回时带出)。 */
+  pendingRev?: number;
   normalizeProvider?: (route: ImDefaultRoute) => string | null;
 }): ImDefaultRouteDecision {
   const same = (a: ImDefaultRoute, b: ImDefaultRoute) =>
     sameImDefaultRoute(a, b, input.normalizeProvider);
   const { record, current, target, pendingIntent } = input;
-  if (same(current, target) && !pendingIntent) return { kind: 'adopt' };
+  // 「仍在跟随」的证据: 当前路由就是记录的路由, 或落到了本功能登记的待生效目标上
+  // (意图被发送路径应用了、记录还没来得及更新)。**不能**用「恰好等于新默认」当证据 ——
+  // 用户单独改成 B、默认随后也改成 B 时, 按值相等认领会把手动覆盖洗成跟随
+  // (chatgpt-codex-connector P2, PR #5155)。
+  const followingNow =
+    same(current, record.route) || (!!record.pendingRoute && same(current, record.pendingRoute));
   if (pendingIntent) {
-    // 意图不是本功能登记的 = 用户刚挑的(桌面 / 手机选了模型还没发送)。
-    if (!record.pendingRoute || !same(pendingIntent, record.pendingRoute)) return { kind: 'manual' };
+    // 意图是不是本功能登记的那一次: 路由值相等还不够 —— 自动切换未生效时用户又
+    // 明确挑了同样的模型/来源, 会顶掉登记、值却一模一样(greptile P1, PR #5155)。
+    // 修订号每次 set/clear 都推进, 用户重新挑过就对不上; 对不上一律按用户选择。
+    const ours =
+      !!record.pendingRoute &&
+      same(pendingIntent, record.pendingRoute) &&
+      // 注册表有修订号就必须逐号对上(用户重挑过哪怕同值也算用户的);
+      // 读不到修订号(测试最小 harness)才回落按值比较。
+      (input.pendingRev === undefined || record.pendingRev === input.pendingRev);
+    if (!ours) {
+      return record.pendingRoute ? { kind: 'manual', clearStalePending: true } : { kind: 'manual' };
+    }
     // 自己登记的: 设置没再变就等发送路径应用(按指纹判断 —— 登记时系统可能改道了
     // 来源, 意图与 target 不必逐字相等); 设置又改了就改登记到最新目标;
     // 设置改回了任务当前路由 → 撤掉过时意图。
@@ -169,7 +204,7 @@ export function decideImDefaultRoute(input: {
     }
     return same(current, target) ? { kind: 'adopt', cancelPendingIntent: true } : { kind: 'switch' };
   }
-  if (same(current, record.route)) return { kind: 'switch' };
-  if (record.pendingRoute && same(current, record.pendingRoute)) return { kind: 'switch' };
+  if (same(current, target)) return followingNow ? { kind: 'adopt' } : { kind: 'manual' };
+  if (followingNow) return { kind: 'switch' };
   return { kind: 'manual' };
 }

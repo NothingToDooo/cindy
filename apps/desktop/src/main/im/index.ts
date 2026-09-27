@@ -631,7 +631,11 @@ configureImAccountScope({
 /**
  * 渠道默认即将被保存 / 恢复: 先给上线前建的、仍在用旧默认的任务补跟随记录,
  * 让它们在下一条消息时换到新默认。只处理指定渠道(各渠道设置相互独立, 全局
- * 设置只给官方 hook 用)。失败不挡保存。
+ * 设置只给官方 hook 用)。
+ *
+ * 补录失败**必须挡住本次保存**(PR #5155 review P2): 记录补不上就提交新默认的话,
+ * 还停在旧默认上的老任务之后只能按新默认匹配, 永久失去跟随资格。抛错让调用方
+ * 放弃本次保存, 用户重试即可; 不把失败当已完成。
  */
 export async function prepareImDefaultSettingsChange(
   channel: ImDefaultSettingsChannel | undefined,
@@ -642,10 +646,9 @@ export async function prepareImDefaultSettingsChange(
   try {
     await backfillLegacyImDefaultRoutes(channel, config);
   } catch (err) {
-    log.warn(
-      `default route backfill failed for ${channel} (non-fatal): ` +
-        (err instanceof Error ? err.message : String(err)),
-    );
+    const msg = err instanceof Error ? err.message : String(err);
+    log.warn(`default route backfill failed for ${channel} (blocking settings save): ${msg}`);
+    throw new Error(msg);
   }
 }
 

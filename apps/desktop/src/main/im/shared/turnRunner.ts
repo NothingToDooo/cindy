@@ -160,7 +160,7 @@ import {
 } from './sessionRepo';
 import type { ImCardBuilders } from './cardBuilders';
 import type { ImChannelAdapter } from './types';
-import type { ImDefaultRoute } from './channelDefaultRoute';
+import { sameImDefaultRoute, type ImDefaultRoute } from './channelDefaultRoute';
 import type { ImChannelDefaultRouteSync } from './channelDefaultRouteSync';
 import {
   changeSessionPermissionMode,
@@ -273,6 +273,13 @@ interface TurnState {
   /** Whether a callback-bound text response has already been reserved. */
   chunkedReplyBegun: boolean;
   queueMode: 'internal' | 'external';
+  /**
+   * 授权检查通过的「将要运行」路由(渠道默认跟随会切过去的那条; 未跟随则为 null)。
+   * 发送时刻实际路由不是它 = 跟随切换失败被吞、消息会按旧路由发送 —— 必须按实际
+   * 路由补一次授权检查, 否则旧供应商断开时消息进旧路由的发送流程运行时失败,
+   * 而不是给出缺授权提示(PR #5155 review P2)。
+   */
+  followAuthRoute: ImDefaultRoute | null;
   terminalPromise: Promise<ImTurnTerminal>;
   resolveTerminal: ((terminal: ImTurnTerminal) => void) | null;
 }
@@ -555,6 +562,18 @@ export interface ImTurnRunner {
     userId: string;
     scopeKey?: string;
   }): Promise<{ stopped: boolean; droppedQueued: number }>;
+}
+
+/** row 的路由快照 —— 跟随切换的实际落点比对用。 */
+function routeOfRow(
+  row: Pick<ImSessionRow, 'agentKind' | 'model' | 'providerId' | 'effort'>,
+): ImDefaultRoute {
+  return {
+    agentKind: row.agentKind,
+    model: row.model,
+    providerId: row.providerId,
+    effort: row.effort,
+  };
 }
 
 export interface ImTurnRunnerDeps {
@@ -903,6 +922,7 @@ export function createTurnRunner(
       terminalErrorCode: null,
       chunkedReplyBegun: false,
       queueMode: args.queueMode,
+      followAuthRoute: followTarget ?? null,
       terminalPromise,
       resolveTerminal,
     };
@@ -925,6 +945,24 @@ export function createTurnRunner(
       }
       const refreshed = await repo.peekSessionById(row.id);
       if (refreshed) {
+        // 跟随切换没生效(失败被吞、保持原路由)时这条消息会按旧路由发送, 而此前的
+        // 授权检查只验过新默认路由 —— 按实际路由补一次, 旧供应商断开时在这里给出
+        // 缺授权提示, 而不是进旧路由的发送流程运行时失败(PR #5155 review P2)。
+        if (!sameImDefaultRoute(routeOfRow(refreshed), followTarget)) {
+          const auth = await checkImRouteAuthDetailed(refreshed, undefined, authCheckDeps());
+          if (!auth.ok) {
+            const authStatus = { ...auth, agentKind: refreshed.agentKind, model: refreshed.model };
+            if (args.queueMode === 'internal') {
+              const text =
+                ui.agent.authMissing?.({ ...authStatus, attached: target.attached }) ??
+                ui.agent.apiKeyMissing;
+              const consumed = (await args.onEarlyReject?.('missing_auth', text)) ?? false;
+              if (!consumed) await replyMissingAuth(userId, authStatus, scopeKey, target.attached);
+            }
+            await discardHandedOverAck(userMessageId, args.ackReactionIdPromise);
+            return { kind: 'rejected', reason: 'missing_auth' };
+          }
+        }
         wireTarget = {
           ...target,
           row: {
@@ -1166,6 +1204,36 @@ export function createTurnRunner(
         await refreshSessionAfterPendingAgentSwitch(state, rowId, userId);
       } else {
         await refreshSessionAfterPendingAgentSwitch(state, rowId, userId);
+      }
+      // 发送时刻的实际路由兜底: 授权检查只验过「将要切到」的新默认路由, 跟随切换
+      // 失败被吞后这条消息会按旧路由发送 —— 按实际路由补一次授权检查, 旧供应商断开
+      // 时在这里给出缺授权提示, 而不是进发送流程运行时失败(PR #5155 review P2)。
+      // 冷路径在接线前已查过一次, 这里兜的是接线后切换才失败 / 热任务的切换失败。
+      const followAuthRoute = item.turn.followAuthRoute;
+      if (followAuthRoute) {
+        const landed = await repo.peekSessionById(rowId);
+        if (landed && !sameImDefaultRoute(routeOfRow(landed), followAuthRoute)) {
+          const auth = await checkImRouteAuthDetailed(landed, undefined, authCheckDeps());
+          if (!auth.ok) {
+            const authStatus = { ...auth, agentKind: landed.agentKind, model: landed.model };
+            if (item.turn.queueMode === 'internal') {
+              const text =
+                ui.agent.authMissing?.({ ...authStatus, attached: state.attached }) ??
+                ui.agent.apiKeyMissing;
+              const consumed = (await item.onEarlyReject?.('missing_auth', text)) ?? false;
+              if (!consumed) await replyMissingAuth(userId, authStatus, item.turn.scopeKey, state.attached);
+            }
+            // 文案已在上面按缺授权发过(外部队列由调用方消费), 这里只走收口。
+            await handleSendPreDispatchFailure(state, userId, {
+              turn: item.turn,
+              source: `${channel}-runner`,
+              reason: 'missing_auth',
+              context: buildSendContext(rowId),
+              onEarlyReject: async () => true,
+            });
+            return { kind: 'rejected', reason: 'missing_auth' };
+          }
+        }
       }
 
       // session-agent-switch:本路径直发 session.send(不经 makerSendTransaction),

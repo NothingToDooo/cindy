@@ -22,7 +22,11 @@ import {
   readPendingAgentSwitchRoute,
 } from '../../maker-ipc/register';
 import { withSendToSessionLock } from '../../maker-ipc/sendToSessionLock';
-import { readImDefaultSettingsFingerprint, resolveImSessionDefaults } from '../defaultSessionSettings';
+import {
+  readImDefaultSettingsFingerprint,
+  readImRawDefaultRoute,
+  resolveImSessionDefaults,
+} from '../defaultSessionSettings';
 import {
   buildImDefaultRouteRecord,
   decideImDefaultRoute,
@@ -66,6 +70,8 @@ interface SessionRouteRow {
   model: string | null;
   providerId: string | null;
   effort: string | null;
+  /** Fast 不属于路由; 只有跟随切换用得到(保留任务自己的开关), 回填选择不带它。 */
+  fastMode?: boolean | null;
   imDefaultRoute: string | null;
   feishuBotAppId: string | null;
   imBotContextId: string | null;
@@ -82,6 +88,7 @@ async function readSessionRouteRow(sessionId: string): Promise<SessionRouteRow |
       model: sessions.model,
       providerId: sessions.providerId,
       effort: sessions.effort,
+      fastMode: sessions.fastMode,
       imDefaultRoute: sessions.imDefaultRoute,
       feishuBotAppId: sessions.feishuBotAppId,
       imBotContextId: sessions.imBotContextId,
@@ -132,6 +139,11 @@ interface Evaluation {
   target: ImDefaultRoute;
   targetFingerprint: string;
   providers: ProviderView[];
+  /**
+   * 任务当前的 Fast 开关。渠道默认不存 Fast, 跟随切换只管 Agent/模型/来源/档位,
+   * 单独开过 Fast 的任务不能被顺手清掉(chatgpt-codex-connector P2, PR #5155)。
+   */
+  currentFastMode: boolean;
 }
 
 export function createImChannelDefaultRouteSync(deps: {
@@ -157,15 +169,32 @@ export function createImChannelDefaultRouteSync(deps: {
       effort: defaults.effort,
     };
     const current = currentRouteOf(row);
+    const pending = readPendingAgentSwitchRoute(sessionId);
     const decision = decideImDefaultRoute({
       record,
       current,
       target,
       targetFp: defaults.fingerprint,
-      pendingIntent: readPendingAgentSwitchRoute(sessionId),
+      pendingIntent: pending
+        ? {
+            agentKind: pending.agentKind,
+            model: pending.model,
+            providerId: pending.providerId,
+            effort: pending.effort ?? null,
+          }
+        : undefined,
+      pendingRev: pending?.rev,
       normalizeProvider: providerNormalizer(providers),
     });
-    return { decision, record, current, target, targetFingerprint: defaults.fingerprint, providers };
+    return {
+      decision,
+      record,
+      current,
+      target,
+      targetFingerprint: defaults.fingerprint,
+      providers,
+      currentFastMode: row.fastMode === true,
+    };
   }
 
   async function writeRecord(sessionId: string, json: string): Promise<void> {
@@ -185,13 +214,18 @@ export function createImChannelDefaultRouteSync(deps: {
     }
     // 先记下待生效目标(指纹保持旧值): 意图丢失(重启)或应用失败时, 下一条消息
     // 仍能认出这是「跟随中的任务」并重试, 而不是误判为用户改过。
-    const pendingFor = (route: ImDefaultRoute) => ({ route, fp: e.targetFingerprint });
+    const pendingFor = (route: ImDefaultRoute, rev?: number) => ({
+      route,
+      fp: e.targetFingerprint,
+      ...(rev !== undefined ? { rev } : {}),
+    });
     await writeRecord(sessionId, buildImDefaultRouteRecord(e.record.fp, e.record.route, pendingFor(e.target)));
     let outcome: 'applied' | 'staged';
     try {
       outcome = await applySessionRouteUnderSendLock(
         sessionId,
-        { ...e.target, fastMode: false },
+        // Fast 不属于渠道默认: 保留任务自己的开关, 不拿新任务的固定默认覆盖。
+        { ...e.target, fastMode: e.currentFastMode },
         e.current.agentKind,
       );
     } catch (err) {
@@ -199,10 +233,26 @@ export function createImChannelDefaultRouteSync(deps: {
       throw err;
     }
     if (outcome === 'staged') {
-      // 记登记后读回的意图 —— 系统登记时可能改道了来源; 下一条消息据此认出「自己的意图」。
+      // 记登记后读回的意图与它的注册修订号 —— 系统登记时可能改道了来源;
+      // 下一条消息据此认出「自己的意图」(用户重新挑过会换修订号, 不会误认)。
       const intent = readPendingAgentSwitchRoute(sessionId);
       if (intent) {
-        await writeRecord(sessionId, buildImDefaultRouteRecord(e.record.fp, e.record.route, pendingFor(intent)));
+        await writeRecord(
+          sessionId,
+          buildImDefaultRouteRecord(
+            e.record.fp,
+            e.record.route,
+            pendingFor(
+              {
+                agentKind: intent.agentKind,
+                model: intent.model,
+                providerId: intent.providerId,
+                effort: intent.effort ?? null,
+              },
+              intent.rev,
+            ),
+          ),
+        );
       }
       log.info(`default route switch staged session=...${sessionId.slice(-8)} (runtime busy)`);
       return;
@@ -271,6 +321,10 @@ export function createImChannelDefaultRouteSync(deps: {
           await applyStaged(sessionId, e);
           return;
         case 'manual':
+          // 用户的选择顶掉了本功能登记的待生效意图: 清掉过时声称, 但绝不动用户的意图。
+          if (e.decision.clearStalePending) {
+            await writeRecord(sessionId, buildImDefaultRouteRecord(e.record.fp, e.record.route));
+          }
           return;
       }
     } catch (err) {
@@ -297,23 +351,23 @@ export function createImChannelDefaultRouteSync(deps: {
 }
 
 /**
- * 本功能上线前建的任务没有记录。保存 / 恢复渠道默认之前, 把仍在用**旧默认**
- * (归一化后路由相等)的这类任务补上旧默认的记录, 让它们在下一条消息时跟随新默认。
- * 规则允许的「历史缺少状态」情形, 只做这一次值比较。返回补记的任务数。
+ * 本功能上线前建的任务没有记录。保存 / 恢复渠道默认之前, 把仍在用**旧默认**的这类
+ * 任务补上旧默认的记录, 让它们在下一条消息时跟随新默认。规则允许的「历史缺少状态」
+ * 情形, 只做值比较。返回补记的任务数。
+ *
+ * 旧默认的识别有两条路, 只靠解析结果会漏(chatgpt-codex-connector P2, PR #5155):
+ * 旧默认的来源断开 / 模型停用后, `resolveImSessionDefaults` 会把旧设置回落到别的
+ * 可用路由, 拿回落值去跟历史任务实际落点比永远匹配不到, 这些任务的 `im_default_route`
+ * 会一直空着 —— 而用户正是在修坏默认时最需要迁移它们。所以同时按**保存的原始默认**
+ * (未过可用性回落)认领; 回落发生时 effort 无法在目录外复原, 不作要求。
+ *
+ * 无法可靠识别时(供应商目录拿不到)必须抛错而不是返回 0: 调用方把 0 当成「补完了」
+ * 就会提交新默认, 下一次只能按新默认匹配, 还停在旧默认上的老任务永久失去跟随资格。
  */
 export async function backfillLegacyImDefaultRoutes(
   source: ImDefaultSettingsChannel,
   config: ImOrchestratorConfig,
 ): Promise<number> {
-  const providers = await listProviders();
-  if (!providers) return 0;
-  const defaults = await resolveImSessionDefaults(config, providers, source);
-  const oldDefault: ImDefaultRoute = {
-    agentKind: defaults.agentKind,
-    model: defaults.model,
-    providerId: defaults.providerId,
-    effort: defaults.effort,
-  };
   const rows = await getDbClient()
     .drizzle.select({
       id: sessions.id,
@@ -331,15 +385,51 @@ export async function backfillLegacyImDefaultRoutes(
     })
     .from(sessions)
     .where(and(eq(sessions.source, source), eq(sessions.status, 'active'), isNull(sessions.imDefaultRoute)));
+  const legacyRows = rows.filter((row) => isChannelOwnedRow(row, source));
+  // 没有要补的就不碰供应商目录 —— 目录不可用也挡不住用户的设置保存。
+  if (legacyRows.length === 0) return 0;
+  const providers = await listProviders();
+  if (!providers) {
+    throw new Error(
+      `provider catalog unavailable; cannot backfill ${source} default-route records`,
+    );
+  }
+  const rawDefault = readImRawDefaultRoute(source);
+  const fingerprint = readImDefaultSettingsFingerprint(source);
+  let resolvedDefault: ImDefaultRoute | null = null;
+  try {
+    const defaults = await resolveImSessionDefaults(config, providers, source);
+    resolvedDefault = {
+      agentKind: defaults.agentKind,
+      model: defaults.model,
+      providerId: defaults.providerId,
+      effort: defaults.effort,
+    };
+  } catch (err) {
+    // 旧默认已坏到解析不出来(如全部模型被停用): 只按保存的原始默认认领 —— 用户
+    // 正是要存新默认来修它, 不能因为解析旧默认失败而把保存也堵死。
+    log.warn(
+      `default route backfill: old ${source} default unresolvable; matching raw settings only: ` +
+        (err instanceof Error ? err.message : String(err)),
+    );
+  }
   const normalize = providerNormalizer(providers);
+  // 解析落点是否离开了原始默认(可用性回落)。只比路由轴, effort 另算。
+  const landedElsewhere =
+    !resolvedDefault ||
+    !sameImDefaultRoute({ ...resolvedDefault, effort: rawDefault.effort }, rawDefault, normalize);
   let count = 0;
-  for (const row of rows) {
-    if (!isChannelOwnedRow(row, source)) continue;
+  for (const row of legacyRows) {
     const current = currentRouteOf(row);
-    if (!sameImDefaultRoute(current, oldDefault, normalize)) continue;
+    const matches =
+      (!!resolvedDefault && sameImDefaultRoute(current, resolvedDefault, normalize)) ||
+      sameImDefaultRoute(current, rawDefault, normalize) ||
+      (landedElsewhere &&
+        sameImDefaultRoute({ ...current, effort: rawDefault.effort }, rawDefault, normalize));
+    if (!matches) continue;
     await getDbClient()
       .drizzle.update(sessions)
-      .set({ imDefaultRoute: buildImDefaultRouteRecord(defaults.fingerprint, current) })
+      .set({ imDefaultRoute: buildImDefaultRouteRecord(fingerprint, current) })
       .where(and(eq(sessions.id, row.id), isNull(sessions.imDefaultRoute)));
     count += 1;
   }

@@ -3123,6 +3123,150 @@ describe('turnRunner send outcome policy (feishu adapter characterization)', () 
     );
   });
 
+  const followRoute = {
+    agentKind: 'claude-code' as const,
+    model: 'claude-opus-4-8',
+    providerId: 'xd',
+    effort: 'xhigh',
+  };
+  const oldRouteRow = {
+    id: 'feishu-session',
+    agentKind: 'claude-code' as const,
+    workingDir: 'F:\\XDMaker',
+    model: 'claude-opus-4-8',
+    effort: 'xhigh' as const,
+    permissionMode: 'auto' as const,
+    fastMode: false,
+    sdkSessionId: null,
+    providerId: 'anthropic',
+  };
+  const followRouteRow = { ...oldRouteRow, providerId: 'xd' };
+  function mockFollowProviders() {
+    mocks.readXdGatewayApiKey.mockReturnValue('xd-gateway-key');
+    mocks.hasCustomProviderKey.mockReturnValue(false);
+    mocks.listProviders.mockResolvedValue([
+      {
+        id: 'xd',
+        name: 'XD',
+        source: 'builtin',
+        connected: true,
+        agents: ['claude-code'],
+        models: { 'claude-code': [{ id: 'claude-opus-4-8' }], codex: [] },
+        routing: {
+          'claude-code': { upstream: 'https://gateway.example', authStrategy: 'gateway-key' },
+        },
+      },
+      {
+        id: 'anthropic',
+        name: 'Anthropic',
+        source: 'builtin',
+        connected: false,
+        agents: ['claude-code'],
+        models: { 'claude-code': [{ id: 'claude-opus-4-8' }], codex: [] },
+        routing: {
+          'claude-code': { upstream: 'https://api.anthropic.com', authStrategy: 'oauth-passthrough' },
+        },
+      },
+    ]);
+  }
+  const followAuthMissingText = () =>
+    ui.agent.authMissing?.({
+      agentKind: 'claude-code',
+      model: 'claude-opus-4-8',
+      providerId: 'anthropic',
+      providerLabel: 'Anthropic',
+      missing: 'provider-disconnected',
+      attached: false,
+    });
+
+  it('re-checks auth on the actual route when the follow switch did not land before send', async () => {
+    // 授权检查只过了「将要切到」的新默认路由; 跟随切换失败被吞后这条消息会按旧路由
+    // 发送 —— 必须按实际路由补一次授权检查, 旧供应商断开时给出缺授权提示, 而不是进
+    // 发送流程运行时失败(PR #5155 review P2)。
+    mockFollowProviders();
+    mocks.findActiveSession.mockResolvedValue(oldRouteRow);
+    mocks.peekSessionById.mockResolvedValue(oldRouteRow);
+    const h = setupSession(async () => ({ accepted: true }));
+    const channelDefaultRoute = {
+      previewSwitchTarget: vi.fn(async () => followRoute),
+      syncBeforeWiring: vi.fn(async () => {}),
+    };
+    const localRunner = createTurnRunner(fakeAdapter, fakeRepo, fakeCards, { channelDefaultRoute });
+
+    await localRunner.runAgentTurn({
+      botContextId: 'cli_test_bot',
+      userId: 'ou_user',
+      userMessageId: 'msg-follow-switch-failed',
+      text: 'follow the new default',
+      attachments: [],
+    });
+
+    expect(channelDefaultRoute.previewSwitchTarget).toHaveBeenCalledWith('feishu-session');
+    expect(h.send).not.toHaveBeenCalled();
+    expect(mocks.feishuIm.sendText).toHaveBeenCalledWith('ou_user', followAuthMissingText(), {
+      threadTs: undefined,
+    });
+  });
+
+  it('sends on the followed route without an extra auth rejection when the switch landed', async () => {
+    mockFollowProviders();
+    mocks.findActiveSession.mockResolvedValue(oldRouteRow);
+    mocks.peekSessionById.mockResolvedValue(followRouteRow);
+    const h = setupSession(async () => ({ accepted: true }));
+    const channelDefaultRoute = {
+      previewSwitchTarget: vi.fn(async () => followRoute),
+      syncBeforeWiring: vi.fn(async () => {}),
+    };
+    const localRunner = createTurnRunner(fakeAdapter, fakeRepo, fakeCards, { channelDefaultRoute });
+
+    await localRunner.runAgentTurn({
+      botContextId: 'cli_test_bot',
+      userId: 'ou_user',
+      userMessageId: 'msg-follow-switch-landed',
+      text: 'follow the new default',
+      attachments: [],
+    });
+
+    expect(h.send).toHaveBeenCalledTimes(1);
+    expect(mocks.feishuIm.sendText).not.toHaveBeenCalledWith(
+      'ou_user',
+      followAuthMissingText(),
+      expect.anything(),
+    );
+  });
+
+  it('re-checks auth on the read-back route when a cold task cannot follow before wiring', async () => {
+    // 未接线的任务接线前先对齐跟随; 切换失败保持旧路由时, 读回的旧路由必须补授权
+    // 检查 —— 否则这条消息会带着只验过新路由的结果接线旧路由(PR #5155 review P2)。
+    mockFollowProviders();
+    mocks.findActiveSession.mockResolvedValue(oldRouteRow);
+    mocks.peekSessionById.mockResolvedValue(oldRouteRow);
+    const h = createSessionHarness(async () => ({ accepted: true }));
+    mocks.getMaker.mockReturnValue({
+      ...createMakerHarness(h.session),
+      getSession: vi.fn(() => undefined),
+    });
+    const channelDefaultRoute = {
+      previewSwitchTarget: vi.fn(async () => followRoute),
+      syncBeforeWiring: vi.fn(async () => {}),
+    };
+    const localRunner = createTurnRunner(fakeAdapter, fakeRepo, fakeCards, { channelDefaultRoute });
+
+    await localRunner.runAgentTurn({
+      botContextId: 'cli_test_bot',
+      userId: 'ou_user',
+      userMessageId: 'msg-cold-follow-failed',
+      text: 'follow the new default',
+      attachments: [],
+    });
+
+    expect(channelDefaultRoute.syncBeforeWiring).toHaveBeenCalledWith('feishu-session');
+    expect(h.send).not.toHaveBeenCalled();
+    expect(mocks.feishuIm.sendText).toHaveBeenCalledWith('ou_user', followAuthMissingText(), {
+      threadTs: undefined,
+    });
+  });
+
   it('reuses the default route provider snapshot for new-session auth checks', async () => {
     const providers = [
       {

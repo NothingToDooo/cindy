@@ -6,6 +6,7 @@ import {
   createPendingAgentSwitchRegistry,
   performSessionAgentSwitch,
   registerMakerSessionAgentSwitchHandler,
+  settleSystemRouteSwitchIntent,
   type AgentSwitchSessionRow,
   type MakerSessionAgentSwitchHandlerDeps,
   type PendingAgentSwitchIntent,
@@ -1017,5 +1018,40 @@ describe('Phase 2:切回停泊引擎(resume + 增量交接)', () => {
 
     const pending = await registry.peek('s1');
     expect(pending).toContain('最早的问题');
+  });
+});
+
+describe('settleSystemRouteSwitchIntent', () => {
+  const intent = { targetAgentKind: 'codex', model: 'gpt-5.5', providerId: 'openai' };
+
+  it('reports applied once the intent is gone', () => {
+    expect(
+      settleSystemRouteSwitchIntent({ stagedIntent: intent, remainingIntent: undefined, sessionIdle: true }),
+    ).toBe('applied');
+  });
+
+  it('keeps a post-commit resume fallback tail staged for the next message', () => {
+    const recovery = { ...intent, resumeFallbackRecovery: { boundaryClientId: null } };
+    expect(
+      settleSystemRouteSwitchIntent({ stagedIntent: recovery, remainingIntent: recovery, sessionIdle: true }),
+    ).toBe('staged');
+  });
+
+  it('treats a busy session or a superseding pick as staged', () => {
+    expect(
+      settleSystemRouteSwitchIntent({ stagedIntent: intent, remainingIntent: intent, sessionIdle: false }),
+    ).toBe('staged');
+    const newer = { ...intent, model: 'gpt-5.6' };
+    expect(
+      settleSystemRouteSwitchIntent({ stagedIntent: intent, remainingIntent: newer, sessionIdle: true }),
+    ).toBe('staged');
+  });
+
+  it('flags a swallowed apply failure so the caller withdraws the intent', () => {
+    // fail-continue 的跨引擎应用失败会把意图原样留着 —— 不能当「任务正忙」上报,
+    // 否则后续消息会反复重试同一个必然失败的切换(PR #5155 review P1)。
+    expect(
+      settleSystemRouteSwitchIntent({ stagedIntent: intent, remainingIntent: intent, sessionIdle: true }),
+    ).toBe('failed');
   });
 });

@@ -816,6 +816,7 @@ import {
   performSessionAgentSwitch,
   projectPendingAgentSwitchIntent,
   registerMakerSessionAgentSwitchHandler,
+  settleSystemRouteSwitchIntent,
   type MakerSessionAgentSwitchHandlerDeps,
 } from './sessionAgentSwitchHandler.js';
 import { pendingHarnessRuntimeMutation, setSessionRuntimeHarness } from './sessionRuntimeHarnessSelection.js';
@@ -3403,7 +3404,7 @@ export interface SessionRouteSelection {
   fastMode: boolean;
 }
 let readPendingAgentSwitchRouteHolder:
-  ((sessionId: string) => Omit<SessionRouteSelection, 'fastMode'> | undefined) | null = null;
+  ((sessionId: string) => PendingAgentSwitchRouteRead | undefined) | null = null;
 let applySessionRouteUnderSendLockHolder:
   ((sessionId: string, route: SessionRouteSelection | null, currentAgentKind: AgentKind) => Promise<'applied' | 'staged'>) | null = null;
 /**
@@ -3648,10 +3649,20 @@ export async function acquirePendingAgentSwitchForImSend(
   return lease?.release ?? (() => {});
 }
 
+/** 会话上待应用的切换意图目标(用户挑的或系统登记的)读回投影。 */
+export interface PendingAgentSwitchRouteRead extends Omit<SessionRouteSelection, 'fastMode'> {
+  /**
+   * 意图在 pending 注册表的修订号(set / clear 都推进)。与跟随记录里的 pendingRev
+   * 相等 = 同一次登记; 用户重新挑过(哪怕选了同值)会换号, 据此不把用户选择
+   * 误认成系统登记的跟随意图(PR #5155 review P1)。
+   */
+  rev?: number;
+}
+
 /** 会话上待应用的切换意图目标(用户挑的或系统登记的); 无意图返回 undefined。 */
 export function readPendingAgentSwitchRoute(
   sessionId: string,
-): Omit<SessionRouteSelection, 'fastMode'> | undefined {
+): PendingAgentSwitchRouteRead | undefined {
   return readPendingAgentSwitchRouteHolder?.(sessionId);
 }
 
@@ -3659,7 +3670,10 @@ export function readPendingAgentSwitchRoute(
  * 系统发起的整条路由切换(与伙伴模型对齐同一套): 登记意图, 会话空闲时当场应用;
  * `route` 传 null = 只应用此前登记、仍待生效的意图。
  * 调用方必须已持有该会话的 send 锁(acquirePendingAgentSwitchForImSend 的回调内)。
- * 返回 'staged' = 会话忙, 意图留待安全边界应用。应用失败会撤回本次意图后抛错。
+ * 返回 'staged' = 会话忙(或切换已过 commit 点、恢复尾段待重试), 意图留待安全边界
+ * 应用。应用失败会撤回本次意图后抛错 —— 包括底层按 fail-continue 吞掉的跨引擎
+ * 应用失败: 那种失败留下的意图不能伪装成「任务正忙」让上层反复重试同一个必然
+ * 失败的切换(PR #5155 review P1)。
  */
 export async function applySessionRouteUnderSendLock(
   sessionId: string,
@@ -11784,6 +11798,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           model: intent.model,
           providerId: intent.providerId ?? null,
           effort: intent.effort ?? null,
+          rev: agentSwitchPending.revision?.(sessionId),
         }
       : undefined;
   };
@@ -11804,7 +11819,19 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       if (staged && agentSwitchPending.get(sessionId) === staged) cancelPendingAgentSwitchHolder?.(sessionId);
       throw error;
     }
-    return agentSwitchPending.get(sessionId) ? 'staged' : 'applied';
+    const settle = settleSystemRouteSwitchIntent({
+      stagedIntent: staged,
+      remainingIntent: agentSwitchPending.get(sessionId),
+      sessionIdle: isSessionIdleForRouteApply(sessionId),
+    });
+    if (settle === 'failed') {
+      // 应用没抛错但也没生效: 跨引擎意图的应用失败被底层按 fail-continue 吞掉、
+      // 意图原样留着。不能当「任务正忙」上报, 否则上层每条消息都会重试同一个必然
+      // 失败的切换; 撤回意图、报错让上层保持原路由(PR #5155 review P1)。
+      cancelPendingAgentSwitchHolder?.(sessionId);
+      throw new Error('session route switch did not apply; pending intent withdrawn');
+    }
+    return settle;
   };
 
   configureBotRuntimeEpochRefreshRequest((sessionId, reason) => {

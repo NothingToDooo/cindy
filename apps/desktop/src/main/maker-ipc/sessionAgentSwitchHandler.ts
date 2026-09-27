@@ -753,6 +753,33 @@ export async function performSessionAgentSwitch(
  */
 const pendingAgentSwitchApplyInFlight = new Map<string, Promise<void>>();
 
+/**
+ * 系统路由切换(`applySessionRouteUnderSendLock`)应用后的意图收口裁决。
+ *
+ * `applyPendingAgentSwitchIfIdle` 对跨引擎意图是 fail-continue: 应用失败只记日志、
+ * 意图原样保留、不抛错(上一条语义注释)。调用方若把「意图还在」一律当「任务正忙」,
+ * 后续消息会反复重试同一个必然失败的切换 —— 必须区分「忙 / 恢复尾段待重试」与
+ * 「应用失败被吞」, 后者要撤回意图并报错(PR #5155 review P1)。
+ */
+export function settleSystemRouteSwitchIntent(input: {
+  /** 本次要应用的意图(登记后读回)。 */
+  stagedIntent: unknown;
+  /** 应用尝试之后仍在登记的意图。 */
+  remainingIntent: unknown;
+  /** 应用尝试之后会话是否空闲(不忙 = 意图没被真的推迟, 而是没生效)。 */
+  sessionIdle: boolean;
+}): 'applied' | 'staged' | 'failed' {
+  const { stagedIntent, remainingIntent, sessionIdle } = input;
+  if (!remainingIntent) return 'applied';
+  // resume 回落尾段待重试 = 切换已过 commit 点, 保留意图是对的, 下一条消息续跑。
+  if ((remainingIntent as { resumeFallbackRecovery?: unknown } | null)?.resumeFallbackRecovery) {
+    return 'staged';
+  }
+  // 意图被更晚的选择超车, 或应用瞬间会话又忙起来了: 留给各自的收口, 按待生效处理。
+  if (remainingIntent !== stagedIntent || !sessionIdle) return 'staged';
+  return 'failed';
+}
+
 export function applyPendingAgentSwitchIfIdle(
   deps: MakerSessionAgentSwitchHandlerDeps,
   sessionId: string,
