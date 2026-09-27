@@ -1,5 +1,6 @@
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { ImportedMcpServer } from './types.js';
+import type { CompanionEnvironment } from './environment.js';
 import { fingerprint } from './files.js';
 import { environmentRedactions, redactEnvironmentData, redactEnvironmentValues } from './process.js';
 
@@ -13,17 +14,48 @@ export function connectionRedactions(server: ImportedMcpServer, environment: Rec
     }
   }
   if (server.url) {
-    values.push(server.url);
-    try {
-      const url = new URL(server.url);
-      for (const value of [url.username, url.password, ...url.searchParams.values()]) {
-        if (!value) continue;
-        values.push(value);
-        try { values.push(decodeURIComponent(value)); } catch { /* Keep the literal value if it is not URI-encoded. */ }
-      }
-    } catch { /* Invalid connection URLs fail when connecting, never enter error output. */ }
+    values.push(...urlCredentialValues(server.url));
   }
   return Object.fromEntries([...new Set(values)].filter(Boolean).map((value, index) => [`connection_credential_${index}`, value]));
+}
+
+/** URL credentials can be echoed in encoded or decoded form by a remote service. */
+function urlCredentialValues(raw: string, includePath = false): string[] {
+  const values = [raw];
+  try {
+    const url = new URL(raw);
+    values.push(url.username, url.password, ...url.searchParams.values());
+    // URLSearchParams already decodes once; retain the wire representation too.
+    for (const pair of url.search.slice(1).split('&')) if (pair.includes('=')) values.push(pair.slice(pair.indexOf('=') + 1));
+    if (includePath) values.push(url.pathname, ...url.pathname.split('/').filter(Boolean));
+  } catch { /* Invalid URLs fail at execution; never publish the literal in errors. */ }
+  return [...new Set(values.filter(value => value && value !== '/').flatMap(value => {
+    try { return [value, decodeURIComponent(value)]; } catch { return [value]; }
+  }))];
+}
+
+/** Known selected credentials only; keep originals in the private environment. */
+export function importedContentRedactions(environment: Pick<CompanionEnvironment, 'env' | 'mcp' | 'credentials'>, monitorUrls: string[] = []): Record<string, string> {
+  const values = [...Object.values(environmentRedactions(environment.env)),
+    ...environment.mcp.flatMap(server => Object.values(connectionRedactions(server, environment.env))),
+    ...monitorUrls.flatMap(url => urlCredentialValues(url, true))];
+  const collect = (value: unknown): void => {
+    if (!value || typeof value !== 'object') return;
+    for (const [key, child] of Object.entries(value)) {
+      if (typeof child === 'string' && /^(?:key|api[_-]?key|.*token|.*secret|.*password|authorization|access|refresh)$/i.test(key)) values.push(child);
+      else collect(child);
+    }
+  };
+  for (const credential of environment.credentials) collect(credential.value);
+  const named = environmentRedactions(environment.env);
+  const namedValues = new Set(Object.values(named));
+  let index = 0;
+  for (const value of new Set(values)) {
+    if (!value || namedValues.has(value)) continue;
+    while (Object.hasOwn(named, `imported_credential_${index}`)) index++;
+    named[`imported_credential_${index++}`] = value;
+  }
+  return named;
 }
 
 /** Keep readable identities unless the upstream embeds a credential in the name. */

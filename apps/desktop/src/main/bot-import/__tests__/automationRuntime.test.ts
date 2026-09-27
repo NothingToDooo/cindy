@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { createServer } from 'node:http';
 import type { Routine } from '@cindy/maker-scheduler';
 import { createCompanionEnvironmentStore } from '../environment.js';
 
@@ -17,6 +18,43 @@ beforeEach(async () => {
   shared.message.mockReset().mockResolvedValue({});
 });
 afterEach(async () => { vi.unstubAllEnvs(); await fs.rm(root, { recursive: true, force: true }); });
+it('uses the original monitor URL but masks echoed path/query credentials, previous output and legacy retry caches', async () => {
+  const requests: string[] = [];
+  const endpoint = createServer((req, res) => {
+    requests.push(req.url!);
+    res.end(`Count: 7\n${req.url}\nfake-path-secret\nfake/query+secret`);
+  });
+  await new Promise<void>(resolve => endpoint.listen(0, '127.0.0.1', resolve));
+  const address = endpoint.address() as { port: number };
+  const url = `http://127.0.0.1:${address.port}/fake-path-secret?token=fake%2Fquery%2Bsecret`;
+  const routine: Routine = { id: 'routine', botId: 'bot', name: 'Monitor', prompt: `Monitor ${url}`, enabled: true, triggers: [{ id: 'tick', kind: 'interval', intervalMs: 60000 }], revision: 1, createdAt: 1, updatedAt: 1 };
+  const signal = new AbortController().signal;
+  try {
+    await shared.store.write(root, 'bot', { version: 1, env: {}, mcp: [], credentials: [], automations: {
+      routine: { kind: 'hermes', handover: 'ready', original: { monitor_url: url }, sourceRoot: root, monitorOutput: `Old ${url} fake/query+secret` },
+    } }, () => {});
+    const prepared = (await prepareImportedAutomation(root, routine, 'run', signal, () => {}))!;
+    expect(requests).toEqual(['/fake-path-secret?token=fake%2Fquery%2Bsecret']);
+    expect(prepared.prompt).toContain('Count: 7');
+    const stored = (await shared.store.read(root, 'bot', () => {}))!;
+    expect(stored.automations!.routine!.original.monitor_url).toBe(url);
+    for (const value of [url, 'fake-path-secret', 'fake/query+secret', 'fake%2Fquery%2Bsecret']) {
+      expect(JSON.stringify(prepared)).not.toContain(value);
+      expect(JSON.stringify(stored.automations!.routine!.prepared)).not.toContain(value);
+    }
+    await finishImportedAutomation(root, routine, 'chat', 'run', prepared.prompt, true, signal, () => {});
+    expect(shared.message.mock.calls[0]![1].content).toBe(prepared.prompt);
+    expect((await prepareImportedAutomation(root, routine, 'next-run', signal, () => {}))?.skipped).toBe(true);
+    // A persisted result written by an older build is sanitized even on the fast retry path.
+    await shared.store.update(root, 'bot', () => {}, env => { env.automations!.routine!.prepared = { runId: 'legacy', prompt: url, direct: 'fake/query+secret', monitorOutput: 'fake-path-secret' }; });
+    const calls = requests.length;
+    const retry = await prepareImportedAutomation(root, routine, 'legacy', signal, () => {});
+    for (const value of [url, 'fake-path-secret', 'fake/query+secret']) expect(JSON.stringify(retry)).not.toContain(value);
+    expect(requests).toHaveLength(calls);
+    await finishImportedAutomation(root, routine, 'chat', 'legacy', 'fake/query+secret', true, signal, () => {});
+    expect(JSON.stringify(shared.message.mock.calls)).not.toContain('fake/query+secret');
+  } finally { endpoint.closeAllConnections(); await new Promise<void>(resolve => endpoint.close(() => resolve())); }
+});
 it.skipIf(process.platform === 'win32')('runs a copied script after the source is gone, with private env, once per durable run', async () => {
   vi.stubEnv('CINDY_UNRELATED_TEST_SECRET', 'fixture-launch-secret');
   vi.stubEnv('HTTPS_PROXY', 'http://fixture-user:fixture-password@example.invalid');

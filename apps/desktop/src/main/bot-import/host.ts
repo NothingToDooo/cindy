@@ -15,7 +15,8 @@ import { readBotProfileFolder, writeBotProfileFolder, BOT_PROFILE_TEXT_MAX_BYTES
 import { importBotSkillFiles, normalizeBotSkillSlug } from '../maker-ipc/botSkillStore.js';
 import { withBotProfileLocks } from '../maker-ipc/botProfileLock.js';
 import { getRoutineEngine, routineTools } from '../routines/service.js';
-import { selectedImportEnvironment } from './environmentSelection.js';
+import { resolveImportReferences, selectedImportEnvironment, selectedImportRedactions } from './environmentSelection.js';
+import { redactEnvironmentValues } from './process.js';
 import { discoverImportSources, inspectImportSource, type SourceReaderDeps } from './sources.js';
 import { readOpenClawCronDatabase } from './openclawCron.js';
 import { companionEnvironmentStore, recoverCompanionEnvironmentRemovals } from './runtime.js';
@@ -180,8 +181,10 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
     snapshot = deserializeImportSnapshot(pending.snapshotJson);
   }
   const selected = validateImportSelection(selection, snapshot);
+  const contentSecrets = selectedImportRedactions(selected);
+  const redactText = (text: string) => redactEnvironmentValues(text, contentSecrets);
   for (const role of ['identity', 'user', 'instructions'] as const) {
-    const text = selected.filter(item => item.role === role).map(item => item.text).join('\n\n');
+    const text = redactText(selected.filter(item => item.role === role).map(item => item.text).join('\n\n'));
     if (Buffer.byteLength(text, 'utf8') > BOT_PROFILE_TEXT_MAX_BYTES) throw new CompanionImportError('PROFILE_TEXT_TOO_LARGE');
   }
   const prior = await readReceipt(scope.root, selection.requestId); scope.assert();
@@ -216,7 +219,7 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
         const slug = normalized === original ? original : `${normalized?.slice(0, 35) || 'import'}-${fingerprint(item.view.id).slice(0, 8)}`;
         await importBotSkillFiles(scope.root, botId, slug, item.files ?? [], scope.assert);
       } else if (item.text && item.view.category === 'memory') {
-        await getBotMemoryService().importDocument(botId, item.view.id, item.view.name, item.text, item.role === 'user' ? 'user' : 'reference');
+        await getBotMemoryService().importDocument(botId, item.view.id, item.view.name, redactText(item.text), item.role === 'user' ? 'user' : 'reference');
       }
     },
     async saveCheckpoint(botId, items) {
@@ -229,25 +232,18 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
       const previous = await companionEnvironmentStore.read(scope.root, botId, scope.assert);
       const chosen = new Set(items.map(item => item.view.id));
       const env = selectedImportEnvironment(items);
-      const resolveReferences = (value: unknown): unknown => {
-        if (typeof value === 'string') return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_match, key: string) => {
-          if (!Object.hasOwn(env, key)) throw new CompanionImportError('AUTOMATION_DEPENDENCY_NOT_SELECTED');
-          return env[key]!;
-        });
-        if (Array.isArray(value)) return value.map(resolveReferences);
-        if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, resolveReferences(child)]));
-        return value;
-      };
+      const resolveReferences = (value: unknown) => resolveImportReferences(value, env);
       await companionEnvironmentStore.write(scope.root, botId, { version: 1,
         env,
         mcp: items.flatMap(item => item.mcp && !item.view.dependsOn?.some(id => !chosen.has(id)) && !item.view.issues?.length ? [resolveReferences(item.mcp) as NonNullable<typeof item.mcp>] : []),
         credentials: items.flatMap(item => item.credential && !item.view.dependsOn?.some(id => !chosen.has(id)) && (!item.view.issues?.length || item.credential.format !== 'telegram') ? [{ id: item.view.id, ...item.credential, ...(item.credential.format === 'telegram' ? { value: resolveReferences(item.credential.value) } : {}) }] : []),
         files: Object.fromEntries(items.flatMap(item => item.asset ? [[item.asset.name, item.asset.bytes.toString('base64')]] : [])),
+        documents: Object.fromEntries(items.flatMap(item => item.text === undefined ? [] : [[item.view.id, item.text]])),
         sourceAutomations: items.flatMap(item => item.automation ? [{ entryId: item.view.id, kind: snapshot.source.kind, original: item.automation.original }] : []),
         pendingImport: { selection, snapshotJson: serializeImportSnapshot({ ...snapshot, avatarImageBase64: selection.avatarImageBase64, items }) },
         automations: previous?.automations ?? {},
       }, scope.assert);
-      const roleText = (role: 'identity' | 'user' | 'instructions') => items.filter(item => item.role === role).map(item => item.text).join('\n\n');
+      const roleText = (role: 'identity' | 'user' | 'instructions') => redactText(items.filter(item => item.role === role).map(item => item.text).join('\n\n'));
       const folder = await readBotProfileFolder(scope.root, botId); scope.assert();
       await writeBotProfileFolder(scope.root, botId, {
         config: { ...folder.config, mcpMode: 'allowlist', mcpServers: [...new Set([

@@ -1,6 +1,17 @@
 import { expect, it } from 'vitest';
 import { importedProcessEnvironment, redactEnvironmentData, redactEnvironmentValues } from '../process.js';
-import { connectionRedactions } from '../connectionCatalog.js';
+import { connectionRedactions, importedContentRedactions } from '../connectionCatalog.js';
+
+it('masks encoded and decoded URL credentials without mutating the private connection', () => {
+  const url = 'https://fake%2Fuser:fake%2Bpassword@example.invalid/fake%2Fpath?token=fake%2Bquery';
+  const values = [url, 'fake%2Fuser', 'fake/user', 'fake%2Bpassword', 'fake+password', 'fake%2Fpath', 'fake/path', 'fake%2Bquery', 'fake+query'];
+  const secrets = importedContentRedactions({ env: { DATA_TOKEN: 'fake-env-token', LANG: 'en', imported_credential_0: 'fake-collision-token' }, mcp: [], credentials: [] }, [url]);
+  const output = redactEnvironmentValues(`Ordinary content en. ${values.join(' ')} fake-env-token fake-collision-token`, secrets);
+  for (const value of values) expect(output).not.toContain(value);
+  expect(output).toContain('Ordinary content en.');
+  expect(output).toContain('[DATA_TOKEN]');
+  expect(output).not.toContain('fake-collision-token');
+});
 
 it('keeps locale/region configuration and ordinary words intact while masking unknown short credentials as tokens', () => {
   const env = { REGION: 'us', LANG: 'en', LC_ALL: 'en_US.UTF-8', AWS_REGION: 'us-east-1', PRIVATE: 'xy', ARBITRARY: 'fixture-private-value' };

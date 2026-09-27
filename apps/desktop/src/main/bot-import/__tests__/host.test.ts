@@ -9,6 +9,7 @@ import type { ImportSnapshot } from '../types.js';
 const h = vi.hoisted(() => ({ root: '', created: false, verified: false, sourceEnabled: true, failReadyWrite: false, boundary: false,
   snapshot: null as unknown as ImportSnapshot, store: null as unknown as ReturnType<typeof createCompanionEnvironmentStore>,
   routines: [] as Routine[], pause: vi.fn(), sourceEnvironment: {} as Record<string, string>,
+  writeProfile: vi.fn(), importDocument: vi.fn(),
 }));
 vi.mock('electron', () => ({ app: { getPath: () => h.root } }));
 vi.mock('../../appSessionState.js', () => ({ activeOwnerScopeKey: () => h.root, ownerScopedUserDataPath: () => h.root, getActiveAppSession: () => ({ dataOwnerId: 'fixture-owner' }), isAppSessionBoundaryPending: () => h.boundary }));
@@ -16,10 +17,10 @@ vi.mock('../../localDb/ipc/bots.js', () => ({
   listBotRemoteResourceSources: async () => [],
   getBotRemoteResourceSource: async () => { if (!h.created) throw new Error('[NOT_FOUND]'); return { canonicalSessionId: 'chat' }; },
   createBotProfile: async () => { h.created = true; }, createBotCanonicalSession: async () => ({ canonicalSessionId: 'chat' }),
-  getBotMemoryService: () => ({ importDocument: async () => {} }), reconcileBotProfileFolder: async () => {},
+  getBotMemoryService: () => ({ importDocument: h.importDocument }), reconcileBotProfileFolder: async () => {},
 }));
 vi.mock('../../localDb/ipc/botAvatarSelection.js', () => ({ validateBotAvatarBuffer: vi.fn(), decodeBotAvatarImage: vi.fn() }));
-vi.mock('../../maker-ipc/botProfileFolder.js', () => ({ BOT_PROFILE_TEXT_MAX_BYTES: 100000, readBotProfileFolder: async () => ({ config: {} }), writeBotProfileFolder: async () => {} }));
+vi.mock('../../maker-ipc/botProfileFolder.js', () => ({ BOT_PROFILE_TEXT_MAX_BYTES: 100000, readBotProfileFolder: async () => ({ config: {} }), writeBotProfileFolder: h.writeProfile }));
 vi.mock('../../maker-ipc/botSkillStore.js', () => ({ importBotSkillFiles: vi.fn(), normalizeBotSkillSlug: (v: string) => v }));
 vi.mock('../sources.js', () => ({ discoverImportSources: async () => [h.snapshot.source], inspectImportSource: async () => h.snapshot }));
 vi.mock('../openclawCron.js', () => ({ readOpenClawCronDatabase: vi.fn() }));
@@ -53,6 +54,7 @@ import { assertImportedAutomationReady, prepareImportedAutomation } from '../aut
 beforeEach(async () => {
   h.root = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-import-host-test-'));
   h.created = false; h.verified = false; h.sourceEnabled = true; h.failReadyWrite = false; h.boundary = false; h.routines = []; h.pause.mockClear(); h.sourceEnvironment = {};
+  h.writeProfile.mockReset().mockResolvedValue(undefined); h.importDocument.mockReset().mockResolvedValue(undefined);
   const values = new Map<string, string>();
   h.store = createCompanionEnvironmentStore({ read: key => values.get(key) ?? null, write: (key, value) => {
     if (h.failReadyWrite && Object.values<{ handover?: string }>(JSON.parse(value).automations ?? {}).some(binding => binding.handover === 'ready')) { h.failReadyWrite = false; return false; }
@@ -64,6 +66,45 @@ beforeEach(async () => {
   }] };
 });
 afterEach(async () => { await fs.rm(h.root, { recursive: true, force: true }); });
+
+it('redacts selected credentials from profile and memory copies while retaining original documents and usable secrets privately', async () => {
+  const secrets = ['fake-env-key', 'fake-local-key', 'fake-header-token', 'fake/url+key', 'fake-access-token', 'fake-refresh-token', '123:fake-telegram-token'];
+  const text = `简短一点，带点幽默。status en us\n${secrets.join('\n')}\nfake-unselected-key`;
+  const documents: ImportSnapshot['items'] = [
+    { view: { id: 'soul', name: 'SOUL.md', category: 'personality', selected: true }, role: 'identity', text },
+    { view: { id: 'user', name: 'USER.md', category: 'memory', selected: true }, role: 'user', text },
+    { view: { id: 'instructions', name: 'HERMES.md', category: 'personality', selected: true }, role: 'instructions', text },
+    { view: { id: 'reference', name: 'notes.md', category: 'memory', selected: true }, text },
+    { view: { id: 'ordinary', name: 'ordinary.md', category: 'memory', selected: true }, text: 'Keep this paragraph exactly.\nSecond line.' },
+  ];
+  h.snapshot.items = [...documents,
+    { view: { id: 'env', name: 'env', category: 'connections', selected: true }, env: { DATA_TOKEN: secrets[0]!, LANG: 'en', REGION: 'us' } },
+    { view: { id: 'mcp', name: 'Data', category: 'connections', selected: true }, mcp: { name: 'Data', url: 'https://example.invalid/mcp?token=fake%2Furl%2Bkey', env: { KEY: secrets[1]!, REFERENCED: '${DATA_TOKEN}' }, headers: { Authorization: `Bearer ${secrets[2]}` } } },
+    { view: { id: 'oauth', name: 'Auth', category: 'connections', selected: true }, credential: { format: 'native-auth', value: { value: { access_token: secrets[4], nested: { refreshToken: secrets[5] } } } } },
+    { view: { id: 'telegram', name: 'Telegram', category: 'connections', selected: true }, credential: { format: 'telegram', value: { token: secrets[6], account: 'default' } } },
+    { view: { id: 'excluded', name: 'Excluded', category: 'connections', selected: false }, env: { EXCLUDED: 'fake-unselected-key' } },
+  ];
+  const [source] = await listCompanionImportSources('fixture');
+  const preview = await previewCompanionImport(source!.id, 'fixture');
+  const selection = { requestId: 'fixture-request-12345', previewId: preview.id, name: 'Ada', entryIds: h.snapshot.items.filter(item => item.view.selected).map(item => item.view.id), takeover: false };
+  const result = await startCompanionImport(selection, 'fixture');
+  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('complete'));
+  const profile = h.writeProfile.mock.calls[0]![2];
+  const publicText = JSON.stringify([profile, h.importDocument.mock.calls]);
+  for (const secret of secrets) expect(publicText).not.toContain(secret);
+  for (const field of ['identitySource', 'userContextSource', 'systemPromptOverride']) {
+    expect(profile[field]).toContain('简短一点，带点幽默。status en us');
+    expect(profile[field]).toContain('fake-unselected-key');
+  }
+  expect(h.importDocument.mock.calls.find(call => call[1] === 'ordinary')?.[3]).toBe(documents[4]!.text);
+  const stored = (await h.store.read(h.root, result.botId, () => {}))!;
+  expect(stored.env.DATA_TOKEN).toBe(secrets[0]);
+  expect(stored.env).not.toHaveProperty('EXCLUDED');
+  expect(stored.mcp[0]?.env?.REFERENCED).toBe(secrets[0]);
+  expect(stored.mcp[0]?.headers?.Authorization).toBe(`Bearer ${secrets[2]}`);
+  expect(stored.documents).toEqual(Object.fromEntries(documents.map(item => [item.view.id, item.text])));
+  expect(stored.pendingImport).toBeUndefined();
+});
 
 it('joins an in-flight credential write before deletion and durably blocks old-preview and restart retries', async () => {
   h.snapshot.items = [{ view: { id: 'env', name: 'Key', category: 'connections', selected: true }, env: { KEY: 'fake-import-secret' } }];

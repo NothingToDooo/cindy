@@ -11,6 +11,8 @@ export interface CompanionEnvironment {
   mcp: ImportedMcpServer[];
   credentials: Array<{ id: string; format: string; value: unknown }>;
   files?: Record<string, string>;
+  /** Original selected documents; model-readable profile/memory copies redact known credentials. */
+  documents?: Record<string, string>;
   sourceAutomations?: Array<{ entryId: string; kind: 'hermes' | 'openclaw'; original: Record<string, unknown> }>;
   /** Selected content only; encrypted restart checkpoint, removed after successful completion. */
   pendingImport?: { selection: import('@cindy/maker-shared/companion-import').CompanionImportSelection; snapshotJson: string };

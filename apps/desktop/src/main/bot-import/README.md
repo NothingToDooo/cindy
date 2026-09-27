@@ -24,8 +24,12 @@ theme tokens. No new native Mobile dependencies or fingerprint inputs are added.
 - Hermes default/profile homes and OpenClaw's selected agent workspace are read
   independently. OpenClaw's current SQLite cron store takes precedence over the
   legacy JSON store; a database failure never substitutes a stale backup.
-- Selected identity/user/instruction documents are retained as text. Memories
-  enter the teammate's native memory store. Selected skill folders retain their
+- Selected identity/user/instruction documents and memories retain their original
+  text in the encrypted environment. Profile prompt fields and the native memory
+  store receive copies with known selected env/MCP/auth credentials masked, while
+  ordinary text stays unchanged. Env references and original credentials remain
+  available to host execution; no model call or extra confirmation is added.
+  Selected skill folders retain their
   real scripts, templates, executable bits and `SKILL.md`.
   Automation references match both the source directory slug and skill display
   name; referenced skill scripts contribute their environment dependencies.
@@ -126,6 +130,11 @@ Literal monitor_url dependencies always receive a separate host-owned GET of the
 exact source URL before planning, with the runtime's 30-second / 2 MiB bounds and
 no redirects. Text/HTML monitors are valid; unrelated reads cannot substitute for
 a failed monitor. Only its verification status, not its raw URL, enters planning.
+At runtime, monitor output masks the source URL, its path components, userinfo and
+query values in encoded/decoded forms, even when they are absent from `.env`.
+The same known-credential mask applies to prior output, legacy prepared retries,
+script output, planning text and the final imported delivery boundary. Requests
+still use the private original URL; redacted output retains normal change detection.
 Verified delivery-only credentials are excluded from data-read dependencies, so
 local reminders can retain their Telegram destination. Variables also referenced
 by the task or its skills still require data verification.
