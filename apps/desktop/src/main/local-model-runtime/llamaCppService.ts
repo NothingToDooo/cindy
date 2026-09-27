@@ -498,30 +498,41 @@ export function createLlamaCppService(
             for (let attempt = 0; attempt < 120; attempt++) {
               signal.throwIfAborted();
               if (failed) throw new Error('START_FAILED');
+              let healthy = false;
               try {
                 const res = await fetch(`${LLAMACPP_MANAGED_ORIGIN}/health`, {
                   signal: AbortSignal.any([signal, AbortSignal.timeout(500)]),
                   redirect: 'error',
                 });
                 await res.body?.cancel();
-                if (res.ok && child === running && !failed) {
-                  ownerProof = await startReviewOwnerLiveness();
+                healthy = res.ok;
+              } catch {
+                /* wait for owned child to bind */
+              }
+              signal.throwIfAborted();
+              if (failed || child !== running) throw new Error('START_FAILED');
+              if (healthy) {
+                // Only health polling retries. Publication owns a local proof
+                // until it succeeds; every failed/late completion closes it.
+                const proof = await startReviewOwnerLiveness();
+                try {
+                  signal.throwIfAborted();
+                  if (failed || child !== running) throw new Error('START_FAILED');
                   await writeFile(
                     path.join(root, 'server-owner.json'),
-                    JSON.stringify({ identity: ownerProof.identity, preset }),
+                    JSON.stringify({ identity: proof.identity, preset }),
                     { mode: 0o600 },
                   );
-                  if (failed || child !== running) {
-                    closeOwnerProof();
-                    throw new Error('START_FAILED');
-                  }
+                  signal.throwIfAborted();
+                  if (failed || child !== running) throw new Error('START_FAILED');
+                  ownerProof = proof;
                   ready = true;
                   activePreset = preset;
                   modelsChanged = false;
                   return;
+                } finally {
+                  if (ownerProof !== proof) await proof.close();
                 }
-              } catch {
-                /* wait for owned child to bind */
               }
               await new Promise((resolve) => setTimeout(resolve, 250));
             }

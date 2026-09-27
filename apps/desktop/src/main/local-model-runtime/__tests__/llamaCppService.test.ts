@@ -12,6 +12,8 @@ const mocks = vi.hoisted(() => ({
   readdir: vi.fn(),
   readFile: vi.fn(),
   stat: vi.fn(),
+  writeFile: vi.fn(),
+  ownerProof: vi.fn(),
 }));
 vi.mock('../../scheduler-host/proc-util.js', () => ({ killProcessTree: mocks.killTree }));
 vi.mock('node:fs/promises', async (original) => ({
@@ -20,12 +22,10 @@ vi.mock('node:fs/promises', async (original) => ({
   readdir: mocks.readdir,
   readFile: mocks.readFile,
   stat: mocks.stat,
+  writeFile: mocks.writeFile,
 }));
 vi.mock('../../reviewer/reviewOwnerLiveness.js', () => ({
-  startReviewOwnerLiveness: async () => ({
-    identity: { version: 1, port: 12345, token: 'test-owner' },
-    close: async () => {},
-  }),
+  startReviewOwnerLiveness: mocks.ownerProof,
   probeReviewOwnerLiveness: async () => 'alive',
 }));
 vi.mock('../../maker-host/model-context-limit-store.js', () => ({
@@ -60,6 +60,11 @@ beforeEach(async () => {
   mocks.readdir.mockImplementation(fs.readdir);
   mocks.readFile.mockImplementation(fs.readFile);
   mocks.stat.mockImplementation(fs.stat);
+  mocks.writeFile.mockImplementation(fs.writeFile);
+  mocks.ownerProof.mockImplementation(async () => ({
+    identity: { version: 1, port: 12345, token: 'test-owner' },
+    close: vi.fn().mockResolvedValue(undefined),
+  }));
   const proc = await vi.importActual<typeof import('../../scheduler-host/proc-util.js')>(
     '../../scheduler-host/proc-util.js',
   );
@@ -78,6 +83,80 @@ afterEach(async () => {
 });
 
 describe('managed llama.cpp model lifecycle', () => {
+  it.each(['EACCES', 'ENOSPC', 'cancel-proof', 'exit-proof', 'cancel-write', 'exit-write'])(
+    'closes unpublished owner proof without retrying after %s',
+    async (failure) => {
+      const runtime = path.join(root, 'llamacpp-runtime');
+      await mkdir(runtime);
+      await writeFile(path.join(runtime, 'server'), 'stub');
+      await writeFile(
+        path.join(runtime, 'current.json'),
+        JSON.stringify({ binary: 'server', version: 'test' }),
+      );
+      const child = Object.assign(new EventEmitter(), {
+        kill: vi.fn(() => {
+          child.emit('exit');
+          return true;
+        }),
+      });
+      mocks.spawn.mockReturnValue(child);
+      const fetchHealth = vi.fn(async () => Response.json({ status: 'ok' }));
+      vi.stubGlobal('fetch', fetchHealth);
+      const service = createLlamaCppService(root);
+      let release!: () => void;
+      let closing!: () => void;
+      const entered = new Promise<void>((resolve) => {
+        closing = resolve;
+      });
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const close = vi.fn(async () => {
+        closing();
+        await gate;
+      });
+      const fail = () => {
+        if (failure.startsWith('cancel')) service.cancel();
+        else if (failure.startsWith('exit')) child.emit('exit');
+      };
+      mocks.ownerProof.mockImplementation(async () => {
+        if (failure.endsWith('proof')) fail();
+        return { identity: { version: 1, port: 12345, token: 'test-owner' }, close };
+      });
+      const fs = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+      const ioError = Object.assign(new Error('publication failed'), { code: failure });
+      mocks.writeFile.mockImplementation(async (file, data, options) => {
+        if (String(file).endsWith('server-owner.json')) {
+          if (failure === 'EACCES' || failure === 'ENOSPC') throw ioError;
+          fail();
+        }
+        return fs.writeFile(file, data, options);
+      });
+      let settled = false;
+      const starting = service
+        .start()
+        .catch((error) => error)
+        .finally(() => {
+          settled = true;
+        });
+      try {
+        await entered;
+        expect(settled).toBe(false);
+        expect((await service.snapshot()).running).toBe(false);
+      } finally {
+        release();
+      }
+      const error = await starting;
+      expect(error).toBeInstanceOf(Error);
+      if (failure === 'EACCES' || failure === 'ENOSPC') expect(error).toBe(ioError);
+      expect(mocks.ownerProof).toHaveBeenCalledOnce();
+      expect(fetchHealth).toHaveBeenCalledOnce();
+      expect(close).toHaveBeenCalledOnce();
+      expect((await service.snapshot()).running).toBe(false);
+      await service.dispose();
+      expect(close).toHaveBeenCalledOnce();
+    },
+  );
   it.each(
     ['EACCES', 'EPERM', 'EIO'].flatMap((code) =>
       ['manifest', 'binary'].map((target) => ({ code, target })),
