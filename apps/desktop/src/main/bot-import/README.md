@@ -343,8 +343,11 @@ Deletion first pauses target routines, then uses the original native CLI to rest
 only source tasks this import paused, persisting each acknowledgement. Failed
 restoration or cleanup staging aborts deletion before routines, run history or the
 profile/vault are removed, so retry retains the necessary data and credentials.
-Only after both succeed are target routines purged. Originally paused or
-non-taken-over tasks stay as-is.
+Target routines and run history are purged only after profile deletion commits;
+a failed database write retains them paused for retry. If post-commit cleanup is
+interrupted, existing startup reconciliation purges the deleted companion's
+routines and backing schedules. Originally paused or non-taken-over source tasks
+stay as-is.
 Definitive host input rejections keep their stable error through the Mobile
 Remote Resource boundary so the existing form can be edited and resubmitted.
 Expired or changed previews clear the frozen intent and refresh the existing

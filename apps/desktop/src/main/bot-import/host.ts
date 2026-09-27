@@ -169,10 +169,8 @@ export async function prepareCompanionImportDeletion(botId: string): Promise<voi
   scope.assert();
   await companionEnvironmentStore.stageRemoval(scope.root, botId, scope.assert);
   scope.assert();
-  // Keep definitions and history available for retry until handback and cleanup
-  // staging have succeeded. Pausing above stops and joins target execution.
-  await updateBotRoutineLifecycle(botId, 'delete');
-  scope.assert();
+  // Keep definitions and history until the profile deletion commits. The
+  // post-commit lifecycle hook purges them; a failed DB write stays retryable.
 }
 
 /** Called with target routines paused, inside the lifecycle profile lock. */

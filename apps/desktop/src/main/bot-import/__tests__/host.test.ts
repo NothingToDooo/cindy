@@ -224,12 +224,15 @@ it.each(['handback', 'cleanup staging'])('retains paused routines and credential
   if (failure === 'handback') expect(staging).not.toHaveBeenCalled();
   await remove();
   expect(h.sourceEnabled).toBe(true);
-  expect(h.routines).toEqual([]);
-  expect(h.lifecycle.mock.calls).toEqual([[accepted.botId, 'pause'], [accepted.botId, 'pause'], [accepted.botId, 'delete']]);
-  expect(h.lifecycle.mock.invocationCallOrder.at(-1)).toBeGreaterThan(staging.mock.invocationCallOrder.at(-1)!);
+  // Preparation can succeed while the following profile transaction fails.
+  // Even on repeated preparation, only pause: definitions must survive until commit.
+  expect(h.routines).toEqual(routines);
+  expect(h.lifecycle.mock.calls).toEqual([[accepted.botId, 'pause'], [accepted.botId, 'pause']]);
   const calls = h.pause.mock.calls.length;
   await remove();
   expect(h.pause).toHaveBeenCalledTimes(calls);
+  expect(h.routines).toEqual(routines);
+  expect(h.lifecycle).not.toHaveBeenCalledWith(accepted.botId, 'delete');
   // Credentials remain available until the profile deletion commits.
   expect(await h.store.read(h.root, accepted.botId, () => {})).toBeDefined();
   await h.store.finishRemoval(h.root, accepted.botId, () => {});

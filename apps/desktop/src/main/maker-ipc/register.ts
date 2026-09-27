@@ -10002,7 +10002,14 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       await updateBotRoutineLifecycle(botId, 'resume');
     },
     onBeforeDelete: prepareCompanionImportDeletion,
-    onDeleted: (botId, assertOwner) => finishCompanionEnvironmentRemoval(ownerScopedUserDataPath(), botId, assertOwner),
+    onDeleted: async (botId, assertOwner) => {
+      assertOwner();
+      // Profile deletion has committed. Startup also purges orphaned routines
+      // if this cleanup fails or the process stops before it finishes.
+      await updateBotRoutineLifecycle(botId, 'delete');
+      assertOwner();
+      await finishCompanionEnvironmentRemoval(ownerScopedUserDataPath(), botId, assertOwner);
+    },
   });
   const delegationForRestore = botDelegationServiceHolder;
   void restoreBotRuntimeForCurrentOwner();
