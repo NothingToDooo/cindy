@@ -11,6 +11,8 @@ export interface CompanionEnvironment {
   mcp: ImportedMcpServer[];
   credentials: Array<{ id: string; format: string; value: unknown }>;
   files?: Record<string, string>;
+  /** Originals behind redacted skill projections; only materialized for authorized host commands. */
+  skillFiles?: Record<string, Array<{ name: string; bytes: string; executable: boolean }>>;
   /** Original selected documents; model-readable profile/memory copies redact known credentials. */
   documents?: Record<string, string>;
   sourceAutomations?: Array<{ entryId: string; kind: 'hermes' | 'openclaw'; original: Record<string, unknown> }>;

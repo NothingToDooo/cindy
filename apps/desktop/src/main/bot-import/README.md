@@ -82,6 +82,20 @@ omitting it retains normal companion defaults, and a rejected request can be cor
   env). Unrelated launch tokens, proxy credentials and runtime injection variables
   are not implicitly inherited; selected proxy/runtime settings remain available.
   Codex hosts remain partitioned by companion environment identity.
+  Before publishing a selected Skill, UTF-8 and BOM-marked UTF-16 text (including
+  SKILL.md, scripts and reference resources) masks all known selected credentials.
+  Unchanged resources and binary assets retain their bytes. Affected skills keep
+  their complete original resource tree in the encrypted environment after the
+  restart checkpoint is cleared. Their readable SKILL.md points commands to the
+  existing `run_command` bridge and its private `CINDY_IMPORTED_SKILLS/<slug>`
+  directory, so embedded literals and sibling resources still work. Only an
+  authorized command materializes those originals in a private temporary tree;
+  success, failure and owner/cancellation unwinding remove that tree. Command cwd
+  and generated outputs stay in the companion workspace; files written into the
+  temporary resource tree are temporary too. Command output masks connection and
+  native-auth credentials as well as imported environment values. No new tool,
+  permission mode or UI is introduced. A hard process/OS crash may leave a private
+  OS-temp directory; this is not a filesystem sandbox against authorized code.
   Stdio MCPs retain their configured working directory in the private snapshot
   and encrypted connection. Relative directories use the source Agent workspace;
   an omitted directory also uses that workspace. Environment references resolve

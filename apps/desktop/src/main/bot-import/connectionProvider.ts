@@ -7,7 +7,8 @@ import { resolveLiziMcpSessionContext } from '@cindy/mcps';
 import { readCompanionSessionEnvironment } from './runtime.js';
 import { IMPORTED_TOOL_LIMIT, listImportedTools, withImportedConnection } from './connections.js';
 import { fingerprint } from './files.js';
-import { connectionRedactions, publicConnectionName, redactImportedResult, redactImportedTool, restoreImportedArguments } from './connectionCatalog.js';
+import { connectionRedactions, importedContentRedactions, publicConnectionName, redactImportedResult, redactImportedTool, restoreImportedArguments } from './connectionCatalog.js';
+import { withImportedSkillResources } from './skillResources.js';
 
 export const COMPANION_CONNECTIONS_MCP_NAME = 'companion_connections';
 
@@ -55,11 +56,11 @@ export function createCompanionConnectionsProvider(): McpProvider {
           const command = request.params.arguments?.command;
           if (typeof command !== 'string' || !command.trim() || command.length > 32000) throw new Error('Invalid command');
           const cwd = await ensureBotWorkspaceDir(scope.userData, scope.botId);
-          const output = await runImportedProcess({ command: process.platform === 'win32' ? process.env.ComSpec || 'cmd.exe' : '/bin/sh',
+          const output = await withImportedSkillResources(scope.environment, scope.assertOwner, env => runImportedProcess({ command: process.platform === 'win32' ? process.env.ComSpec || 'cmd.exe' : '/bin/sh',
             args: process.platform === 'win32' ? ['/d', '/s', '/c', command] : ['-c', command],
-            cwd, env: importedProcessEnvironment(scope.environment.env), timeoutMs: 120_000,
-            signal: extra.signal, assertOwner: scope.assertOwner });
-          return { content: [{ type: 'text', text: redactEnvironmentValues(output.stdout, scope.environment.env) }], isError: output.exitCode !== 0 };
+            cwd, env: importedProcessEnvironment(env), timeoutMs: 120_000,
+            signal: extra.signal, assertOwner: scope.assertOwner }));
+          return { content: [{ type: 'text', text: redactEnvironmentValues(output.stdout, importedContentRedactions(scope.environment)) }], isError: output.exitCode !== 0 };
         }
         // Resolve against the actual catalog; an arbitrary model-supplied name cannot choose a server.
         for (const connection of scope.environment.mcp.filter(connection => connection.enabled !== false && request.params.name.startsWith(`c_${fingerprint(connection.name).slice(0, 12)}_`))) {

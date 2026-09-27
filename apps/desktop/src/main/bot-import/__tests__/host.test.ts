@@ -1,12 +1,15 @@
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { Routine, RoutineInput } from '@cindy/maker-scheduler';
 import { createCompanionEnvironmentStore } from '../environment.js';
 import type { ImportSnapshot } from '../types.js';
 
-const h = vi.hoisted(() => ({ root: '', created: false, verified: false, sourceEnabled: true, failReadyWrite: false, boundary: false,
+const h = vi.hoisted(() => ({ root: '', botId: '', created: false, verified: false, sourceEnabled: true, failReadyWrite: false, boundary: false,
   snapshot: null as unknown as ImportSnapshot, store: null as unknown as ReturnType<typeof createCompanionEnvironmentStore>,
   routines: [] as Routine[], pause: vi.fn(), sourceEnvironment: {} as Record<string, string>,
   writeProfile: vi.fn(), importDocument: vi.fn(),
@@ -16,17 +19,21 @@ vi.mock('../../appSessionState.js', () => ({ activeOwnerScopeKey: () => h.root, 
 vi.mock('../../localDb/ipc/bots.js', () => ({
   listBotRemoteResourceSources: async () => [],
   getBotRemoteResourceSource: async () => { if (!h.created) throw new Error('[NOT_FOUND]'); return { canonicalSessionId: 'chat' }; },
-  createBotProfile: async () => { h.created = true; }, createBotCanonicalSession: async () => ({ canonicalSessionId: 'chat' }),
+  createBotProfile: async (input: { id: string }) => { h.created = true; h.botId = input.id; }, createBotCanonicalSession: async () => ({ canonicalSessionId: 'chat' }),
   getBotMemoryService: () => ({ importDocument: h.importDocument }), reconcileBotProfileFolder: async () => {},
 }));
 vi.mock('../../localDb/ipc/botAvatarSelection.js', () => ({ validateBotAvatarBuffer: vi.fn(), decodeBotAvatarImage: vi.fn() }));
-vi.mock('../../maker-ipc/botProfileFolder.js', () => ({ BOT_PROFILE_TEXT_MAX_BYTES: 100000, readBotProfileFolder: async () => ({ config: {} }), writeBotProfileFolder: h.writeProfile }));
-vi.mock('../../maker-ipc/botSkillStore.js', () => ({ importBotSkillFiles: vi.fn(), normalizeBotSkillSlug: (v: string) => v }));
+vi.mock('../../maker-ipc/botProfileFolder.js', () => ({ BOT_PROFILE_TEXT_MAX_BYTES: 100000, readBotProfileFolder: async () => ({ config: {} }), writeBotProfileFolder: h.writeProfile,
+  ensureBotWorkspaceDir: async () => { const directory = path.join(h.root, 'bots', h.botId, 'workspace'); await fs.mkdir(directory, { recursive: true }); return directory; },
+}));
+vi.mock('@cindy/mcps', () => ({ resolveLiziMcpSessionContext: () => ({ sessionId: 'chat' }) }));
 vi.mock('../sources.js', () => ({ discoverImportSources: async () => [h.snapshot.source], inspectImportSource: async () => h.snapshot }));
 vi.mock('../openclawCron.js', () => ({ readOpenClawCronDatabase: vi.fn() }));
 vi.mock('../verification.js', () => ({ verifyImportedAutomation: async () => ({ verified: h.verified, reason: 'AUTOMATION_DATA_READ_FAILED' }) }));
 vi.mock('../takeover.js', () => ({ changeSourceAutomationState: async (_source: unknown, _item: unknown, enabled: boolean, _readers: unknown, _owner: unknown, _resume: boolean, env: Record<string, string>) => { h.pause(enabled); h.sourceEnabled = enabled; h.sourceEnvironment = env; } }));
-vi.mock('../runtime.js', () => ({ recoverCompanionEnvironmentRemovals: vi.fn(async () => {}), companionEnvironmentStore: {
+vi.mock('../runtime.js', () => ({ recoverCompanionEnvironmentRemovals: vi.fn(async () => {}),
+  readCompanionSessionEnvironment: async () => ({ identity: h.root, botId: h.botId, userData: h.root, assertOwner() {}, environment: await h.store.read(h.root, h.botId, () => {}) }),
+  companionEnvironmentStore: {
   read: (...args: Parameters<typeof h.store.read>) => h.store.read(...args),
   write: (...args: Parameters<typeof h.store.write>) => h.store.write(...args),
   update: (...args: Parameters<typeof h.store.update>) => h.store.update(...args),
@@ -51,6 +58,7 @@ import { listCompanionImportSources, previewCompanionImport, startCompanionImpor
 import { withBotProfileLocks } from '../../maker-ipc/botProfileLock.js';
 import { assertImportedAutomationReady, prepareImportedAutomation } from '../automationRuntime.js';
 import { decodeBotAvatarImage } from '../../localDb/ipc/botAvatarSelection.js';
+import { createCompanionConnectionsProvider } from '../connectionProvider.js';
 
 beforeEach(async () => {
   h.root = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-import-host-test-'));
@@ -160,6 +168,84 @@ it('redacts selected credentials from profile and memory copies while retaining 
   expect(stored.mcp[0]?.headers?.Authorization).toBe(`Bearer ${secrets[2]}`);
   expect(stored.documents).toEqual(Object.fromEntries(documents.map(item => [item.view.id, item.text])));
   expect(stored.pendingImport).toBeUndefined();
+});
+
+it.each([false, true])('publishes masked skills and runs original scripts/resources through the existing bridge (native credentials only: %s)', async nativeOnly => {
+  const token = 'fake-selected-source-token'; const native = 'fake-native-resource-token';
+  const files = [
+    { name: 'SKILL.md', bytes: Buffer.from(`---\nname: report\ndescription: Query using ${token}\n---\nUse scripts/report.cjs; 原来的谈吐。`), executable: false },
+    { name: 'scripts/report.cjs', bytes: Buffer.from(`const fs = require('node:fs'); const helper = require('./helper.cjs'); if (${nativeOnly ? 'false' : `process.env.SOURCE_TOKEN !== '${token}'`} || helper.token !== '${native}') process.exit(1); fs.writeFileSync('report.txt', 'query succeeded'); console.log('query succeeded', helper.token, '${token}');`), executable: true },
+    { name: 'scripts/helper.cjs', bytes: Buffer.from('module.exports = require("./data/query.json");'), executable: false },
+    { name: 'scripts/data/query.json', bytes: Buffer.from(JSON.stringify({ token: native })), executable: false },
+    { name: 'references/guide.md', bytes: Buffer.from(`使用原接口。${native}\r\n`), executable: false },
+    { name: 'assets/image.bin', bytes: Buffer.from([0xff, 0, 0x80, 3]), executable: false },
+  ];
+  const plain = Buffer.from('---\nname: plain\n---\nKeep this exactly.\r\n');
+  h.snapshot.items = [
+    { view: { id: 'skill', name: 'report', category: 'skills', selected: true }, files, filesComplete: true },
+    { view: { id: 'plain', name: 'plain', category: 'skills', selected: true }, files: [{ name: 'SKILL.md', bytes: plain, executable: false }], filesComplete: true },
+    { view: { id: 'excluded', name: 'excluded', category: 'skills', selected: false }, files, filesComplete: true },
+    { view: { id: 'env', name: 'env', category: 'connections', selected: true }, env: { SOURCE_TOKEN: token } },
+    { view: { id: 'native', name: 'native', category: 'connections', selected: true }, credential: { format: 'native-auth', value: { access_token: native, refresh_token: token } } },
+  ];
+  const original = files.map(file => ({ ...file, bytes: Buffer.from(file.bytes) }));
+  const [source] = await listCompanionImportSources('fixture');
+  const preview = await previewCompanionImport(source!.id, 'fixture');
+  const requestId = 'fixture-skill-12345';
+  const result = await startCompanionImport({ requestId, previewId: preview.id, name: 'Ada', entryIds: ['skill', 'plain', 'native', ...(nativeOnly ? [] : ['env'])], takeover: false }, 'fixture');
+  await vi.waitFor(async () => expect((await getCompanionImportResult(requestId))?.status).toBe('complete'));
+  const skillRoot = path.join(h.root, 'bots', result.botId, 'skills');
+  for (const file of files) {
+    const published = await fs.readFile(path.join(skillRoot, 'report', file.name));
+    expect(published.includes(Buffer.from(token))).toBe(false); expect(published.includes(Buffer.from(native))).toBe(false);
+    if (file.name.endsWith('.bin')) expect(published).toEqual(file.bytes);
+  }
+  const guide = await fs.readFile(path.join(skillRoot, 'report', 'SKILL.md'), 'utf8');
+  expect(guide).toContain('原来的谈吐。'); expect(guide).toContain('companion_connections.run_command');
+  expect(guide).toContain('$CINDY_IMPORTED_SKILLS/report');
+  expect(await fs.readFile(path.join(skillRoot, 'plain', 'SKILL.md'))).toEqual(plain);
+  await expect(fs.access(path.join(skillRoot, 'excluded'))).rejects.toThrow();
+  const stored = (await h.store.read(h.root, result.botId, () => {}))!;
+  expect(stored.pendingImport).toBeUndefined();
+  if (nativeOnly) expect(stored.env).toEqual({});
+  expect(h.writeProfile.mock.calls[0]![2].config.mcpServers).toContain('companion_connections');
+  expect(Object.keys(stored.skillFiles!)).toEqual(['report']);
+  expect(stored.skillFiles!.report!.map(file => ({ ...file, bytes: Buffer.from(file.bytes, 'base64') }))).toEqual(original);
+  expect(files).toEqual(original);
+  expect(await fs.readFile(path.join(h.root, 'bots', result.botId, 'environment.json'), 'utf8')).not.toContain(token);
+
+  const config = createCompanionConnectionsProvider().toClaudeSdkConfig!({} as never) as { instance: McpServer };
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'fixture', version: '1' });
+  await config.instance.connect(serverTransport); await client.connect(clientTransport);
+  const mkdir = vi.spyOn(fs, 'mkdtemp');
+  try {
+    const prefix = process.platform === 'win32' ? '%CINDY_IMPORTED_SKILLS%' : '$CINDY_IMPORTED_SKILLS';
+    const output = await client.callTool({ name: 'run_command', arguments: { command: `"${process.execPath}" "${prefix}/report/scripts/report.cjs"` } });
+    expect(output.isError).toBe(false);
+    expect(JSON.stringify(output)).toContain('query succeeded');
+    expect(JSON.stringify(output)).not.toContain(token); expect(JSON.stringify(output)).not.toContain(native);
+    expect(await fs.readFile(path.join(h.root, 'bots', result.botId, 'workspace', 'report.txt'), 'utf8')).toBe('query succeeded');
+    expect(mkdir).toHaveBeenCalledTimes(1);
+    await expect(fs.access(await mkdir.mock.results[0]!.value)).rejects.toThrow();
+  } finally { mkdir.mockRestore(); await client.close(); await config.instance.close(); }
+});
+
+it('does not reintroduce a credential-bearing skill slug in the generated resource guidance', async () => {
+  const token = 'fake-secret-slug';
+  h.snapshot.items = [
+    { view: { id: 'skill', name: token, category: 'skills', selected: true }, files: [{ name: 'SKILL.md', bytes: Buffer.from(`# Skill\n${token}`), executable: false }], filesComplete: true },
+    { view: { id: 'env', name: 'env', category: 'connections', selected: true }, env: { KEY: token } },
+  ];
+  const [source] = await listCompanionImportSources('fixture');
+  const preview = await previewCompanionImport(source!.id, 'fixture');
+  const requestId = 'fixture-slug-12345';
+  const result = await startCompanionImport({ requestId, previewId: preview.id, name: 'Ada', entryIds: ['skill', 'env'], takeover: false }, 'fixture');
+  await vi.waitFor(async () => expect((await getCompanionImportResult(requestId))?.status).toBe('complete'));
+  const directory = path.join(h.root, 'bots', result.botId, 'skills');
+  const [slug] = await fs.readdir(directory);
+  expect(slug).toMatch(/^import-[a-f0-9]+$/);
+  expect(await fs.readFile(path.join(directory, slug!, 'SKILL.md'), 'utf8')).not.toContain(token);
 });
 
 it.each(['absolute', 'relative'])('resolves a selected %s MCP cwd after environment choice without anchoring an absolute reference twice', async form => {

@@ -25,6 +25,7 @@ import { transferCompanion, validateImportSelection, type ImportReceipt, type Tr
 import { CompanionImportError, type ImportSnapshot, type ImportSource } from './types.js';
 import { changeSourceAutomationState } from './takeover.js';
 import { verifyImportedAutomation } from './verification.js';
+import { projectImportedSkill } from './skillResources.js';
 
 interface Owned<T> { owner: string; controller: string; value: T; createdAt: number }
 const sources = new Map<string, Owned<ImportSource>>();
@@ -190,6 +191,12 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
   }
   const contentSecrets = selectedImportRedactions(selected);
   const redactText = (text: string) => redactEnvironmentValues(text, contentSecrets);
+  const skillSlug = (item: ImportSnapshot['items'][number]) => {
+    const original = path.basename(item.sourceDirectory ?? item.view.name);
+    if (redactText(original) !== original) return `import-${fingerprint(item.view.id).slice(0, 16)}`;
+    const normalized = normalizeBotSkillSlug(original);
+    return normalized === original ? original : `${normalized?.slice(0, 35) || 'import'}-${fingerprint(item.view.id).slice(0, 8)}`;
+  };
   for (const role of ['identity', 'user', 'instructions'] as const) {
     const text = redactText(selected.filter(item => item.role === role).map(item => item.text).join('\n\n'));
     if (Buffer.byteLength(text, 'utf8') > BOT_PROFILE_TEXT_MAX_BYTES) throw new CompanionImportError('PROFILE_TEXT_TOO_LARGE');
@@ -218,10 +225,8 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
     },
     async importItem(botId, item) {
       if (item.view.category === 'skills') {
-        const original = path.basename(item.sourceDirectory ?? item.view.name);
-        const normalized = normalizeBotSkillSlug(original);
-        const slug = normalized === original ? original : `${normalized?.slice(0, 35) || 'import'}-${fingerprint(item.view.id).slice(0, 8)}`;
-        await importBotSkillFiles(scope.root, botId, slug, item.files ?? [], scope.assert);
+        const slug = skillSlug(item);
+        await importBotSkillFiles(scope.root, botId, slug, projectImportedSkill(item.files ?? [], slug, contentSecrets).files, scope.assert);
       } else if (item.text && item.view.category === 'memory') {
         await getBotMemoryService().importDocument(botId, item.view.id, item.view.name, redactText(item.text), item.role === 'user' ? 'user' : 'reference');
       }
@@ -237,6 +242,11 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
       const chosen = new Set(items.map(item => item.view.id));
       const env = selectedImportEnvironment(items);
       const resolveReferences = (value: unknown) => resolveImportReferences(value, env);
+      const skillFiles = Object.fromEntries(items.filter(item => item.view.category === 'skills').flatMap(item => {
+        const slug = skillSlug(item);
+        const originals = projectImportedSkill(item.files ?? [], slug, contentSecrets).originals;
+        return originals ? [[slug, originals]] : [];
+      }));
       await companionEnvironmentStore.write(scope.root, botId, { version: 1,
         env,
         mcp: items.flatMap(item => {
@@ -250,6 +260,7 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
         }),
         credentials: items.flatMap(item => item.credential && !item.view.dependsOn?.some(id => !chosen.has(id)) && (!item.view.issues?.length || item.credential.format !== 'telegram') ? [{ id: item.view.id, ...item.credential, ...(item.credential.format === 'telegram' ? { value: resolveReferences(item.credential.value) } : {}) }] : []),
         files: Object.fromEntries(items.flatMap(item => item.asset ? [[item.asset.name, item.asset.bytes.toString('base64')]] : [])),
+        skillFiles,
         documents: Object.fromEntries(items.flatMap(item => item.text === undefined ? [] : [[item.view.id, item.text]])),
         sourceAutomations: items.flatMap(item => item.automation ? [{ entryId: item.view.id, kind: snapshot.source.kind, original: item.automation.original }] : []),
         pendingImport: { selection, snapshotJson: serializeImportSnapshot({ ...snapshot, avatarImageBase64: selection.avatarImageBase64, items }) },
@@ -260,7 +271,7 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
       await writeBotProfileFolder(scope.root, botId, {
         config: { ...folder.config, mcpMode: 'allowlist', mcpServers: [...new Set([
           ...(Array.isArray(folder.config.mcpServers) ? folder.config.mcpServers : []),
-          ...(items.some(item => item.mcp || item.env) ? ['companion_connections'] : []),
+          ...(items.some(item => item.mcp || item.env) || Object.keys(skillFiles).length ? ['companion_connections'] : []),
         ])] },
         ...(roleText('identity') ? { identitySource: roleText('identity') } : {}),
         ...(roleText('user') ? { userContextSource: roleText('user') } : {}),
