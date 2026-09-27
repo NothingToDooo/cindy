@@ -15,7 +15,7 @@ import { readBotProfileFolder, writeBotProfileFolder, BOT_PROFILE_TEXT_MAX_BYTES
 import { importBotSkillFiles, normalizeBotSkillSlug } from '../maker-ipc/botSkillStore.js';
 import { withBotProfileLocks } from '../maker-ipc/botProfileLock.js';
 import { getRoutineEngine, routineTools } from '../routines/service.js';
-import { resolveImportReferences, selectedImportEnvironment, selectedImportRedactions } from './environmentSelection.js';
+import { previewImportRedactions, resolveImportReferences, selectedImportEnvironment, selectedImportRedactions } from './environmentSelection.js';
 import { redactEnvironmentValues } from './process.js';
 import { discoverImportSources, inspectImportSource, type SourceReaderDeps } from './sources.js';
 import { readOpenClawCronDatabase } from './openclawCron.js';
@@ -76,8 +76,12 @@ export async function previewCompanionImport(sourceId: string, controller: strin
   const id = randomUUID();
   prune(previews);
   previews.set(id, { owner: scope.scope, controller, value: snapshot, createdAt: Date.now() });
-  return { id, source: { id: sourceId, kind: source.kind, name: source.name }, name: source.name,
-    ...(snapshot.avatarImageBase64 ? { avatarImageBase64: snapshot.avatarImageBase64 } : {}), entries: snapshot.items.map(item => item.view) };
+  const secrets = previewImportRedactions(snapshot.items);
+  const redact = (text: string) => redactEnvironmentValues(text, secrets);
+  return { id, source: { id: sourceId, kind: source.kind, name: redact(source.name) }, name: redact(source.name),
+    ...(snapshot.avatarImageBase64 ? { avatarImageBase64: snapshot.avatarImageBase64 } : {}),
+    entries: snapshot.items.map(({ view }) => ({ ...view, name: redact(view.name),
+      ...(view.description === undefined ? {} : { description: redact(view.description) }) })) };
 }
 
 function receiptFile(root: string, requestId: string) {

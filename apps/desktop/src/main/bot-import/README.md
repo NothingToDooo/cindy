@@ -5,6 +5,9 @@ Remote Resource transport, and the `companion_import.import_agent` command.
 The command has `sources`, `preview`, `start`, and `status` operations. Callers
 retain one `requestId` across reconnects and retries. Previews expose selectable
 metadata, never source paths, environment values or credential contents.
+Preview names and descriptions mask known credentials from the entire snapshot,
+including unselected or conflicting accounts. Only the public projection changes;
+private originals, stable selection IDs and dependency links remain intact.
 All command operations use the existing per-call approval policy. Discovery never
 persists a native tool/server grant that could authorize a later `start` operation.
 Auto still reviews the actual invocation; Full Access retains its normal behavior.
@@ -178,6 +181,10 @@ still use the private original URL; redacted output retains normal change detect
 Verified delivery-only credentials are excluded from data-read dependencies, so
 local reminders can retain their Telegram destination. Variables also referenced
 by the task or its skills still require data verification.
+Telegram destinations without an explicit source account bind only when exactly
+one source account is available. Multiple candidates or a missing explicit account
+use the existing `DELIVERY_NEEDS_ADAPTER` state and keep the source task running;
+being able to reach a chat does not identify the intended sending bot.
 For scripts classified as local-only with no data/connection dependency, the same
 runtime interpreter parses the selected script without executing business actions.
 This checks availability and syntax, not a full business execution; scripts with

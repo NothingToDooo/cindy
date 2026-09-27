@@ -87,6 +87,42 @@ it.each(['', ' ', 'invalid-image'])('rejects avatar %j before persisting credent
   expect(h.created).toBe(true);
 });
 
+it('masks all known credentials in preview labels without choosing conflicting accounts or changing the private snapshot', async () => {
+  const secrets = ['fake-work-key', 'fake-personal-key', 'fake-unselected-key', 'fake-local-key', 'fake-header-key', 'fake-access-key', 'fake-refresh-key', 'fake/url+key'];
+  const text = `status en us ${secrets.join(' ')} fake%2Furl%2Bkey`;
+  h.snapshot.source.name = `Ada ${secrets[0]}`;
+  h.snapshot.items = [
+    { view: { id: 'work', name: 'Work', category: 'connections', selected: false, exclusiveWith: ['personal'] }, env: { OPENAI_API_KEY: secrets[0]! } },
+    { view: { id: 'personal', name: 'Personal', category: 'connections', selected: false, exclusiveWith: ['work'] }, env: { OPENAI_API_KEY: secrets[1]! } },
+    { view: { id: 'unselected', name: 'Other', category: 'connections', selected: false }, env: { OTHER_TOKEN: secrets[2]!, ENDPOINT: 'https://example.invalid/mcp?token=fake%2Furl%2Bkey', LANG: 'en', REGION: 'us' } },
+    { view: { id: 'mcp', name: text, category: 'connections', selected: false, dependsOn: ['unselected'] }, mcp: { name: text, url: '${ENDPOINT}', env: { KEY: secrets[3]! }, headers: { Authorization: `Bearer ${secrets[4]}` } } },
+    { view: { id: 'native', name: 'Auth', category: 'connections', selected: false }, credential: { format: 'native-auth', value: { access_token: secrets[5], nested: { refreshToken: secrets[6] } } } },
+    { view: { id: 'skill', name: text, description: text, category: 'skills', selected: false } },
+    { view: { id: 'task', name: text, description: text, category: 'automations', selected: false, enabled: true, issues: ['DELIVERY_NEEDS_ADAPTER'], dependsOn: ['mcp'] } },
+  ];
+  const original = structuredClone(h.snapshot);
+  const [source] = await listCompanionImportSources('mobile-controller');
+  const preview = await previewCompanionImport(source!.id, 'mobile-controller');
+  for (const secret of [...secrets, 'fake%2Furl%2Bkey']) expect(JSON.stringify(preview)).not.toContain(secret);
+  expect(preview.name).toMatch(/^Ada \[[^\]]+\]$/);
+  expect(preview.source.name).toBe(preview.name);
+  for (const entry of preview.entries) {
+    const raw = original.items.find(item => item.view.id === entry.id)!.view;
+    const { name: _name, description: _description, ...structure } = entry;
+    const { name: _rawName, description: _rawDescription, ...rawStructure } = raw;
+    expect(structure).toEqual(rawStructure);
+  }
+  expect(preview.entries.find(item => item.id === 'skill')?.description).toContain('status en us');
+  expect(h.snapshot).toEqual(original);
+  expect(h.created).toBe(false);
+  expect(await fs.readdir(h.root)).toEqual([]);
+  // A later explicit selection still imports the original usable credential.
+  const requestId = 'preview-choice-12345';
+  const result = await startCompanionImport({ requestId, previewId: preview.id, name: 'Ada', entryIds: ['work'], takeover: false }, 'mobile-controller');
+  await vi.waitFor(async () => expect((await getCompanionImportResult(requestId))?.status).toBe('complete'));
+  expect((await h.store.read(h.root, result.botId, () => {}))?.env).toEqual({ OPENAI_API_KEY: secrets[0] });
+});
+
 it('redacts selected credentials from profile and memory copies while retaining original documents and usable secrets privately', async () => {
   const secrets = ['fake-env-key', 'fake-local-key', 'fake-header-token', 'fake/url+key', 'fake-access-token', 'fake-refresh-token', '123:fake-telegram-token'];
   const text = `简短一点，带点幽默。status en us\n${secrets.join('\n')}\nfake-unselected-key`;

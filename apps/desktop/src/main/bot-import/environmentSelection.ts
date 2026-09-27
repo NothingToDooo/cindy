@@ -1,6 +1,7 @@
 import { fingerprint } from './files.js';
 import { CompanionImportError, type ImportItem } from './types.js';
 import { importedContentRedactions } from './connectionCatalog.js';
+import { environmentRedactions } from './process.js';
 
 const variableName = (name: string, platform = process.platform) => platform === 'win32' ? name.toUpperCase() : name;
 
@@ -34,7 +35,25 @@ export function resolveImportReferences(value: unknown, env: Record<string, stri
 }
 
 export function selectedImportRedactions(items: ImportItem[]): Record<string, string> {
-  const env = selectedImportEnvironment(items);
+  return importRedactions(items, selectedImportEnvironment(items));
+}
+
+/** Preview includes unselected/conflicting accounts, so collect every known value without choosing one. */
+export function previewImportRedactions(items: ImportItem[]): Record<string, string> {
+  const values = new Map<string, Set<string>>();
+  for (const item of items) for (const [name, value] of Object.entries(item.env ?? {})) {
+    const key = variableName(name);
+    const candidates = values.get(key) ?? new Set<string>();
+    candidates.add(value); values.set(key, candidates);
+  }
+  // Resolve only unambiguous references; colliding values are still all masked below.
+  const env = Object.fromEntries([...values].flatMap(([name, candidates]) => candidates.size === 1 ? [[name, [...candidates][0]!]] : []));
+  const secrets = [...Object.values(importRedactions(items, env)),
+    ...items.flatMap(item => Object.values(environmentRedactions(item.env ?? {})))];
+  return Object.fromEntries([...new Set(secrets)].map((value, index) => [`preview_credential_${index}`, value]));
+}
+
+function importRedactions(items: ImportItem[], env: Record<string, string>): Record<string, string> {
   // Missing variables do not supply a known credential. Actual connection imports
   // still require every selected dependency and use strict reference resolution.
   const resolve = (value: unknown) => resolveImportReferences(value, env, true);

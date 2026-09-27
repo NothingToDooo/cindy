@@ -15,7 +15,9 @@ export function importDelivery(source: ImportSource, job: Record<string, unknown
     targets.push({ channel: string(delivery.channel), to: string(delivery.to), account: string(delivery.accountId), thread: delivery.threadId });
   }
   for (const target of targets) {
-    const connection = items.find(item => item.credential?.format === 'telegram' && (!target.account || object(item.credential.value).account === target.account));
+    const candidates = items.filter(item => item.credential?.format === 'telegram' && (!target.account || object(item.credential.value).account === target.account));
+    // Reachability does not establish which bot the source intended to use.
+    const connection = candidates.length === 1 ? candidates[0] : undefined;
     // Resolve only exact Telegram chats; directory aliases need their source adapter.
     const match = /^(?:telegram:)?(?:chat:)?(-?\d+|@[a-zA-Z0-9_]+)(?::(?:topic:)?(\d+))?$/.exec(target.to);
     if (target.channel !== 'telegram' || !connection || !match) { issues.push('DELIVERY_NEEDS_ADAPTER'); continue; }

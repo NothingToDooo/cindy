@@ -52,6 +52,60 @@ it('keeps the source running when a script sibling or resource is deselected', a
     expect(vi.mocked(deps.saveEnvironment).mock.calls[0]![1].some(item => item.view.id === omitted)).toBe(false);
   }
 });
+
+it.each([
+  { kind: 'hermes' as const, job: { deliver: 'telegram:123' } },
+  { kind: 'hermes' as const, job: { deliver: 'origin', origin: { platform: 'telegram', chat_id: '123' } } },
+  { kind: 'openclaw' as const, job: { delivery: { mode: 'announce', channel: 'telegram', to: '123' } } },
+])('does not guess an unspecified $kind Telegram account during takeover ($job)', async ({ kind, job }) => {
+  const accounts = ['work', 'personal'].map(account => ({
+    view: { id: account, name: account, category: 'connections' as const, selected: true },
+    credential: { format: 'telegram', value: { account, token: `123:fake-${account}-token` } },
+  }));
+  for (const candidates of [accounts, [...accounts].reverse(), [accounts[0]!]]) {
+    const source = { ...snapshot.source, kind };
+    const task = normalizeAutomation(source, { id: 'reminder', prompt: 'Remember', payload: { message: 'Remember' }, schedule: { kind: 'interval', minutes: 5 }, ...job }, candidates, 'UTC');
+    const { deps } = harness();
+    const items = [...candidates, task];
+    const result = await transferCompanion({ ...snapshot, source, items }, { ...selection, entryIds: items.map(item => item.view.id) }, deps);
+    // Both accounts could pass the fake reachability check; ambiguity must stop before it.
+    if (candidates.length > 1) {
+      expect(task.automation?.deliveries).toEqual([]);
+      expect(result.checks.find(check => check.entryId === task.view.id)).toMatchObject({ status: 'needs-attention', message: 'DELIVERY_NEEDS_ADAPTER' });
+      expect(deps.verifyAutomation).not.toHaveBeenCalled();
+      expect(deps.pauseSource).not.toHaveBeenCalled();
+      expect(deps.enableRoutine).not.toHaveBeenCalled();
+    } else {
+      expect(task.automation?.deliveries).toEqual([{ connectionId: 'work', chatId: '123' }]);
+      expect(result.status).toBe('complete');
+      expect(deps.pauseSource).toHaveBeenCalledOnce();
+      expect(deps.enableRoutine).toHaveBeenCalledOnce();
+    }
+    expect(vi.mocked(deps.saveEnvironment).mock.calls[0]![1]).toEqual(items);
+  }
+});
+
+it.each(['personal', 'missing'])('binds an explicit Telegram account %s without falling back to another bot', async accountId => {
+  const source = { ...snapshot.source, kind: 'openclaw' as const };
+  const accounts = ['work', 'personal'].map(account => ({
+    view: { id: account, name: account, category: 'connections' as const, selected: true },
+    credential: { format: 'telegram', value: { account, token: `123:fake-${account}-token` } },
+  }));
+  const task = normalizeAutomation(source, { id: 'reminder', payload: { message: 'Remember' }, schedule: { kind: 'every', everyMs: 60000 }, delivery: { mode: 'announce', channel: 'telegram', to: '123', accountId } }, accounts, 'UTC');
+  const { deps } = harness();
+  const items = [...accounts, task];
+  await transferCompanion({ ...snapshot, source, items }, { ...selection, entryIds: items.map(item => item.view.id) }, deps);
+  if (accountId === 'personal') {
+    expect(task.automation?.deliveries).toEqual([{ connectionId: 'personal', chatId: '123' }]);
+    expect(deps.pauseSource).toHaveBeenCalledOnce();
+  } else {
+    expect(task.view.issues).toContain('DELIVERY_NEEDS_ADAPTER');
+    expect(task.automation?.deliveries).toEqual([]);
+    expect(deps.pauseSource).not.toHaveBeenCalled();
+    expect(deps.enableRoutine).not.toHaveBeenCalled();
+  }
+});
+
 describe('companion takeover transaction', () => {
   it('copies exactly the selection and verifies before pausing source, idempotently', async () => {
     const { deps } = harness(); const order: string[] = [];
