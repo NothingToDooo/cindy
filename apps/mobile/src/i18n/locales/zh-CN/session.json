@@ -580,6 +580,7 @@
     "archiveConfirmTitle": "归档 Worker {{name}}？",
     "archiveConfirmDesc": "这会停止这个 Worker 的运行；历史记录会以归档状态保留。归档后无法恢复，需要重新创建 Worker 派任务。",
     "setFocus": "设为焦点",
+    "backToLead": "返回 Lead",
     "loadingHint": "正在确认协同设置…",
     "disabledHint": "协同模式已关闭，请在电脑端设置中重新启用",
     "unavailableHint": "暂时无法确认协同设置，请稍后重试",

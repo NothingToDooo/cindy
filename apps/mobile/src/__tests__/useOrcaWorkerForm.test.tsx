@@ -332,3 +332,41 @@ it('restores the remembered Agent after a device switch instead of the previous 
   await act(async () => { releaseB(); await flush(); });
   expect(latest!.form.agent).toBe('claude-code');
 });
+
+it('lets a Worker task focus itself and archive itself back to the Lead', async () => {
+  const { Alert } = await import('react-native');
+  const { useSessionOrcaCollab } = await import('@/session/useSessionOrcaCollab');
+  let collab: ReturnType<typeof useSessionOrcaCollab> | null = null;
+  const switchFocus = vi.fn(async () => ({}));
+  const archiveWorker = vi.fn(async () => ({}));
+  const maker = {
+    ...fakeMaker(),
+    orca: {
+      listWorkers: vi.fn(async () => [{ id: 'w-1', sessionId: 'worker-1', role: 'tester', focused: false }]),
+      getCollaborationSettings: vi.fn(async () => ({})),
+      getTeamByWorkerSession: vi.fn(async () => ({ leadSessionId: 'lead-1' })),
+      switchFocus,
+      archiveWorker,
+    },
+  } as unknown as MobileMakerTransport;
+  const openSession = vi.fn();
+  function Host() {
+    collab = useSessionOrcaCollab({
+      maker, deviceId: 'dev-1', sessionId: 'worker-1', prefsScope: 'user-1', enabled: true,
+      session: { id: 'worker-1', orcaRole: 'worker', workspaceKind: 'project', workingDir: '/repo', agentKind: 'pi' } as never,
+      sheetView: null, sheetOpen: false, setSheetView: () => undefined, setSheetOpen: () => undefined, openSession,
+    });
+    return null;
+  }
+  await act(async () => { root.render(<Host />); await flush(); });
+  await act(async () => { await flush(); });
+  expect(collab!.workerLeadSessionId).toBe('lead-1');
+  expect(collab!.workerSelf?.workerId).toBe('w-1');
+  await act(async () => { await collab!.setSelfFocus(); });
+  expect(switchFocus).toHaveBeenCalledWith('lead-1', 'w-1');
+  act(() => collab!.confirmArchiveSelf());
+  const confirm = vi.mocked(Alert.alert).mock.calls.at(-1)![2]!.find((button) => button.style === 'destructive')!;
+  await act(async () => { confirm.onPress?.(); await flush(); });
+  expect(archiveWorker).toHaveBeenCalledWith('lead-1', 'w-1');
+  expect(openSession).toHaveBeenCalledWith('lead-1');
+});

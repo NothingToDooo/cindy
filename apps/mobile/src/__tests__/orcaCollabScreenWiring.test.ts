@@ -37,6 +37,21 @@ describe('mobile Orca collaboration wiring', () => {
     expect(source).toContain('return subscribeOrcaStartFailure((failedSessionId) => {');
   });
 
+  it('gives Worker tasks a Worker-only header and details menu', () => {
+    const page = read('app/sessions/[sessionId].tsx');
+    // 右上角只留「更多」:不出远程桌面 / 文件夹。
+    expect(page).toContain("const workerHeader = currentSession?.orcaRole === 'worker';");
+    expect(page).toContain('detailsOnly={workerHeader}');
+    expect(page).toContain('{workerHeader ? null : (');
+    expect(page).toContain('worker={collab.isWorker ? {');
+    const menu = read('src/session/SessionMenuSheet.tsx');
+    expect(menu).toContain("const workerMode = !messageOnly && session.orcaRole === 'worker';");
+    expect(menu).toContain('const listedActions = workerMode ? [] : mainActions;');
+    expect(menu).toContain('{onOpenSearch && !workerMode ? (');
+    expect(menu).toContain('{!messageOnly && !workerMode && (');
+    expect(menu).toContain('{workerMode ? null : !messageOnly && isSharedTaskPeer');
+  });
+
   it('keeps Worker lifecycle on the Orca path instead of the generic task menu', () => {
     const source = read('src/session/SessionMenuSheet.tsx');
     expect(source).toContain("const lifecycleHidden = sharedGuest || session.orcaRole === 'worker';");

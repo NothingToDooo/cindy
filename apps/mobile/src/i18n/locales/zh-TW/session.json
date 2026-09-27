@@ -584,6 +584,7 @@
     "archiveConfirmTitle": "封存 Worker {{name}}？",
     "archiveConfirmDesc": "這會停止這個 Worker 的執行；歷史記錄會以封存狀態保留。封存後無法復原，需要重新建立 Worker 派任務。",
     "setFocus": "設為焦點",
+    "backToLead": "返回 Lead",
     "loadingHint": "正在確認協同設定…",
     "disabledHint": "協同模式已關閉，請在電腦端設定中重新啟用",
     "unavailableHint": "暫時無法確認協同設定，請稍後重試",

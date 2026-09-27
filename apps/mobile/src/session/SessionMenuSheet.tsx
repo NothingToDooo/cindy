@@ -22,6 +22,8 @@ import {
   Archive,
   ArchiveRestore,
   Copy,
+  CornerUpLeft,
+  Crosshair,
   Link2,
   LogOut,
   Pencil,
@@ -101,6 +103,15 @@ export interface SessionExtraDirBrowserState {
   path: string;
 }
 
+export interface SessionMenuWorkerActions {
+  /** 查不到所属 Lead 时为 undefined(入口不出现)。 */
+  onOpenLead?: () => void;
+  /** 已是焦点 / 查不到自身记录时为 undefined。 */
+  onSetFocus?: () => void;
+  /** 查不到自身记录时为 undefined。 */
+  onArchive?: () => void;
+}
+
 export interface SessionMenuSheetProps {
   tagDeviceId?: string;
   providerName?: string;
@@ -136,6 +147,11 @@ export interface SessionMenuSheetProps {
   onOpenWorkspace(): void;
   onOpenSharing?: () => void;
   onLeaveSharing?: () => void;
+  /**
+   * 协同 Worker 任务的专属操作。Worker 任务的详情只保留与 Worker 相关的入口(返回 Lead、
+   * 设为焦点、归档 Worker),不出现共享、重命名、置顶、标签、搜索、打开目录等普通任务功能。
+   */
+  worker?: SessionMenuWorkerActions;
   leavingSharing?: boolean;
   onTogglePinned(): void;
   onArchive(): void;
@@ -172,6 +188,7 @@ export function SessionMenuSheet({
   onOpenWorkspace,
   onOpenSharing,
   onLeaveSharing,
+  worker,
   leavingSharing = false,
   onTogglePinned,
   onArchive,
@@ -486,12 +503,15 @@ export function SessionMenuSheet({
   );
   const workspace = buildSessionInfoWorkspace(session);
   const sharedGuest = isSharedTaskPeer(session.deviceLinkDeviceId ?? '');
-  const showExtraDirs = !sharedGuest && sessionInfoShowsExtraDirs(session);
+  // 协同 Worker 任务:只保留与 Worker 相关的入口(见 SessionMenuWorkerActions)。
+  const workerMode = !messageOnly && session.orcaRole === 'worker';
+  const showExtraDirs = !sharedGuest && !workerMode && sessionInfoShowsExtraDirs(session);
 
   // 协同 Worker 的生命周期只能经所属 Lead 的协同面板(归档 Worker / 结束协同)走 Orca 服务;
   // 通用归档 / 删除会绕过团队状态与焦点收尾。桌面同样不给 Worker 这两个入口。
   const lifecycleHidden = sharedGuest || session.orcaRole === 'worker';
   const mainActions = messageOnly ? [] : actions.filter((action) => sharedGuest ? action.id === 'copyLink' : action.id !== 'delete' && action.id !== 'archive');
+  const listedActions = workerMode ? [] : mainActions;
   const deleteAction = messageOnly ? undefined : lifecycleHidden ? undefined : actions.find((action) => action.id === 'delete');
 
   const confirmCodexReset = useCallback(() => {
@@ -590,7 +610,17 @@ export function SessionMenuSheet({
 
           {!messageOnly ? <SessionUsageSummary providerName={providerName} session={session} usage={menuUsage} contextUsage={contextUsage} onPress={openInfo} translucent={Platform.OS === 'ios'} /> : null}
 
-          {!messageOnly && isSharedTaskPeer(session.deviceLinkDeviceId) && onLeaveSharing ? (
+          {workerMode ? (
+            <WorkerMenuActions
+              worker={worker}
+              onRun={(action) => {
+                onClose();
+                action();
+              }}
+            />
+          ) : null}
+
+          {workerMode ? null : !messageOnly && isSharedTaskPeer(session.deviceLinkDeviceId) && onLeaveSharing ? (
             Platform.OS === 'ios' ? <SessionDetailsNativeActions actions={[{
               label: t('sharedTask.leave'), danger: true, disabled: leavingSharing,
               onPress: onLeaveSharing, testID: 'session.leaveSharingButton',
@@ -609,14 +639,14 @@ export function SessionMenuSheet({
             </View>
           ) : null}
           {Platform.OS === 'ios' ? (
-            <SessionDetailsNativeActions actions={mainActions.map(action => ({
+            <SessionDetailsNativeActions actions={listedActions.map(action => ({
               label: action.id === 'copyLink' ? copyLabel(action.label, 'copyLink', t('session.menu.linkCopied')) : action.label,
               disabled: action.disabled,
               testID: action.testID,
               onPress: () => handleAction(action),
             }))} />
           ) : <View style={styles.actionGroup}>
-            {mainActions.map((action) => (
+            {listedActions.map((action) => (
               <MenuActionRow
                 key={action.id}
                 disabled={action.disabled}
@@ -630,7 +660,7 @@ export function SessionMenuSheet({
             ))}
           </View>}
 
-          {onOpenSearch ? (
+          {onOpenSearch && !workerMode ? (
             Platform.OS === 'ios' ? <SessionDetailsNativeActions actions={[{
               label: t('session.presentation.overview.actions.search.label'),
               onPress: onOpenSearch,
@@ -640,7 +670,7 @@ export function SessionMenuSheet({
             </View>
           ) : null}
 
-          {!messageOnly && (
+          {!messageOnly && !workerMode && (
             <TaskTagsPanel
               key={`${tagDeviceId ?? session.deviceLinkDeviceId}:${session.id}`}
               session={session}
@@ -767,12 +797,14 @@ export function SessionMenuSheet({
           <Text style={styles.infoSectionTitle}>{workspace.label}</Text>
           <InfoRow label={workspace.name} mono value={workspace.path} />
           <View style={styles.infoActionRow}>
-            <MenuPillButton
-              label={t('session.menu.openDir')}
-              disabled={sharedGuest}
-              onPress={onOpenWorkspace}
-              testID="session.openWorkspaceButton"
-            />
+            {workerMode ? null : (
+              <MenuPillButton
+                label={t('session.menu.openDir')}
+                disabled={sharedGuest}
+                onPress={onOpenWorkspace}
+                testID="session.openWorkspaceButton"
+              />
+            )}
             <MenuPillButton
               label={copyLabel(t('session.menu.copyPath'), 'workspacePath')}
               onPress={() => copyValue('workspacePath', workspace.path)}
@@ -999,6 +1031,50 @@ function menuActionIcon(action: SessionMenuAction, session: Pick<RemoteSession, 
     case 'delete': return Trash2;
     default: return Copy;
   }
+}
+
+/** 协同 Worker 任务的详情操作:返回 Lead / 设为焦点 / 归档 Worker(各自可用时才出现)。 */
+function WorkerMenuActions({
+  worker,
+  onRun,
+}: {
+  worker: SessionMenuWorkerActions | undefined;
+  onRun(action: () => void): void;
+}) {
+  const { t } = useTranslation();
+  const styles = useThemedStyles(makeStyles);
+  const rows = [
+    worker?.onOpenLead ? { key: 'lead', icon: CornerUpLeft, label: t('session.collab.backToLead'), danger: false, run: worker.onOpenLead, testID: 'session.workerBackToLead' } : null,
+    worker?.onSetFocus ? { key: 'focus', icon: Crosshair, label: t('session.collab.setFocus'), danger: false, run: worker.onSetFocus, testID: 'session.workerSetFocus' } : null,
+    worker?.onArchive ? { key: 'archive', icon: Archive, label: t('session.collab.archiveConfirm'), danger: true, run: worker.onArchive, testID: 'session.workerArchive' } : null,
+  ].filter((row): row is NonNullable<typeof row> => row !== null);
+  if (rows.length === 0) return null;
+  if (Platform.OS === 'ios') {
+    return (
+      <SessionDetailsNativeActions
+        actions={rows.map((row) => ({
+          label: row.label,
+          danger: row.danger,
+          onPress: () => onRun(row.run),
+          testID: row.testID,
+        }))}
+      />
+    );
+  }
+  return (
+    <View style={styles.actionGroup} testID="session.workerActions">
+      {rows.map((row) => (
+        <MenuActionRow
+          danger={row.danger}
+          icon={row.icon}
+          key={row.key}
+          label={row.label}
+          onPress={() => onRun(row.run)}
+          testID={row.testID}
+        />
+      ))}
+    </View>
+  );
 }
 
 function MenuActionRow({

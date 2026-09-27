@@ -463,6 +463,16 @@ export function useSessionOrcaCollab(params: {
     workerSessionId: isWorker ? sessionId : null,
     connectionEpoch,
   });
+  // Worker 任务自己在团队里的记录(焦点 / workerId),供详情菜单的 Worker 操作使用。
+  const workerTeam = useOrcaTeam({
+    maker,
+    deviceId,
+    leadSessionId: isWorker ? workerLeadSessionId : null,
+    connectionEpoch,
+  });
+  const workerSelf = isWorker
+    ? workerTeam.workers.find((worker) => worker.sessionId === sessionId) ?? null
+    : null;
   const workerForm = useOrcaWorkerForm({
     maker,
     prefsScope,
@@ -666,6 +676,54 @@ export function useSessionOrcaCollab(params: {
     if (workerLeadSessionId) openSession(workerLeadSessionId);
   }, [openSession, workerLeadSessionId]);
 
+  // ─── Worker 任务自身的操作(详情菜单) ─────────────────────────────────────
+  const refreshWorkerTeam = workerTeam.refresh;
+  const setSelfFocus = useCallback(async () => {
+    if (!workerLeadSessionId || !workerSelf) return;
+    try {
+      await makerRef.current.orca.switchFocus(workerLeadSessionId, workerSelf.workerId);
+    } catch (err) {
+      Alert.alert(describeOrcaError(
+        isOrcaAmbiguousTimeout(err) ? new Error('[ORCA_ACTION_UNCONFIRMED] timed out') : err,
+        'session.collab.errors.switchFailed',
+      ));
+    } finally {
+      void refreshWorkerTeam();
+    }
+  }, [refreshWorkerTeam, workerLeadSessionId, workerSelf]);
+
+  const confirmArchiveSelf = useCallback(() => {
+    if (!workerLeadSessionId || !workerSelf) return;
+    const leadId = workerLeadSessionId;
+    const worker = workerSelf;
+    Alert.alert(
+      i18n.t('session.collab.archiveConfirmTitle', { name: orcaWorkerDisplayName(worker) }),
+      i18n.t('session.collab.archiveConfirmDesc'),
+      [
+        { text: i18n.t('session.collab.cancel'), style: 'cancel' },
+        {
+          text: i18n.t('session.collab.archiveConfirm'),
+          style: 'destructive',
+          onPress: () => {
+            void (async () => {
+              try {
+                await makerRef.current.orca.archiveWorker(leadId, worker.workerId);
+                // 归档后这个 Worker 任务不再可用,回到 Lead。
+                openSession(leadId);
+              } catch (err) {
+                Alert.alert(describeOrcaError(
+                  isOrcaAmbiguousTimeout(err) ? new Error('[ORCA_ACTION_UNCONFIRMED] timed out') : err,
+                  'session.collab.errors.archiveFailed',
+                ));
+                void refreshWorkerTeam();
+              }
+            })();
+          },
+        },
+      ],
+    );
+  }, [openSession, refreshWorkerTeam, workerLeadSessionId, workerSelf]);
+
   return {
     eligible,
     isLead,
@@ -675,6 +733,11 @@ export function useSessionOrcaCollab(params: {
     team,
     workerLeadSessionId,
     openLead,
+    /** Worker 任务自身在团队里的记录;查不到(老被控端 / 读取中)为 null,Worker 操作不出现。 */
+    workerSelf,
+    refreshWorkerSelf: refreshWorkerTeam,
+    setSelfFocus,
+    confirmArchiveSelf,
     workerForm,
     busy,
     error,

@@ -2060,6 +2060,11 @@ export default function SessionScreen() {
     [composerDeviceProviders.providers, currentSession?.remoteHostId],
   );
   collabProvidersRef.current = composerDeviceProviders.ready ? collabWorkerProviders : null;
+  // Worker 任务打开详情时刷新自身记录(焦点可能已在别处变化)。
+  const refreshWorkerSelf = collab.refreshWorkerSelf;
+  useEffect(() => {
+    if (settingsOpen && collab.isWorker) void refreshWorkerSelf();
+  }, [collab.isWorker, refreshWorkerSelf, settingsOpen]);
   // 新建任务页在后台开启协同失败时任务照单任务继续,提示在这里(跳转后的会话页)出现。
   useEffect(() => {
     const show = () => {
@@ -8969,6 +8974,11 @@ export default function SessionScreen() {
                 params: { sessionId, deviceId, deviceName },
               });
             }}
+            worker={collab.isWorker ? {
+              onOpenLead: collab.workerLeadSessionId ? collab.openLead : undefined,
+              onSetFocus: collab.workerSelf && !collab.workerSelf.focused ? () => void collab.setSelfFocus() : undefined,
+              onArchive: collab.workerSelf ? collab.confirmArchiveSelf : undefined,
+            } : undefined}
             onRegenerateTitle={() => maker.regenerateSessionTitle(sessionId)}
             onRename={(title) => patchSessionMeta({ title })}
             onRestore={() => patchSessionMeta({ status: 'active' })}
@@ -10002,8 +10012,11 @@ function SessionHeaderBar({
   const actionProjection = overview ? projectMobileSessionActions(overview.actions) : null;
   // queue 入口已退役:排队消息 inline 到消息流(InlineQueueSection),不再有独立面板。
   // 两端顶栏右侧同为「远程桌面、文件、更多」;搜索从「更多 → 任务详情」进入(ios-native-design §2、§4)。
+  // 协同 Worker 任务在 Lead 的工作区里跑,不单独提供远程桌面 / 文件入口,只留「更多」。
+  const workerHeader = currentSession?.orcaRole === 'worker';
   const headerActions = (actionProjection?.primaryActions ?? [])
     .filter((action) => action.id === 'files');
+  const visibleHeaderActions = workerHeader ? [] : headerActions;
   const actionHandlers = {
     files: onOpenFiles,
     queue: () => undefined,
@@ -10025,7 +10038,7 @@ function SessionHeaderBar({
   // fixed-size React title's contents when the trailing glass capsule grows.
   const nativeTitleMaxWidth = Math.max(0, Math.min(240,
     headerWindow.width - headerInsets.left - headerInsets.right
-      - (spacing.lg + spacing.xs) * 2 - navigationChrome.target * (onOpenSessionList ? 5 : 4)
+      - (spacing.lg + spacing.xs) * 2 - navigationChrome.target * ((onOpenSessionList ? 5 : 4) - (workerHeader ? 2 : 0))
       - (onOpenSessionList ? spacing.sm : 0) - spacing.sm * 2,
   ));
   const sessionListButton = onOpenSessionList ? (
@@ -10063,7 +10076,7 @@ function SessionHeaderBar({
           <SessionHeaderNativeActions available={!!currentSession}
             desktopLabel={t('remoteDesktop.title')}
             filesLabel={t('session.presentation.overview.actions.files.a11y')}
-            moreLabel={t('session.menu.details')} files={files}
+            moreLabel={t('session.menu.details')} files={files} detailsOnly={workerHeader}
             onDetails={onOpenSettings} onDesktop={onOpenRemoteDesktop}
             onAction={id => actionHandlers[id]()} />
         </Stack.Toolbar.View>
@@ -10092,12 +10105,14 @@ function SessionHeaderBar({
       <SystemNavigationBack label={t('shared.back')} onPress={onBack} />
       {sessionListButton}
       {systemBack ? <Stack.Toolbar placement="right">
+        {workerHeader ? null : <>
         <Stack.Toolbar.Button icon={require('../../assets/navigation/monitor.png')} iconRenderingMode="template"
           accessibilityLabel={t('remoteDesktop.title')} disabled={!currentSession} onPress={onOpenRemoteDesktop} />
         <Stack.Toolbar.Button icon={require('../../assets/navigation/folder.png')} iconRenderingMode="template"
           accessibilityLabel={t('session.presentation.overview.actions.files.a11y')}
           disabled={!currentSession || !overview?.actions.some(action => action.id === 'files' && !action.disabled)}
           onPress={onOpenFiles} />
+        </>}
         <Stack.Toolbar.Button icon="ellipsis" accessibilityLabel={t('session.menu.details')}
           disabled={!currentSession} onPress={onOpenSettings} />
       </Stack.Toolbar> : null}
@@ -10155,20 +10170,23 @@ function SessionHeaderBar({
           filesLabel={t('session.presentation.overview.actions.files.a11y')}
           moreLabel={t('session.menu.details')}
           files={overview?.actions.find(action => action.id === 'files')}
+          detailsOnly={workerHeader}
           onDetails={onOpenSettings}
           onDesktop={onOpenRemoteDesktop}
           onAction={id => actionHandlers[id]()}
         />
       ) : <View style={styles.sessionHeaderActions}>
-        <SessionHeaderIconButton
-          accessibilityLabel={t('remoteDesktop.title')}
-          active={false}
-          disabled={!currentSession}
-          icon={Monitor}
-          onPress={currentSession ? onOpenRemoteDesktop : undefined}
-          testID="session.remoteDesktop"
-        />
-        {headerActions.map((action) => (
+        {workerHeader ? null : (
+          <SessionHeaderIconButton
+            accessibilityLabel={t('remoteDesktop.title')}
+            active={false}
+            disabled={!currentSession}
+            icon={Monitor}
+            onPress={currentSession ? onOpenRemoteDesktop : undefined}
+            testID="session.remoteDesktop"
+          />
+        )}
+        {visibleHeaderActions.map((action) => (
           <SessionHeaderIconButton
             accessibilityHint={action.disabledReason ?? undefined}
             accessibilityLabel={action.accessibilityLabel}
