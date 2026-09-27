@@ -73,7 +73,8 @@ const {
   createImChannelDefaultRouteSync,
   resetImSessionToChannelDefaults,
 } = await import('../channelDefaultRouteSync');
-const { buildImDefaultRouteRecord, parseImDefaultRouteRecord } = await import('../channelDefaultRoute');
+const { markImSessionManualRouteOverride } = await import('../manualRouteOverride');
+const { buildImDefaultRouteRecord, buildImManualRouteOverrideRecord, parseImDefaultRouteRecord } = await import('../channelDefaultRoute');
 import type { ImDefaultRoute } from '../channelDefaultRoute';
 import type { ImOrchestratorConfig } from '../types';
 
@@ -175,7 +176,7 @@ beforeEach(() => {
 describe('syncUnderLock', () => {
   it('switches a following task and records the read-back route under the new fingerprint', async () => {
     await insertTask('t1', OLD);
-    await sync().syncUnderLock('t1');
+    await expect(sync().syncUnderLock('t1')).resolves.toBe(false);
 
     expect(mocks.applyRoute).toHaveBeenCalledWith('t1', { ...NEW, fastMode: false }, 'claude-code');
     const record = parseImDefaultRouteRecord((await rowOf('t1')).imDefaultRoute);
@@ -197,7 +198,8 @@ describe('syncUnderLock', () => {
   it('keeps the old fingerprint and remembers the pending target while the runtime is busy', async () => {
     await insertTask('t1', OLD);
     mocks.applyRoute.mockResolvedValue('staged');
-    await sync().syncUnderLock('t1');
+    // true = 跟随切换被暂缓, 调用方本次不得再走通用意图应用(PR #5155 review P1)。
+    await expect(sync().syncUnderLock('t1')).resolves.toBe(true);
 
     const record = parseImDefaultRouteRecord((await rowOf('t1')).imDefaultRoute);
     expect(record).toEqual({ v: 1, fp: 'fp-old', route: OLD, pendingRoute: NEW, pendingFp: 'fp-new' });
@@ -269,7 +271,7 @@ describe('syncUnderLock', () => {
     });
     mocks.readPendingRoute.mockReturnValue(NEW);
     mocks.applyRoute.mockRejectedValue(new Error('model window confirmation required'));
-    await expect(sync().syncUnderLock('t1')).resolves.toBeUndefined();
+    await expect(sync().syncUnderLock('t1')).resolves.toBe(false);
 
     expect(mocks.applyRoute).toHaveBeenCalledWith('t1', null, 'claude-code');
     expect((await rowOf('t1')).imDefaultRoute).toBe(buildImDefaultRouteRecord('fp-old', OLD));
@@ -283,6 +285,17 @@ describe('syncUnderLock', () => {
     expect((await rowOf('t1')).imDefaultRoute).toBe(buildImDefaultRouteRecord('fp-old', OLD));
   });
 
+  it('never touches a task carrying the manual override marker', async () => {
+    // 同值重选落地时立的墓碑: 不再跟随, 也不必解析新默认(greptile P1 补充, PR #5155)。
+    const tombstone = buildImManualRouteOverrideRecord(OLD);
+    await insertTask('t1', OLD, { record: tombstone });
+    await sync().syncUnderLock('t1');
+
+    expect(mocks.resolveDefaults).not.toHaveBeenCalled();
+    expect(mocks.applyRoute).not.toHaveBeenCalled();
+    expect((await rowOf('t1')).imDefaultRoute).toBe(tombstone);
+  });
+
   it('treats a pinned native source as the recorded implicit default', async () => {
     await insertTask('t1', { ...OLD, providerId: 'xd' });
     await sync().syncUnderLock('t1');
@@ -293,7 +306,7 @@ describe('syncUnderLock', () => {
   it('never blocks the message and restores the record when the switch fails', async () => {
     await insertTask('t1', OLD);
     mocks.applyRoute.mockRejectedValue(new Error('model window unknown'));
-    await expect(sync().syncUnderLock('t1')).resolves.toBeUndefined();
+    await expect(sync().syncUnderLock('t1')).resolves.toBe(false);
 
     expect((await rowOf('t1')).imDefaultRoute).toBe(buildImDefaultRouteRecord('fp-old', OLD));
     expect((await rowOf('t1')).model).toBe(OLD.model);
@@ -400,20 +413,22 @@ describe('backfillLegacyImDefaultRoutes', () => {
     mocks.fingerprint.mockReturnValue('fp-old');
     mocks.rawDefault.mockReturnValue({ ...OLD, providerId: 'openai', effort: 'xhigh' });
     mocks.resolveDefaults.mockResolvedValue({ ...NEW, permissionMode: 'auto', fastMode: false, fingerprint: 'fp-old' });
-    // 历史任务还停在旧默认的模型/来源上; effort 是当年按目录 reconcile 过的, 不必等于原始设置。
-    await insertTask('legacy-broken-default', { ...OLD, providerId: 'openai', effort: 'high' }, { record: null });
+    await insertTask('legacy-broken-default', { ...OLD, providerId: 'openai' }, { record: null });
     await insertTask('legacy-on-fallback', NEW, { record: null });
     await insertTask('legacy-off-raw', { ...OLD, providerId: 'other' }, { record: null });
+    // 只改过 effort 的历史任务也是「单独改过」, 不能被认领(PR #5155 review P1)。
+    await insertTask('legacy-effort-only', { ...OLD, providerId: 'openai', effort: 'low' }, { record: null });
 
     await expect(backfillLegacyImDefaultRoutes('feishu', CONFIG)).resolves.toBe(2);
 
     expect(parseImDefaultRouteRecord((await rowOf('legacy-broken-default')).imDefaultRoute)).toEqual({
       v: 1,
       fp: 'fp-old',
-      route: { ...OLD, providerId: 'openai', effort: 'high' },
+      route: { ...OLD, providerId: 'openai' },
     });
     expect((await rowOf('legacy-on-fallback')).imDefaultRoute).not.toBeNull();
     expect((await rowOf('legacy-off-raw')).imDefaultRoute).toBeNull();
+    expect((await rowOf('legacy-effort-only')).imDefaultRoute).toBeNull();
   });
 
   it('matches by the saved raw default when the old default cannot be resolved at all', async () => {
@@ -445,6 +460,30 @@ describe('backfillLegacyImDefaultRoutes', () => {
     mocks.listProviders.mockResolvedValue(null);
 
     await expect(backfillLegacyImDefaultRoutes('feishu', CONFIG)).resolves.toBe(0);
+  });
+});
+
+describe('markImSessionManualRouteOverride', () => {
+  it('marks a channel-owned task so it stops following for good', async () => {
+    await insertTask('t1', OLD);
+    await markImSessionManualRouteOverride('t1');
+
+    expect(parseImDefaultRouteRecord((await rowOf('t1')).imDefaultRoute)).toEqual({
+      v: 1,
+      fp: '',
+      route: OLD,
+      manual: true,
+    });
+  });
+
+  it('does not touch tasks outside the channel follow surface', async () => {
+    await insertTask('desktop', OLD, { source: 'desktop', record: null });
+    await insertTask('remote', OLD, { remoteHostId: 'ssh-1' });
+    await markImSessionManualRouteOverride('desktop');
+    await markImSessionManualRouteOverride('remote');
+
+    expect((await rowOf('desktop')).imDefaultRoute).toBeNull();
+    expect((await rowOf('remote')).imDefaultRoute).toBe(buildImDefaultRouteRecord('fp-old', OLD));
   });
 });
 

@@ -4,6 +4,7 @@ import { handleListDevices, defaultDeps as deviceDirectoryDeps } from '../device
 import { getSelfDeviceId, remoteInvoke as invokeBotPeer } from '../device-link/index.js';
 import { registerModelFavoritesSync } from './modelFavoritesSync.js';
 import { advanceRuntimeRecoveryNotice } from '../im/shared/runtimeRecoveryNotice.js';
+import { markImSessionManualRouteOverride } from '../im/shared/manualRouteOverride.js';
 import { configureAppDefaultModelSelection } from './appDefaultModelControl.js';
 import type { BuiltinApiKeyBridgeDeps } from '../secrets/builtinApiKeyBridge.js';
 import { setBotInvitationWelcomeDispatch } from './botInvitation.js';
@@ -3391,7 +3392,7 @@ let pendingAgentSwitchApplyHolder:
     sessionId: string,
     signal?: AbortSignal,
     selection?: ScheduledModelSelection,
-    beforeApply?: () => Promise<void>,
+    beforeApply?: () => Promise<boolean | void>,
   ) => Promise<{ release: () => void; selection?: ScheduledModelSelection }>) | null = null;
 let cancelPendingAgentSwitchHolder: ((sessionId: string) => void) | null = null;
 
@@ -3643,7 +3644,7 @@ export function cancelPendingAgentSwitchForSession(sessionId: string): void {
  */
 export async function acquirePendingAgentSwitchForImSend(
   sessionId: string,
-  syncUnderLock: () => Promise<void>,
+  syncUnderLock: () => Promise<boolean | void>,
 ): Promise<() => void> {
   const lease = await pendingAgentSwitchApplyHolder?.(sessionId, undefined, undefined, syncUnderLock);
   return lease?.release ?? (() => {});
@@ -8635,13 +8636,16 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         effort: (intent.effort ?? null) as SessionRuntimeProfile['effort'],
         fastMode: intent.fastMode ?? false,
       }, { source: 'user', sessionLockHeld: true, applyingUserSelectionOnSend: applyNow,
-        runtimeSource: intent.runtimeSource, assertSelectionCurrent });
+        runtimeSource: intent.runtimeSource, configStaged: intent.configStaged === true,
+        assertSelectionCurrent });
       return result;
     },
     onPendingSwitchChanged: (sessionId, intent) => {
       if (intent) recordUserSessionRuntimeMutation(sessionId);
       broadcastSessionPatched(sessionId, { agentSwitchIntent: intent });
     },
+    // 用户选择落地 → 给 IM 任务打「脱离跟随」标记(同值重选也永久脱离, PR #5155)。
+    onUserRouteSelectionLanded: (sessionId) => markImSessionManualRouteOverride(sessionId),
     log,
   };
   registerMakerSessionAgentSwitchHandler(makerSessionRegistry, agentSwitchDeps);
@@ -8690,19 +8694,26 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   });
   pendingAgentSwitchApplyHolder = async (sessionId, signal, selection, beforeApply) => {
     let stage = 'direct-send:acquire';
+    let deferPendingApply = false;
     const release = await acquireSendToSessionLock(sessionId, undefined, () => stage);
     try {
       stage = 'direct-send:reconcileBotModelRoute';
       await reconcileBotModelRoute(sessionId, true);
       if (beforeApply) {
         stage = 'direct-send:beforeApply';
-        await beforeApply();
+        // 回调(IM 渠道默认跟随对齐)返回 true = 跟随切换被暂缓(会话有后台工作 / 待处理
+        // 交互): 本次不能再走通用意图应用 —— 那里只看 isTurnRunning, 会把刚登记的意图
+        // 立即应用, 跨引擎时关闭并重建仍在承载后台工作的 Session, 绕过跟随自己的安全
+        // 边界(PR #5155 review P1)。意图留待安全边界 / 下一条消息。
+        deferPendingApply = (await beforeApply()) === true;
       }
       stage = 'direct-send:applyPendingAgentSwitchIfIdle';
-      await applyPendingAgentSwitchIfIdle(agentSwitchDeps, sessionId, {
-        bootstrapAfterSwitch: true,
-        signal,
-      });
+      if (!deferPendingApply) {
+        await applyPendingAgentSwitchIfIdle(agentSwitchDeps, sessionId, {
+          bootstrapAfterSwitch: true,
+          signal,
+        });
+      }
       let resolvedSelection: ScheduledModelSelection | undefined;
       if (selection) {
         stage = 'direct-send:applyScheduledModelSelection';
@@ -11502,6 +11513,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   type InternalRuntimeSelectionOptions = {
     source: 'user' | SessionRuntimeMutationSource;
     runtimeSource?: 'agent';
+    /** 系统配置对齐(IM 渠道默认跟随 / 伙伴模型对齐)登记: 落地时不打「脱离跟随」标记。 */
+    configStaged?: boolean;
     assertSelectionCurrent?: () => void;
     /** Internal calls from the send / switch transaction already own the route lock. */
     sessionLockHeld?: boolean;
@@ -11711,13 +11724,14 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       await performSessionAgentSwitch(agentSwitchDeps, {
         sessionId, targetAgentKind: route.agentKind, model: route.model,
         providerId: route.providerId, effort: route.effort, fastMode: route.fastMode,
+        configStaged: true,
       });
     } else {
       await applyWithVerifiedModelWindow((confirmedContextWindow) =>
         applySessionRuntimeSelection(sessionId, route.model, route.providerId,
           { effort: route.effort as SessionRuntimeProfile['effort'], fastMode: route.fastMode,
             ...(confirmedContextWindow === undefined ? {} : { confirmedContextWindow }) },
-          { source: 'user', deferWhileRunning: true, sessionLockHeld: true }));
+          { source: 'user', deferWhileRunning: true, sessionLockHeld: true, configStaged: true }));
     }
   };
   const isSessionIdleForRouteApply = (sessionId: string): boolean => {
@@ -16698,6 +16712,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         clearPendingCredentialSwitchForSession(sessionId, { wake: false });
         const intent = {
           ...(internalOptions.runtimeSource ? { runtimeSource: internalOptions.runtimeSource } : {}),
+          ...(internalOptions.configStaged === true ? { configStaged: true } : {}),
           sameAgentSelection: true,
           targetAgentKind: dbToMakerAgentKind(runtimeStatus.agentKind),
           model,

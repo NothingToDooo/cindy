@@ -212,6 +212,12 @@ export interface MakerSessionAgentSwitchHandlerDeps {
     sessionId: string,
     intent: PublicAgentSwitchIntent | null,
   ): void;
+  /**
+   * 用户选择的路由落地(应用成功)后回调 —— 供 IM 侧给任务打「脱离跟随」标记:
+   * 「单独改过」按选择行为判定, 同值重选也永久脱离跟随(greptile P1 补充, PR #5155)。
+   * 系统配置对齐(configStaged)与 Agent 自选不触发。
+   */
+  onUserRouteSelectionLanded?(sessionId: string): void | Promise<void>;
   log: {
     info(message: string, fields?: Record<string, unknown>): void;
     warn(message: string, fields?: Record<string, unknown>): void;
@@ -245,6 +251,11 @@ export interface SessionAgentSwitchResult {
 export interface PendingAgentSwitchIntent {
   /** Agent-requested complete selection, exposed by the runtime control query. */
   runtimeSource?: 'agent';
+  /**
+   * 系统配置对齐(IM 渠道默认跟随 / 伙伴模型对齐)登记的意图 —— 不是用户选择,
+   * 落地时不给任务打「脱离跟随」标记。用户 picker 选择不带此标(PR #5155)。
+   */
+  configStaged?: boolean;
   /** SET_MODEL intent: apply the route without a cross-engine handoff. */
   sameAgentSelection?: boolean;
   targetAgentKind: AgentKind;
@@ -371,6 +382,8 @@ export async function performSessionAgentSwitch(
     /** Abort signal for direct scheduler/IM sends; checked at side-effect boundaries. */
     signal?: AbortSignal;
     runtimeSource?: 'agent';
+    /** 系统配置对齐(IM 渠道默认跟随 / 伙伴模型对齐)登记: 落地时不打「脱离跟随」标记。 */
+    configStaged?: boolean;
     /** Recheck caller CAS after asynchronous validation, before staging any intent. */
     assertSelectionCurrent?: () => void;
   },
@@ -444,6 +457,7 @@ export async function performSessionAgentSwitch(
         ...(typeof params.fastMode === 'boolean' ? { fastMode: params.fastMode } : {}),
         sameAgentSelection: true,
         ...(params.runtimeSource ? { runtimeSource: params.runtimeSource } : {}),
+        ...(params.configStaged === true ? { configStaged: true } : {}),
       }, false, params.assertSelectionCurrent);
       return {
         switched: false,
@@ -496,6 +510,7 @@ export async function performSessionAgentSwitch(
   if (!params.applyNow && deps.pendingSwitches) {
     const intent: PendingAgentSwitchIntent = {
       ...(params.runtimeSource ? { runtimeSource: params.runtimeSource } : {}),
+      ...(params.configStaged === true ? { configStaged: true } : {}),
       targetAgentKind,
       model,
       providerId: normalizedProviderId,
@@ -650,6 +665,7 @@ export async function performSessionAgentSwitch(
               // 下一条消息先重试原子恢复尾段,而不是带半状态继续 lazy-create。
               deps.pendingSwitches?.set(sessionId, {
                 ...(params.runtimeSource ? { runtimeSource: params.runtimeSource } : {}),
+                ...(params.configStaged === true ? { configStaged: true } : {}),
                 targetAgentKind,
                 model,
                 providerId: normalizedProviderId,
@@ -674,6 +690,7 @@ export async function performSessionAgentSwitch(
             // 避免只清 sdk id 后 DB pending 与实际注入内容分叉。
             deps.pendingSwitches?.set(sessionId, {
               ...(params.runtimeSource ? { runtimeSource: params.runtimeSource } : {}),
+              ...(params.configStaged === true ? { configStaged: true } : {}),
               targetAgentKind,
               model,
               providerId: normalizedProviderId,
@@ -751,6 +768,24 @@ export async function performSessionAgentSwitch(
  *    保留原有失败后继续发送的行为。resume 回落事务
  *    已进入 commit point 后若失败,则只重试其原子恢复尾段。
  */
+/**
+ * 用户选择落地 → 通知调用方打「脱离跟随」标记。只认用户选择: 系统配置对齐
+ * (configStaged)与 Agent 自选都由默认变化覆盖, 不得永久脱离。
+ */
+function noteLandedUserRouteSelection(
+  deps: MakerSessionAgentSwitchHandlerDeps,
+  sessionId: string,
+  intent: PendingAgentSwitchIntent,
+): void {
+  if (intent.configStaged === true || intent.runtimeSource === 'agent') return;
+  void Promise.resolve(deps.onUserRouteSelectionLanded?.(sessionId)).catch((err) => {
+    deps.log.warn('failed to record landed user route selection', {
+      sessionId,
+      err: err instanceof Error ? err.message : String(err),
+    });
+  });
+}
+
 const pendingAgentSwitchApplyInFlight = new Map<string, Promise<void>>();
 
 /**
@@ -808,6 +843,7 @@ export function applyPendingAgentSwitchIfIdle(
           deps.pendingSwitches.clear(sessionId);
           deps.onPendingSwitchChanged?.(sessionId, null);
         }
+        noteLandedUserRouteSelection(deps, sessionId, intent);
         throwIfAgentSwitchAborted(opts?.signal);
         if (opts?.bootstrapAfterSwitch && !deps.getLiveSession(sessionId)) {
           await deps.bootstrapSwitchedSession(sessionId);
@@ -835,6 +871,7 @@ export function applyPendingAgentSwitchIfIdle(
           deps.pendingSwitches.clear(sessionId);
           deps.onPendingSwitchChanged?.(sessionId, null);
         }
+        noteLandedUserRouteSelection(deps, sessionId, intent);
         return;
       }
       const result = await performSessionAgentSwitch(deps, {
@@ -859,6 +896,7 @@ export function applyPendingAgentSwitchIfIdle(
       if (!result.retryPending && deps.pendingSwitches?.get(sessionId) === intent) {
         deps.pendingSwitches.clear(sessionId);
         deps.onPendingSwitchChanged?.(sessionId, null);
+        noteLandedUserRouteSelection(deps, sessionId, intent);
       }
       // Once the switch has committed, the intent has been consumed even if
       // cancellation arrived during the final bootstrap step.  The caller's

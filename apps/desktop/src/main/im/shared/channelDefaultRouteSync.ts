@@ -52,8 +52,13 @@ export interface ImChannelDefaultRouteSync {
    * 只读, 不登记任何东西。
    */
   previewSwitchTarget(sessionId: string): Promise<ImDefaultRoute | null>;
-  /** 在 send 锁内对齐。从不抛错。 */
-  syncUnderLock(sessionId: string): Promise<void>;
+  /**
+   * 在 send 锁内对齐。从不抛错。
+   * 返回 true = 跟随切换被暂缓(会话有后台工作 / 待处理交互) —— 调用方本次不得再走
+   * 通用意图应用(那里的忙判定只看 isTurnRunning, 会立即应用刚登记的意图、跨引擎时
+   * 重建仍在承载后台工作的会话, PR #5155 review P1)。
+   */
+  syncUnderLock(sessionId: string): Promise<boolean>;
   /**
    * 未接线(无运行实例)的任务在接线前先对齐, 避免先用可能已坏的旧路由起一次进程。
    * 自己取放 send 锁, 从不抛错。
@@ -157,6 +162,8 @@ export function createImChannelDefaultRouteSync(deps: {
     const row = await readSessionRouteRow(sessionId);
     if (!row || !isChannelOwnedRow(row, source)) return null;
     const record = parseImDefaultRouteRecord(row.imDefaultRoute);
+    // 用户单独改过路由(墓碑): 永不跟随, 不必解析新默认。
+    if (record?.manual) return null;
     if (!imDefaultRouteMayNeedSync(record, readImDefaultSettingsFingerprint(source))) return null;
     const providers = await listProviders();
     // 目录拿不到就无法可靠比对来源, 本条消息先按原路由走。
@@ -204,13 +211,13 @@ export function createImChannelDefaultRouteSync(deps: {
       .where(eq(sessions.id, sessionId));
   }
 
-  async function switchRoute(sessionId: string, e: Evaluation): Promise<void> {
+  async function switchRoute(sessionId: string, e: Evaluation): Promise<boolean> {
     if (!(await deps.isRouteUsable(e.target))) {
       log.warn(
         `default route sync skipped: new ${source} default unusable ` +
           `session=...${sessionId.slice(-8)} target=${e.target.agentKind}/${e.target.model}`,
       );
-      return;
+      return false;
     }
     // 先记下待生效目标(指纹保持旧值): 意图丢失(重启)或应用失败时, 下一条消息
     // 仍能认出这是「跟随中的任务」并重试, 而不是误判为用户改过。
@@ -255,16 +262,17 @@ export function createImChannelDefaultRouteSync(deps: {
         );
       }
       log.info(`default route switch staged session=...${sessionId.slice(-8)} (runtime busy)`);
-      return;
+      return true;
     }
     await recordApplied(sessionId, e);
+    return false;
   }
 
   /**
    * 忙时登记的跟随意图由这里自己应用, 不交给通用发送路径: 同引擎应用失败在那边会
    * 直接让用户这条消息失败。这里失败则撤回意图、保持原路由。
    */
-  async function applyStaged(sessionId: string, e: Evaluation): Promise<void> {
+  async function applyStaged(sessionId: string, e: Evaluation): Promise<boolean> {
     let outcome: 'applied' | 'staged';
     try {
       outcome = await applySessionRouteUnderSendLock(sessionId, null, e.current.agentKind);
@@ -272,7 +280,11 @@ export function createImChannelDefaultRouteSync(deps: {
       await writeRecord(sessionId, buildImDefaultRouteRecord(e.record.fp, e.record.route));
       throw err;
     }
-    if (outcome === 'applied') await recordApplied(sessionId, e);
+    if (outcome === 'applied') {
+      await recordApplied(sessionId, e);
+      return false;
+    }
+    return true;
   }
 
   async function recordApplied(sessionId: string, e: Evaluation): Promise<void> {
@@ -305,33 +317,32 @@ export function createImChannelDefaultRouteSync(deps: {
     }
   }
 
-  async function syncUnderLock(sessionId: string): Promise<void> {
+  async function syncUnderLock(sessionId: string): Promise<boolean> {
     try {
       const e = await evaluate(sessionId);
-      if (!e) return;
+      if (!e) return false;
       switch (e.decision.kind) {
         case 'adopt':
           if (e.decision.cancelPendingIntent) cancelPendingAgentSwitchForSession(sessionId);
           await writeRecord(sessionId, buildImDefaultRouteRecord(e.targetFingerprint, e.current));
-          return;
+          return false;
         case 'switch':
-          await switchRoute(sessionId, e);
-          return;
+          return await switchRoute(sessionId, e);
         case 'staged':
-          await applyStaged(sessionId, e);
-          return;
+          return await applyStaged(sessionId, e);
         case 'manual':
           // 用户的选择顶掉了本功能登记的待生效意图: 清掉过时声称, 但绝不动用户的意图。
           if (e.decision.clearStalePending) {
             await writeRecord(sessionId, buildImDefaultRouteRecord(e.record.fp, e.record.route));
           }
-          return;
+          return false;
       }
     } catch (err) {
       log.warn(
         `default route sync failed (non-fatal, keeping current route) session=...${sessionId.slice(-8)}: ` +
           (err instanceof Error ? err.message : String(err)),
       );
+      return false;
     }
   }
 
@@ -359,7 +370,11 @@ export function createImChannelDefaultRouteSync(deps: {
  * 旧默认的来源断开 / 模型停用后, `resolveImSessionDefaults` 会把旧设置回落到别的
  * 可用路由, 拿回落值去跟历史任务实际落点比永远匹配不到, 这些任务的 `im_default_route`
  * 会一直空着 —— 而用户正是在修坏默认时最需要迁移它们。所以同时按**保存的原始默认**
- * (未过可用性回落)认领; 回落发生时 effort 无法在目录外复原, 不作要求。
+ * (未过可用性回落)认领。
+ *
+ * 匹配要求**整条路由相等**(含 effort): 思考强度是承诺按手动选择保护的路由轴, 只
+ * 改过 effort 的历史任务不能被认领(PR #5155 review P1);原始默认的 effort 在设置
+ * 保存时就已按模型 reconcile 过, 与历史落点一致。
  *
  * 无法可靠识别时(供应商目录拿不到)必须抛错而不是返回 0: 调用方把 0 当成「补完了」
  * 就会提交新默认, 下一次只能按新默认匹配, 还停在旧默认上的老任务永久失去跟随资格。
@@ -414,18 +429,12 @@ export async function backfillLegacyImDefaultRoutes(
     );
   }
   const normalize = providerNormalizer(providers);
-  // 解析落点是否离开了原始默认(可用性回落)。只比路由轴, effort 另算。
-  const landedElsewhere =
-    !resolvedDefault ||
-    !sameImDefaultRoute({ ...resolvedDefault, effort: rawDefault.effort }, rawDefault, normalize);
   let count = 0;
   for (const row of legacyRows) {
     const current = currentRouteOf(row);
     const matches =
       (!!resolvedDefault && sameImDefaultRoute(current, resolvedDefault, normalize)) ||
-      sameImDefaultRoute(current, rawDefault, normalize) ||
-      (landedElsewhere &&
-        sameImDefaultRoute({ ...current, effort: rawDefault.effort }, rawDefault, normalize));
+      sameImDefaultRoute(current, rawDefault, normalize);
     if (!matches) continue;
     await getDbClient()
       .drizzle.update(sessions)

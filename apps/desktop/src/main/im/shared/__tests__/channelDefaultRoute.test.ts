@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { IM_DEFAULT_SETTINGS, type ImDefaultSettings } from '../../../../shared/imDefaultSettings';
 import {
   buildImDefaultRouteRecord,
+  buildImManualRouteOverrideRecord,
   decideImDefaultRoute,
   fingerprintImDefaultSettings,
   imDefaultRouteMayNeedSync,
@@ -49,6 +50,12 @@ describe('im default route record', () => {
       parseImDefaultRouteRecord(buildImDefaultRouteRecord('fp', OLD, { route: NEW, fp: 'fp-new', rev: 7 })),
     ).toEqual({ v: 1, fp: 'fp', route: OLD, pendingRoute: NEW, pendingFp: 'fp-new', pendingRev: 7 });
     expect(parseImDefaultRouteRecord(buildImDefaultRouteRecord('fp', OLD))).toEqual({ v: 1, fp: 'fp', route: OLD });
+    expect(parseImDefaultRouteRecord(buildImManualRouteOverrideRecord(OLD))).toEqual({
+      v: 1,
+      fp: '',
+      route: OLD,
+      manual: true,
+    });
     expect(parseImDefaultRouteRecord(null)).toBeNull();
     expect(parseImDefaultRouteRecord('not json')).toBeNull();
     expect(parseImDefaultRouteRecord(JSON.stringify({ v: 2, fp: 'fp', route: OLD }))).toBeNull();
@@ -105,6 +112,15 @@ describe('decideImDefaultRoute', () => {
     // 用户单独改成 NEW、默认随后也改到 NEW: 不能洗成跟随, 否则下次默认变化会盖掉用户的选择
     // (chatgpt-codex-connector P2, PR #5155)。
     expect(decide({ record: record(), current: NEW, target: NEW })).toEqual({ kind: 'manual' });
+  });
+
+  it('never follows again once the task carries a manual override marker', () => {
+    // 同值重选在路由值上无痕, 选择落地时立墓碑; 此后无论默认怎么变都不跟随
+    // (greptile P1 补充, PR #5155)。
+    const tombstoned = { ...record(), manual: true as const };
+    expect(decide({ record: tombstoned, current: OLD, target: NEW })).toEqual({ kind: 'manual' });
+    expect(decide({ record: tombstoned, current: OLD, target: OLD })).toEqual({ kind: 'manual' });
+    expect(decide({ record: tombstoned, current: NEW, target: NEW })).toEqual({ kind: 'manual' });
   });
 
   it('does not re-register its own pending switch to the same target', () => {

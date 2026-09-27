@@ -1055,3 +1055,59 @@ describe('settleSystemRouteSwitchIntent', () => {
     ).toBe('failed');
   });
 });
+
+describe('landed user route selection', () => {
+  function pickHarness() {
+    const pending = createPendingAgentSwitchRegistry();
+    const landed: string[] = [];
+    const { deps } = makeDeps({
+      pendingSwitches: pending,
+      selectSameAgentModel: async (id, choice, applyNow) => {
+        if (!applyNow) {
+          pending.set(id, choice);
+          return { deferred: true };
+        }
+        return { deferred: false };
+      },
+      onUserRouteSelectionLanded: (id) => {
+        landed.push(id);
+      },
+    });
+    return { deps, landed };
+  }
+
+  it('reports a user pick when it lands — 同值重选也要永久脱离跟随', async () => {
+    const h = pickHarness();
+    // 同引擎 picker 选择(sameAgentSelection)。
+    await performSessionAgentSwitch(h.deps, {
+      sessionId: 's1',
+      targetAgentKind: 'claude-code',
+      model: 'claude-fable-5',
+      providerId: 'xd',
+    });
+    await applyPendingAgentSwitchIfIdle(h.deps, 's1');
+    expect(h.landed).toEqual(['s1']);
+  });
+
+  it('reports a cross-engine user pick but not system-staged or agent selections', async () => {
+    const h = pickHarness();
+    await performSessionAgentSwitch(h.deps, { ...validParams });
+    await applyPendingAgentSwitchIfIdle(h.deps, 's1');
+    expect(h.landed).toEqual(['s1']);
+
+    h.landed.length = 0;
+    // 系统配置对齐(IM 渠道默认跟随 / 伙伴模型对齐)的意图落地不算用户改路由。
+    await performSessionAgentSwitch(h.deps, { ...validParams, configStaged: true });
+    await applyPendingAgentSwitchIfIdle(h.deps, 's1');
+    expect(h.landed).toEqual([]);
+
+    // Agent 自选同样由默认变化覆盖, 不得脱离。
+    await performSessionAgentSwitch(h.deps, {
+      ...validParams,
+      model: 'gpt-6',
+      runtimeSource: 'agent',
+    });
+    await applyPendingAgentSwitchIfIdle(h.deps, 's1');
+    expect(h.landed).toEqual([]);
+  });
+});

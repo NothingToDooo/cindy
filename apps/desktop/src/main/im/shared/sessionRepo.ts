@@ -33,6 +33,7 @@ import {
   type ResolvedImSessionDefaults,
 } from '../defaultSessionSettings';
 import { buildImDefaultRouteRecord } from './channelDefaultRoute';
+import { markImSessionManualRouteOverride } from './manualRouteOverride';
 import { broadcastSessionCreated, broadcastSessionPatched } from './sessionBroadcast';
 import type { ImOrchestratorConfig, ImSessionNamespace } from './types';
 
@@ -773,6 +774,9 @@ export async function updateModelEffort(
       updatedAt: Date.now(),
     })
     .where(eq(sessions.id, sessionId));
+  // `/model` 是用户单独改路由(哪怕选了同值): 渠道自有任务从此脱离默认跟随
+  // —— 按选择行为判定、不看取值相等(PR #5155 review P1)。
+  await markImSessionManualRouteOverride(sessionId);
 }
 
 /** Update permissionMode column (for /permission picker). */

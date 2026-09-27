@@ -35,6 +35,12 @@ export interface ImDefaultRouteRecord {
    * 按用户选择对待,不能被下一次默认变化覆盖。
    */
   pendingRev?: number;
+  /**
+   * 用户单独改过路由的永久标记(脱离跟随)。同值重选在路由值上无痕, 只能在用户
+   * 选择落地时立碑; 之后无论默认怎么变都不再跟随, `/new` 重置才会重新跟随
+   * (greptile P1 补充, PR #5155)。
+   */
+  manual?: true;
 }
 
 const AGENT_KINDS: readonly AgentKind[] = ['claude-code', 'codex', 'pi'];
@@ -82,6 +88,7 @@ export function parseImDefaultRouteRecord(json: string | null | undefined): ImDe
   if (r.v !== 1 || typeof r.fp !== 'string') return null;
   const route = parseRoute(r.route);
   if (!route) return null;
+  const manual = r.manual === true;
   const pendingRoute = r.pendingRoute === undefined ? undefined : parseRoute(r.pendingRoute);
   if (pendingRoute === null) return null;
   const pendingFp = typeof r.pendingFp === 'string' ? r.pendingFp : undefined;
@@ -90,6 +97,7 @@ export function parseImDefaultRouteRecord(json: string | null | undefined): ImDe
     v: 1,
     fp: r.fp,
     route,
+    ...(manual ? { manual: true } : {}),
     ...(pendingRoute ? { pendingRoute } : {}),
     ...(pendingRoute && pendingFp ? { pendingFp } : {}),
     ...(pendingRoute && pendingRev !== undefined ? { pendingRev } : {}),
@@ -117,6 +125,14 @@ export function buildImDefaultRouteRecord(
         }
       : {}),
   });
+}
+
+/**
+ * 用户单独改过路由的永久标记(脱离跟随)。同值重选在路由值上无痕 —— 记录一旦写成
+ * 这份墓碑就不再跟随渠道默认, `/new` 重置会用普通记录覆盖它、重新跟随。
+ */
+export function buildImManualRouteOverrideRecord(route: ImDefaultRoute): string {
+  return serializeImDefaultRouteRecord({ v: 1, fp: '', route, manual: true });
 }
 
 /**
@@ -177,6 +193,8 @@ export function decideImDefaultRoute(input: {
   const same = (a: ImDefaultRoute, b: ImDefaultRoute) =>
     sameImDefaultRoute(a, b, input.normalizeProvider);
   const { record, current, target, pendingIntent } = input;
+  // 用户单独改过(含同值重选的墓碑): 永不跟随。
+  if (record.manual) return { kind: 'manual' };
   // 「仍在跟随」的证据: 当前路由就是记录的路由, 或落到了本功能登记的待生效目标上
   // (意图被发送路径应用了、记录还没来得及更新)。**不能**用「恰好等于新默认」当证据 ——
   // 用户单独改成 B、默认随后也改成 B 时, 按值相等认领会把手动覆盖洗成跟随
