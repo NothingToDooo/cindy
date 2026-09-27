@@ -58,6 +58,8 @@ it('uses the original monitor URL but masks echoed path/query credentials, previ
   const requests: string[] = [];
   const endpoint = createServer((req, res) => {
     requests.push(req.url!);
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
     res.end(`Count: 7\n${req.url}\nfake-path-secret\nfake/query+secret`);
   });
   await new Promise<void>(resolve => endpoint.listen(0, '127.0.0.1', resolve));
