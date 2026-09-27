@@ -13,7 +13,10 @@ vi.mock('@react-native-async-storage/async-storage', () => ({
 }));
 vi.mock('react-native', () => ({ Alert: { alert: vi.fn() } }));
 vi.mock('@/device-link/DeviceLinkContext', () => ({ subscribeRemoteOrcaWorkerChanged: () => () => undefined }));
-vi.mock('@/session/ContextSheetCollabView', () => ({ canSubmitOrcaWorkerForm: () => true }));
+vi.mock('@/session/ContextSheetCollabView', () => ({
+  canSubmitOrcaWorkerForm: () => true,
+  isPredefinedOrcaRole: (role: string) => ['developer', 'designer', 'reviewer', 'tester', 'merger'].includes(role),
+}));
 vi.mock('@/session/fullAccessConfirmation', () => ({ confirmFullAccessChange: async () => true }));
 vi.mock('@/session/remoteSessionStore', () => ({ remoteSessionStore: { applySessionPatch: vi.fn() } }));
 
@@ -151,4 +154,18 @@ it('moves an untouched form off an Agent the computer does not have', async () =
   expect(latest!.agents).toEqual(['claude-code']);
   expect(latest!.form.agent).toBe('claude-code');
   expect(latest!.form.model?.id).toBe('claude-opus-4-7');
+});
+
+it('reopens a confirmed draft with the role mode that matches its saved role', async () => {
+  await act(async () => root.render(<Probe maker={fakeMaker()} />));
+  await act(async () => { latest!.reset(); await flush(); });
+  const saved = { ...latest!.form, role: 'developer' };
+  // 上次打开时切到了「自定义」但没提交就关掉。
+  await act(async () => { latest!.setCustomRoleMode(true); });
+  await act(async () => { latest!.restore(saved); await flush(); });
+  expect(latest!.customRoleMode).toBe(false);
+  expect(latest!.form.role).toBe('developer');
+
+  await act(async () => { latest!.restore({ ...saved, role: 'Security Auditor' }); await flush(); });
+  expect(latest!.customRoleMode).toBe(true);
 });

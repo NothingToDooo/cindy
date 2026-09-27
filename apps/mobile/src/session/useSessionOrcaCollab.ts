@@ -39,7 +39,7 @@ import {
   type OrcaCollaborationSettings,
 } from '@cindy/maker-shared/orca-team';
 import { subscribeRemoteOrcaWorkerChanged } from '@/device-link/DeviceLinkContext';
-import { canSubmitOrcaWorkerForm } from '@/session/ContextSheetCollabView';
+import { canSubmitOrcaWorkerForm, isPredefinedOrcaRole } from '@/session/ContextSheetCollabView';
 import { normalizeMobileAgentCapabilities } from '@/session/agentCapabilities';
 import {
   defaultOrcaWorkerCreationPrefs,
@@ -253,6 +253,14 @@ export function useOrcaWorkerForm(params: {
     return () => { cancelled = true; };
   }, [active, converge, maker]);
 
+  /** 重新打开已确认的表单(新建任务的协同草稿):角色模式跟随保存的角色,不沿用上次未提交的编辑。 */
+  const restore = useCallback((value: OrcaWorkerFormValue) => {
+    generationRef.current += 1;
+    touchedRef.current = true;
+    setCustomRoleMode(!isPredefinedOrcaRole(value.role.trim().toLowerCase()));
+    setForm(value);
+  }, []);
+
   /** 恢复记忆(上次的 Agent 不在当前电脑上时取第一个可用 Agent)。初始任务不记忆。 */
   const reset = useCallback(() => {
     const generation = ++generationRef.current;
@@ -349,7 +357,7 @@ export function useOrcaWorkerForm(params: {
 
   return {
     form,
-    setForm,
+    restore,
     customRoleMode,
     setCustomRoleMode,
     patch,

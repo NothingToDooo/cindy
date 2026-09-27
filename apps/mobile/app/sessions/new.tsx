@@ -593,7 +593,7 @@ export default function NewRemoteSessionScreen() {
   }, [collabEligible, collabTarget, contextSheetOpen, draft.agentKind, maker, selectedDeviceId]);
   const openCollabDraftForm = useCallback(() => {
     if (collabDraft) {
-      collabForm.setForm(collabDraft);
+      collabForm.restore(collabDraft);
     } else {
       collabForm.reset();
     }
