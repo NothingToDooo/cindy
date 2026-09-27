@@ -479,6 +479,42 @@ describe('resumable cross-computer copy', () => {
     await requestTaskMigration({ action: 'cancel', sessionId: 'fork' });
     expect(await fs.readFile(path.join(state.root, 'shared', 'draft'), 'utf8')).toBe('original');
   });
+  it('keeps cancellation retryable when staging cleanup fails', async () => {
+    state.noSpace = true;
+    await start();
+    const status = await settled();
+    const directory = path.join(
+      state.root,
+      'A',
+      'task-copies',
+      'outgoing',
+      status.targetSessionId!,
+    );
+    const snapshot = await fs.readFile(path.join(directory, 'session.cshare'));
+    const remove = fs.rm.bind(fs);
+    const failCleanup = vi.spyOn(fs, 'rm').mockImplementation(async (file, options) => {
+      if (String(file) === directory) throw new Error('cleanup denied');
+      return remove(file, options);
+    });
+    try {
+      await expect(requestTaskMigration({ action: 'cancel', sessionId: 'fork' })).rejects.toThrow(
+        'cleanup denied',
+      );
+      expect((await settled()).stage).toBe('preparing');
+      await expect(start()).rejects.toThrow('MIGRATION_ALREADY_STARTED');
+      expect(await fs.readFile(path.join(directory, 'session.cshare'))).toEqual(snapshot);
+    } finally {
+      failCleanup.mockRestore();
+    }
+    expect((await requestTaskMigration({ action: 'cancel', sessionId: 'fork' })).stage).toBe(
+      'cancelled',
+    );
+    await expect(fs.stat(directory)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await fs.readFile(path.join(state.root, 'shared', 'draft'), 'utf8')).toBe('original');
+    state.noSpace = false;
+    await start();
+    expect((await settled()).stage).toBe('complete');
+  });
   it('reclaims interrupted upload parts before resource checks, preserving snapshots and other handoffs', async () => {
     const workerDir = await team();
     state.restoresFail = true;
@@ -696,23 +732,34 @@ describe('resumable cross-computer copy', () => {
   it('does not disclose another source device receipt', async () => {
     await start();
     const result = await settled();
-    await expect(state.context.run({device:'B', peer:'C'}, () => requestTaskMigration({
-      action:'receipt', id:result.targetSessionId!, sourceSessionId:'fork',
-    }))).rejects.toThrow('MIGRATION_ID_CONFLICT');
+    await expect(
+      state.context.run({ device: 'B', peer: 'C' }, () =>
+        requestTaskMigration({
+          action: 'receipt',
+          id: result.targetSessionId!,
+          sourceSessionId: 'fork',
+        }),
+      ),
+    ).rejects.toThrow('MIGRATION_ID_CONFLICT');
   });
 
   it('discards a snapshot when a new turn finishes during preparation', async () => {
-    state.snapshot.mockImplementationOnce(() => { state.rows.get('A')!.get('fork')!.updatedAt = 123; });
+    state.snapshot.mockImplementationOnce(() => {
+      state.rows.get('A')!.get('fork')!.updatedAt = 123;
+    });
     await start();
-    expect(await settled()).toMatchObject({stage:'preparing',error:'MIGRATION_SOURCE_CHANGED'});
+    expect(await settled()).toMatchObject({
+      stage: 'preparing',
+      error: 'MIGRATION_SOURCE_CHANGED',
+    });
     expect(state.imports).not.toHaveBeenCalled();
     expect(state.files.size).toBe(0);
-    await requestTaskMigration({action:'retry',sessionId:'fork'});
+    await requestTaskMigration({ action: 'retry', sessionId: 'fork' });
     expect((await settled()).stage).toBe('complete');
   });
   it('serializes admission even without process-local route locks', async () => {
     const results = await Promise.allSettled([start(), start()]);
-    expect(results.filter(r => r.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
     expect((await settled()).stage).toBe('complete');
     expect(state.imports).toHaveBeenCalledTimes(1);
   });

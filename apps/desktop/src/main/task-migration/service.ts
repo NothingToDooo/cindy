@@ -932,10 +932,13 @@ export async function requestTaskMigration(raw: unknown): Promise<TaskMigrationV
             )
               throw new Error('MIGRATION_CANNOT_CANCEL');
             const cancelled = { ...record, stage: 'cancelled' as const, error: undefined };
+            // Keep the journal retryable until its staging data is gone.
+            await fs.rm(path.join(scope.root, 'outgoing', record.id), {
+              recursive: true,
+              force: true,
+            });
+            scope.assertCurrent();
             scope.save(cancelled);
-            await fs
-              .rm(path.join(scope.root, 'outgoing', record.id), { recursive: true, force: true })
-              .catch(() => {});
             return view(scope, cancelled);
           }
 
