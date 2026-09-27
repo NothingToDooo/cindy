@@ -414,3 +414,27 @@ it('returns to the Lead when a timed-out self-archive is confirmed by a recheck'
   await act(async () => { confirm.onPress?.(); await flush(); await flush(); });
   expect(openSession).toHaveBeenCalledWith('lead-1');
 });
+
+it('does not let a late capability response from the previous computer fill the flat model list', async () => {
+  let releaseA: () => void = () => undefined;
+  const makerA = {
+    ...fakeMaker(),
+    getCapabilities: vi.fn(() => new Promise((resolve) => {
+      releaseA = () => resolve({ hasFastMode: true, availableModels: [model('a-only-model')] });
+    })),
+  } as unknown as MobileMakerTransport;
+  const makerB = {
+    ...fakeMaker(),
+    getCapabilities: vi.fn(async () => ({ hasFastMode: true, availableModels: [model('b-model')] })),
+  } as unknown as MobileMakerTransport;
+  function DeviceProbe({ maker }: { maker: MobileMakerTransport }) {
+    latest = useOrcaWorkerForm({ maker, prefsScope: 'user-1', active: false, setSheetOpen: () => undefined });
+    return null;
+  }
+  await act(async () => root.render(<DeviceProbe maker={makerA} />));
+  act(() => { latest!.reset(); });
+  await act(async () => root.render(<DeviceProbe maker={makerB} />));
+  await act(async () => { latest!.reset(); await flush(); });
+  await act(async () => { releaseA(); await flush(); });
+  expect(latest!.modelPicker.flatModelOptions.map((option) => option.id)).toEqual(['b-model']);
+});

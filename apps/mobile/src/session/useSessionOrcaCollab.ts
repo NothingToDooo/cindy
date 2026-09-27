@@ -257,11 +257,15 @@ export function useOrcaWorkerForm(params: {
    */
   const converge = useCallback((agent: OrcaWorkerAgentKind) => {
     const generation = ++convergeGenRef.current;
-    makerRef.current.getCapabilities(agent)
+    const source = makerRef.current;
+    source.getCapabilities(agent)
       .then((raw) => {
         const capabilities = normalizeMobileAgentCapabilities(raw);
         // 能力按 Agent 缓存,供老被控端(没有来源目录)时模型选择器的扁平回退列表使用。
-        if (capabilities) setModelsByAgent((current) => ({ ...current, [agent]: capabilities.availableModels }));
+        // 只缓存当前这台电脑的结果:换电脑后迟到的上一台响应不写入。
+        if (capabilities && makerRef.current === source) {
+          setModelsByAgent((current) => ({ ...current, [agent]: capabilities.availableModels }));
+        }
         if (generation !== convergeGenRef.current) return;
         setForm((current) => (current.agent === agent
           ? { ...current, model: convergeOrcaWorkerModel(current.model, capabilities) }
@@ -278,6 +282,7 @@ export function useOrcaWorkerForm(params: {
     rosterMakerRef.current = maker;
     agentsRef.current = ALL_AGENTS;
     setAgents(ALL_AGENTS);
+    setModelsByAgent({});
   }, [maker]);
 
   // 读被控端实际注册的 Agent。复位时列表可能还是乐观的三个:结果回来后,当前 Agent 不在这台
