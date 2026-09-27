@@ -100,7 +100,9 @@ export function NativePullDownMenu({
   testID?: string;
 }) {
   const { colors } = useTheme();
-  if (disabled || !usesNativePullDownMenu()) return children;
+  // 没有可选项(如只有一块显示器)时同样不挂菜单:菜单接管整块点按,挂着就会点出空菜单。
+  if (disabled || actions.length === 0 || !usesNativePullDownMenu())
+    return children;
   if (Platform.OS === "android") {
     return (
       <AnchoredPullDownMenu

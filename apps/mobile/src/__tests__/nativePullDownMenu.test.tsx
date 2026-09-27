@@ -18,7 +18,9 @@ vi.mock("@/theme", async () => {
   const { palettes } = await import("@/theme/tokens");
   return { useTheme: () => ({ colors: palettes[native.mode] }) };
 });
-vi.mock("@/platform/chrome/AnchoredPullDownMenu", () => ({ AnchoredPullDownMenu: () => null }));
+vi.mock("@/platform/chrome/AnchoredPullDownMenu", () => ({
+  AnchoredPullDownMenu: () => null,
+}));
 vi.mock("@react-native-menu/menu", () => ({
   MenuView: ({ actions }: { actions: MenuAction[] }) => {
     native.actions = actions;
@@ -88,5 +90,19 @@ describe("disabled triggers", () => {
     );
     expect(html).toBe("<span>trigger</span>");
     expect(native.actions).toEqual([]);
+  });
+});
+
+describe("empty menus", () => {
+  it("does not mount a menu that has nothing to choose", () => {
+    native.actions = [];
+    const html = renderToStaticMarkup(
+      createElement(NativePullDownMenu, {
+        actions: [],
+        children: createElement("span", null, "display"),
+        onAction: vi.fn(),
+      }),
+    );
+    expect(html).toBe("<span>display</span>");
   });
 });
