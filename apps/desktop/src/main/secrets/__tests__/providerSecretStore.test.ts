@@ -135,6 +135,10 @@ describe('providerSecrets registry', () => {
     expect(() => customProviderHeaderStorageKey('bad/path', 'pi')).toThrow(/illegal characters/);
   });
 
+  it.each(['bot_environment_', `bot_environment_${'a'.repeat(64)}`, 'BOT_ENVIRONMENT_future'])('reserves companion environment key %s for Main', key => {
+    expect(isRendererAccessibleSafeStorageKey(key)).toBe(false);
+  });
+
   it('动态键名构造前校验片段字符集,路径逃逸类 id 直接抛错', () => {
     expect(providerOAuthStorageKey('acme-1')).toBe('provider_oauth_acme-1');
     expect(customProviderSecretStorageKey('my_or', 'claude-code')).toBe('provider_key_my_or_claude-code');

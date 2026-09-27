@@ -62,7 +62,11 @@ omitting it retains normal companion defaults, and a rejected request can be cor
 - Selected variables, MCP env/headers, source credentials and automation assets
   use the existing account encrypted credential store. The teammate folder has
   a non-secret `environment.json` binding. Variable/connection names in that file
-  are opaque hashes; original names remain private. Large environments use
+  are opaque hashes; original names remain private. The entire `bot_environment_`
+  namespace is Main-only: generic Renderer safeStorage read/store/remove reject it
+  before resolving a path or touching the vault, including case variants and future
+  suffixes. Normal provider/MCP credential settings keep their existing bridge.
+  Large environments use
   atomically replaced, owner-scoped ciphertext files with bounded safeStorage
   chunks (64 Ki characters each), yielding between crypto calls and asynchronous
   disk operations. Encrypted batch/index/count/context metadata rejects mixed,
