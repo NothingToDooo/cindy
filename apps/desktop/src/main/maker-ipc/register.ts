@@ -3386,8 +3386,41 @@ function settlePendingCredentialSwitch(sessionId: string, source: string): void 
 let refreshRemoteCodexMcpOnTurnSettledHolder: ((sessionId: string) => void) | null = null;
 let deferredCodexRestartHolder: DeferredCodexRestartService | null = null;
 let pendingAgentSwitchApplyHolder:
-  ((sessionId: string, signal?: AbortSignal, selection?: ScheduledModelSelection) => Promise<{ release: () => void; selection?: ScheduledModelSelection }>) | null = null;
+  ((
+    sessionId: string,
+    signal?: AbortSignal,
+    selection?: ScheduledModelSelection,
+    beforeApply?: () => Promise<void>,
+  ) => Promise<{ release: () => void; selection?: ScheduledModelSelection }>) | null = null;
 let cancelPendingAgentSwitchHolder: ((sessionId: string) => void) | null = null;
+
+/** 会话级完整路由选择(引擎 + 模型 + 来源 + 档位 + Fast)。 */
+export interface SessionRouteSelection {
+  agentKind: AgentKind;
+  model: string;
+  providerId: string | null;
+  effort: string | null;
+  fastMode: boolean;
+}
+let readPendingAgentSwitchRouteHolder:
+  ((sessionId: string) => Omit<SessionRouteSelection, 'fastMode'> | undefined) | null = null;
+let applySessionRouteUnderSendLockHolder:
+  ((sessionId: string, route: SessionRouteSelection | null, currentAgentKind: AgentKind) => Promise<'applied' | 'staged'>) | null = null;
+/**
+ * 切换引擎后重建会话时补回渠道专属 vendorOptions(IM 的会话 id / 对端等)。
+ * 切换建会话只读 DB 行, 不补的话 IM 任务切完引擎会悄悄丢掉 bot 专属工具。
+ */
+const switchedSessionVendorOptionsResolvers = new Set<
+  (sessionId: string) => Record<string, unknown> | undefined
+>();
+
+function resolveSwitchedSessionVendorOptions(sessionId: string): Record<string, unknown> | undefined {
+  for (const resolve of switchedSessionVendorOptionsResolvers) {
+    const options = resolve(sessionId);
+    if (options) return options;
+  }
+  return undefined;
+}
 let gitSnapshotCoordinator: GitSnapshotCoordinator | null = null;
 const sessionTurnActivityTracker = new SessionTurnActivityTracker();
 const reviewRunOwner: ReviewRunOwner = { instanceId: randomUUID(), processId: process.pid };
@@ -3600,6 +3633,52 @@ export async function prepareUnhealthySessionForSend(sessionId: string): Promise
 /** Later successful model/provider picks supersede an earlier cross-engine intent. */
 export function cancelPendingAgentSwitchForSession(sessionId: string): void {
   cancelPendingAgentSwitchHolder?.(sessionId);
+}
+
+/**
+ * IM 渠道直发专用: 在同一把 send 锁内, 先跑 `syncUnderLock`(渠道默认跟随对齐),
+ * 再按普通直发语义应用待切换意图。`syncUnderLock` 抛错会让本条消息失败,
+ * 调用方必须自行吞掉非致命错误。
+ */
+export async function acquirePendingAgentSwitchForImSend(
+  sessionId: string,
+  syncUnderLock: () => Promise<void>,
+): Promise<() => void> {
+  const lease = await pendingAgentSwitchApplyHolder?.(sessionId, undefined, undefined, syncUnderLock);
+  return lease?.release ?? (() => {});
+}
+
+/** 会话上待应用的切换意图目标(用户挑的或系统登记的); 无意图返回 undefined。 */
+export function readPendingAgentSwitchRoute(
+  sessionId: string,
+): Omit<SessionRouteSelection, 'fastMode'> | undefined {
+  return readPendingAgentSwitchRouteHolder?.(sessionId);
+}
+
+/**
+ * 系统发起的整条路由切换(与伙伴模型对齐同一套): 登记意图, 会话空闲时当场应用;
+ * `route` 传 null = 只应用此前登记、仍待生效的意图。
+ * 调用方必须已持有该会话的 send 锁(acquirePendingAgentSwitchForImSend 的回调内)。
+ * 返回 'staged' = 会话忙, 意图留待安全边界应用。应用失败会撤回本次意图后抛错。
+ */
+export async function applySessionRouteUnderSendLock(
+  sessionId: string,
+  route: SessionRouteSelection | null,
+  currentAgentKind: AgentKind,
+): Promise<'applied' | 'staged'> {
+  const apply = applySessionRouteUnderSendLockHolder;
+  if (!apply) throw new Error('Session route selection is not initialized');
+  return apply(sessionId, route, currentAgentKind);
+}
+
+/** 注册切换后重建会话用的 vendorOptions 解析器; 返回注销函数。 */
+export function registerSwitchedSessionVendorOptionsResolver(
+  resolve: (sessionId: string) => Record<string, unknown> | undefined,
+): () => void {
+  switchedSessionVendorOptionsResolvers.add(resolve);
+  return () => {
+    switchedSessionVendorOptionsResolvers.delete(resolve);
+  };
 }
 
 /**
@@ -8514,6 +8593,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         // 重连 / agent 安装 / codex daemon MCP 注入), 否则会以远端
         // workingDir 在本机 spawn。
         remoteHostId: row.remoteHostId ?? undefined,
+        vendorOptions: resolveSwitchedSessionVendorOptions(sessionId),
       });
       if (co.extraDirs === undefined) {
         try {
@@ -8594,12 +8674,16 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     withCloseSuppressed: withRehydrateCloseSuppressed,
     log,
   });
-  pendingAgentSwitchApplyHolder = async (sessionId, signal, selection) => {
+  pendingAgentSwitchApplyHolder = async (sessionId, signal, selection, beforeApply) => {
     let stage = 'direct-send:acquire';
     const release = await acquireSendToSessionLock(sessionId, undefined, () => stage);
     try {
       stage = 'direct-send:reconcileBotModelRoute';
       await reconcileBotModelRoute(sessionId, true);
+      if (beforeApply) {
+        stage = 'direct-send:beforeApply';
+        await beforeApply();
+      }
       stage = 'direct-send:applyPendingAgentSwitchIfIdle';
       await applyPendingAgentSwitchIfIdle(agentSwitchDeps, sessionId, {
         bootstrapAfterSwitch: true,
@@ -11599,6 +11683,35 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     return { baseline, effective, control, pendingMutation };
   };
 
+  /**
+   * 系统按配置发起的整条路由选择(伙伴模型对齐 / IM 渠道默认跟随): 跨引擎登记切换
+   * 意图(应用时带交接), 同引擎按用户选择语义登记; 都不在这里抢占运行中的轮次。
+   * 调用方持有 send 锁。
+   */
+  const stageSessionRouteSelection = async (
+    sessionId: string,
+    route: SessionRouteSelection,
+    currentAgentKind: AgentKind,
+  ): Promise<void> => {
+    if (route.agentKind !== currentAgentKind) {
+      await performSessionAgentSwitch(agentSwitchDeps, {
+        sessionId, targetAgentKind: route.agentKind, model: route.model,
+        providerId: route.providerId, effort: route.effort, fastMode: route.fastMode,
+      });
+    } else {
+      await applyWithVerifiedModelWindow((confirmedContextWindow) =>
+        applySessionRuntimeSelection(sessionId, route.model, route.providerId,
+          { effort: route.effort as SessionRuntimeProfile['effort'], fastMode: route.fastMode,
+            ...(confirmedContextWindow === undefined ? {} : { confirmedContextWindow }) },
+          { source: 'user', deferWhileRunning: true, sessionLockHeld: true }));
+    }
+  };
+  const isSessionIdleForRouteApply = (sessionId: string): boolean => {
+    const live = maker.getSession(sessionId) as WiredSession | undefined;
+    return !live?.isTurnRunning() && (live?.listBackgroundTasks().length ?? 0) === 0
+      && !hasPendingAgentInteractionForSession(sessionId);
+  };
+
   const reconcileBotModelRoute = createBotModelRouteReconciler({
     ownerEpoch: captureSessionRuntimeControlOwnerEpoch,
     withSessionLock: withSendToSessionLock,
@@ -11652,29 +11765,47 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       };
     },
     apply: async (sessionId, route, current) => {
-      if (route.agentKind !== current.agentKind) {
-        await performSessionAgentSwitch(agentSwitchDeps, {
-          sessionId, targetAgentKind: route.agentKind, model: route.model,
-          providerId: route.providerId, effort: route.effort, fastMode: route.fastMode,
-        });
-      } else {
-        await applyWithVerifiedModelWindow((confirmedContextWindow) =>
-          applySessionRuntimeSelection(sessionId, route.model, route.providerId,
-            { effort: route.effort as SessionRuntimeProfile['effort'], fastMode: route.fastMode,
-              ...(confirmedContextWindow === undefined ? {} : { confirmedContextWindow }) },
-            { source: 'user', deferWhileRunning: true, sessionLockHeld: true }));
-      }
+      await stageSessionRouteSelection(sessionId, route, current.agentKind);
       // Consume the same model/Harness intent as the normal send path. Its
       // verified window protection and history handoff also apply here; a Bot
       // settings save need not wait for a second user message. Busy runtimes
       // retain their intent for the existing safe-boundary coordinator.
-      const live = maker.getSession(sessionId) as WiredSession | undefined;
-      if (!live?.isTurnRunning() && (live?.listBackgroundTasks().length ?? 0) === 0
-        && !hasPendingAgentInteractionForSession(sessionId)) {
+      if (isSessionIdleForRouteApply(sessionId)) {
         await applyPendingAgentSwitchIfIdle(agentSwitchDeps, sessionId, { bootstrapAfterSwitch: true });
       }
     },
   });
+
+  readPendingAgentSwitchRouteHolder = (sessionId) => {
+    const intent = agentSwitchPending.get(sessionId);
+    return intent
+      ? {
+          agentKind: intent.targetAgentKind,
+          model: intent.model,
+          providerId: intent.providerId ?? null,
+          effort: intent.effort ?? null,
+        }
+      : undefined;
+  };
+  applySessionRouteUnderSendLockHolder = async (sessionId, route, currentAgentKind) => {
+    // route=null: 只应用此前已登记(且仍在)的意图。
+    let staged = agentSwitchPending.get(sessionId);
+    try {
+      if (route) {
+        await stageSessionRouteSelection(sessionId, route, currentAgentKind);
+        // 登记时系统可能改道来源; 按登记后的意图对象认「自己的」, 不按字段比较。
+        staged = agentSwitchPending.get(sessionId);
+      }
+      if (!staged) return 'applied';
+      if (!isSessionIdleForRouteApply(sessionId)) return 'staged';
+      await applyPendingAgentSwitchIfIdle(agentSwitchDeps, sessionId, { bootstrapAfterSwitch: true });
+    } catch (error) {
+      // 系统发起的切换失败不能卡住用户这条消息, 也不能留一个会在下次发送时反复失败的意图。
+      if (staged && agentSwitchPending.get(sessionId) === staged) cancelPendingAgentSwitchHolder?.(sessionId);
+      throw error;
+    }
+    return agentSwitchPending.get(sessionId) ? 'staged' : 'applied';
+  };
 
   configureBotRuntimeEpochRefreshRequest((sessionId, reason) => {
     return (async () => {

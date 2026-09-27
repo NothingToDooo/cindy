@@ -1,0 +1,364 @@
+/**
+ * 个人 IM 渠道任务跟随渠道默认 —— 读写 `sessions.im_default_route` 并驱动切换。
+ *
+ * 时机: 渠道自有任务收到下一条消息、进入 send 锁之后(acquirePendingAgentSwitchForImSend
+ * 的回调)。切换走与伙伴模型对齐同一套路由选择(跨引擎带交接, 会话忙时留意图);
+ * 任何失败都只记日志、保持原路由, 绝不挡住用户这条消息。判定规则见
+ * channelDefaultRoute.ts。
+ */
+import { and, eq, isNull } from 'drizzle-orm';
+import type { AgentKind } from '@cindy/maker-core';
+import { effectiveSourceIdForModel, type ProviderView } from '@cindy/model-providers';
+
+import type { ImDefaultSettingsChannel } from '../../../shared/imDefaultSettings.js';
+import { getDbClient } from '../../localDb/client/current';
+import { sessions } from '../../localDb/schema';
+import { createLogger } from '../../logger';
+import { getDesktopProviderService } from '../../maker-host/createDesktopProviderService';
+import {
+  acquirePendingAgentSwitchForImSend,
+  applySessionRouteUnderSendLock,
+  cancelPendingAgentSwitchForSession,
+  readPendingAgentSwitchRoute,
+} from '../../maker-ipc/register';
+import { withSendToSessionLock } from '../../maker-ipc/sendToSessionLock';
+import { readImDefaultSettingsFingerprint, resolveImSessionDefaults } from '../defaultSessionSettings';
+import {
+  buildImDefaultRouteRecord,
+  decideImDefaultRoute,
+  imDefaultRouteMayNeedSync,
+  parseImDefaultRouteRecord,
+  sameImDefaultRoute,
+  serializeImDefaultRouteRecord,
+  type ImDefaultRoute,
+  type ImDefaultRouteDecision,
+  type ImDefaultRouteRecord,
+} from './channelDefaultRoute';
+import { resetSessionToDefaults, toCoreAgentKind, type ImSessionRow } from './sessionRepo';
+import type { ImOrchestratorConfig } from './types';
+
+const log = createLogger('im:default-route');
+
+type RouteAuthCheck = (route: Pick<ImDefaultRoute, 'agentKind' | 'model' | 'providerId'>) => Promise<boolean>;
+
+export interface ImChannelDefaultRouteSync {
+  /**
+   * 本条消息若会触发跟随切换, 返回将要切到的目标路由(新默认可用才返回), 供
+   * 发送前的授权检查按真实会跑的路由判断 —— 旧默认坏掉时不能先被「缺授权」挡掉。
+   * 只读, 不登记任何东西。
+   */
+  previewSwitchTarget(sessionId: string): Promise<ImDefaultRoute | null>;
+  /** 在 send 锁内对齐。从不抛错。 */
+  syncUnderLock(sessionId: string): Promise<void>;
+  /**
+   * 未接线(无运行实例)的任务在接线前先对齐, 避免先用可能已坏的旧路由起一次进程。
+   * 自己取放 send 锁, 从不抛错。
+   */
+  syncBeforeWiring(sessionId: string): Promise<void>;
+}
+
+interface SessionRouteRow {
+  source: string | null;
+  status: string;
+  remoteHostId: string | null;
+  orcaRole: string | null;
+  agentKind: string;
+  model: string | null;
+  providerId: string | null;
+  effort: string | null;
+  imDefaultRoute: string | null;
+  feishuBotAppId: string | null;
+  imBotContextId: string | null;
+}
+
+async function readSessionRouteRow(sessionId: string): Promise<SessionRouteRow | null> {
+  const [row] = await getDbClient()
+    .drizzle.select({
+      source: sessions.source,
+      status: sessions.status,
+      remoteHostId: sessions.remoteHostId,
+      orcaRole: sessions.orcaRole,
+      agentKind: sessions.agentKind,
+      model: sessions.model,
+      providerId: sessions.providerId,
+      effort: sessions.effort,
+      imDefaultRoute: sessions.imDefaultRoute,
+      feishuBotAppId: sessions.feishuBotAppId,
+      imBotContextId: sessions.imBotContextId,
+    })
+    .from(sessions)
+    .where(eq(sessions.id, sessionId))
+    .limit(1);
+  return row ?? null;
+}
+
+/** 本渠道自己的活跃本机任务。官方 hook / 已轮换的 Telegram 任务没有渠道标记列。 */
+function isChannelOwnedRow(row: SessionRouteRow, source: string): boolean {
+  if (row.source !== source || row.status !== 'active') return false;
+  if (row.remoteHostId || row.orcaRole || !row.model) return false;
+  return source === 'feishu' ? !!row.feishuBotAppId : !!row.imBotContextId;
+}
+
+function currentRouteOf(row: SessionRouteRow): ImDefaultRoute {
+  return {
+    agentKind: toCoreAgentKind(row.agentKind),
+    model: row.model ?? '',
+    providerId: row.providerId?.trim() || null,
+    effort: row.effort ?? null,
+  };
+}
+
+/**
+ * 隐式来源按「新路由选择」口径落到具体来源 —— 系统建会话钉住 / 切换时独占改道
+ * 用的就是这个口径, 与它钉出的具体 id 视为同一条路由。显式来源原样比较。
+ */
+function providerNormalizer(providers: ProviderView[]) {
+  return (route: ImDefaultRoute): string | null =>
+    route.providerId ?? effectiveSourceIdForModel(providers, null, route.model, route.agentKind as AgentKind);
+}
+
+async function listProviders(): Promise<ProviderView[] | null> {
+  try {
+    return await getDesktopProviderService().listProviders({ allowSideEffects: true });
+  } catch {
+    return null;
+  }
+}
+
+interface Evaluation {
+  decision: ImDefaultRouteDecision;
+  record: ImDefaultRouteRecord;
+  current: ImDefaultRoute;
+  target: ImDefaultRoute;
+  targetFingerprint: string;
+  providers: ProviderView[];
+}
+
+export function createImChannelDefaultRouteSync(deps: {
+  source: ImDefaultSettingsChannel;
+  config: ImOrchestratorConfig;
+  isRouteUsable: RouteAuthCheck;
+}): ImChannelDefaultRouteSync {
+  const { source, config } = deps;
+
+  async function evaluate(sessionId: string): Promise<Evaluation | null> {
+    const row = await readSessionRouteRow(sessionId);
+    if (!row || !isChannelOwnedRow(row, source)) return null;
+    const record = parseImDefaultRouteRecord(row.imDefaultRoute);
+    if (!imDefaultRouteMayNeedSync(record, readImDefaultSettingsFingerprint(source))) return null;
+    const providers = await listProviders();
+    // 目录拿不到就无法可靠比对来源, 本条消息先按原路由走。
+    if (!providers) return null;
+    const defaults = await resolveImSessionDefaults(config, providers, source);
+    const target: ImDefaultRoute = {
+      agentKind: defaults.agentKind,
+      model: defaults.model,
+      providerId: defaults.providerId,
+      effort: defaults.effort,
+    };
+    const current = currentRouteOf(row);
+    const decision = decideImDefaultRoute({
+      record,
+      current,
+      target,
+      targetFp: defaults.fingerprint,
+      pendingIntent: readPendingAgentSwitchRoute(sessionId),
+      normalizeProvider: providerNormalizer(providers),
+    });
+    return { decision, record, current, target, targetFingerprint: defaults.fingerprint, providers };
+  }
+
+  async function writeRecord(sessionId: string, json: string): Promise<void> {
+    await getDbClient()
+      .drizzle.update(sessions)
+      .set({ imDefaultRoute: json })
+      .where(eq(sessions.id, sessionId));
+  }
+
+  async function switchRoute(sessionId: string, e: Evaluation): Promise<void> {
+    if (!(await deps.isRouteUsable(e.target))) {
+      log.warn(
+        `default route sync skipped: new ${source} default unusable ` +
+          `session=...${sessionId.slice(-8)} target=${e.target.agentKind}/${e.target.model}`,
+      );
+      return;
+    }
+    // 先记下待生效目标(指纹保持旧值): 意图丢失(重启)或应用失败时, 下一条消息
+    // 仍能认出这是「跟随中的任务」并重试, 而不是误判为用户改过。
+    const pendingFor = (route: ImDefaultRoute) => ({ route, fp: e.targetFingerprint });
+    await writeRecord(sessionId, buildImDefaultRouteRecord(e.record.fp, e.record.route, pendingFor(e.target)));
+    let outcome: 'applied' | 'staged';
+    try {
+      outcome = await applySessionRouteUnderSendLock(
+        sessionId,
+        { ...e.target, fastMode: false },
+        e.current.agentKind,
+      );
+    } catch (err) {
+      await writeRecord(sessionId, serializeImDefaultRouteRecord(e.record));
+      throw err;
+    }
+    if (outcome === 'staged') {
+      // 记登记后读回的意图 —— 系统登记时可能改道了来源; 下一条消息据此认出「自己的意图」。
+      const intent = readPendingAgentSwitchRoute(sessionId);
+      if (intent) {
+        await writeRecord(sessionId, buildImDefaultRouteRecord(e.record.fp, e.record.route, pendingFor(intent)));
+      }
+      log.info(`default route switch staged session=...${sessionId.slice(-8)} (runtime busy)`);
+      return;
+    }
+    await recordApplied(sessionId, e);
+  }
+
+  /**
+   * 忙时登记的跟随意图由这里自己应用, 不交给通用发送路径: 同引擎应用失败在那边会
+   * 直接让用户这条消息失败。这里失败则撤回意图、保持原路由。
+   */
+  async function applyStaged(sessionId: string, e: Evaluation): Promise<void> {
+    let outcome: 'applied' | 'staged';
+    try {
+      outcome = await applySessionRouteUnderSendLock(sessionId, null, e.current.agentKind);
+    } catch (err) {
+      await writeRecord(sessionId, buildImDefaultRouteRecord(e.record.fp, e.record.route));
+      throw err;
+    }
+    if (outcome === 'applied') await recordApplied(sessionId, e);
+  }
+
+  async function recordApplied(sessionId: string, e: Evaluation): Promise<void> {
+    // 记录读回的实际路由 —— 系统可能在应用时改道来源 / 校正档位。
+    const after = await readSessionRouteRow(sessionId);
+    const applied = after ? currentRouteOf(after) : e.target;
+    const normalize = providerNormalizer(e.providers);
+    if (!sameImDefaultRoute(applied, e.target, normalize)) {
+      log.warn(
+        `default route switch landed on a different route session=...${sessionId.slice(-8)} ` +
+          `target=${e.target.agentKind}/${e.target.model} actual=${applied.agentKind}/${applied.model}`,
+      );
+    }
+    await writeRecord(sessionId, buildImDefaultRouteRecord(e.targetFingerprint, applied));
+    log.info(
+      `default route followed session=...${sessionId.slice(-8)} ` +
+        `${e.current.agentKind}/${e.current.model} -> ${applied.agentKind}/${applied.model}`,
+    );
+  }
+
+  async function previewSwitchTarget(sessionId: string): Promise<ImDefaultRoute | null> {
+    try {
+      const e = await evaluate(sessionId);
+      if (!e) return null;
+      if (e.decision.kind !== 'switch' && e.decision.kind !== 'staged') return null;
+      return (await deps.isRouteUsable(e.target)) ? e.target : null;
+    } catch (err) {
+      log.warn(`default route preview failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
+  async function syncUnderLock(sessionId: string): Promise<void> {
+    try {
+      const e = await evaluate(sessionId);
+      if (!e) return;
+      switch (e.decision.kind) {
+        case 'adopt':
+          if (e.decision.cancelPendingIntent) cancelPendingAgentSwitchForSession(sessionId);
+          await writeRecord(sessionId, buildImDefaultRouteRecord(e.targetFingerprint, e.current));
+          return;
+        case 'switch':
+          await switchRoute(sessionId, e);
+          return;
+        case 'staged':
+          await applyStaged(sessionId, e);
+          return;
+        case 'manual':
+          return;
+      }
+    } catch (err) {
+      log.warn(
+        `default route sync failed (non-fatal, keeping current route) session=...${sessionId.slice(-8)}: ` +
+          (err instanceof Error ? err.message : String(err)),
+      );
+    }
+  }
+
+  async function syncBeforeWiring(sessionId: string): Promise<void> {
+    try {
+      const release = await acquirePendingAgentSwitchForImSend(sessionId, () => syncUnderLock(sessionId));
+      release();
+    } catch (err) {
+      log.warn(
+        `default route pre-wiring sync failed (non-fatal) session=...${sessionId.slice(-8)}: ` +
+          (err instanceof Error ? err.message : String(err)),
+      );
+    }
+  }
+
+  return { previewSwitchTarget, syncUnderLock, syncBeforeWiring };
+}
+
+/**
+ * 本功能上线前建的任务没有记录。保存 / 恢复渠道默认之前, 把仍在用**旧默认**
+ * (归一化后路由相等)的这类任务补上旧默认的记录, 让它们在下一条消息时跟随新默认。
+ * 规则允许的「历史缺少状态」情形, 只做这一次值比较。返回补记的任务数。
+ */
+export async function backfillLegacyImDefaultRoutes(
+  source: ImDefaultSettingsChannel,
+  config: ImOrchestratorConfig,
+): Promise<number> {
+  const providers = await listProviders();
+  if (!providers) return 0;
+  const defaults = await resolveImSessionDefaults(config, providers, source);
+  const oldDefault: ImDefaultRoute = {
+    agentKind: defaults.agentKind,
+    model: defaults.model,
+    providerId: defaults.providerId,
+    effort: defaults.effort,
+  };
+  const rows = await getDbClient()
+    .drizzle.select({
+      id: sessions.id,
+      source: sessions.source,
+      status: sessions.status,
+      remoteHostId: sessions.remoteHostId,
+      orcaRole: sessions.orcaRole,
+      agentKind: sessions.agentKind,
+      model: sessions.model,
+      providerId: sessions.providerId,
+      effort: sessions.effort,
+      imDefaultRoute: sessions.imDefaultRoute,
+      feishuBotAppId: sessions.feishuBotAppId,
+      imBotContextId: sessions.imBotContextId,
+    })
+    .from(sessions)
+    .where(and(eq(sessions.source, source), eq(sessions.status, 'active'), isNull(sessions.imDefaultRoute)));
+  const normalize = providerNormalizer(providers);
+  let count = 0;
+  for (const row of rows) {
+    if (!isChannelOwnedRow(row, source)) continue;
+    const current = currentRouteOf(row);
+    if (!sameImDefaultRoute(current, oldDefault, normalize)) continue;
+    await getDbClient()
+      .drizzle.update(sessions)
+      .set({ imDefaultRoute: buildImDefaultRouteRecord(defaults.fingerprint, current) })
+      .where(and(eq(sessions.id, row.id), isNull(sessions.imDefaultRoute)));
+    count += 1;
+  }
+  if (count > 0) log.info(`backfilled default route records for ${count} legacy ${source} task(s)`);
+  return count;
+}
+
+/**
+ * 单行渠道的 `/new`: 在 send 锁内把任务重置为渠道默认(连同跟随记录), 并撤掉残留的
+ * 切换意图 —— 否则重置前登记的意图会在下一条消息时把刚重置的任务又切走。
+ */
+export async function resetImSessionToChannelDefaults(
+  sessionId: string,
+  config: ImOrchestratorConfig,
+  prepared: ImSessionRow | undefined,
+  channel: ImDefaultSettingsChannel,
+): Promise<void> {
+  await withSendToSessionLock(sessionId, async () => {
+    await resetSessionToDefaults(sessionId, config, prepared, channel);
+    if (readPendingAgentSwitchRoute(sessionId)) cancelPendingAgentSwitchForSession(sessionId);
+  });
+}

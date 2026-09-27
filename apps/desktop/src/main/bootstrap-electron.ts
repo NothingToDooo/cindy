@@ -270,6 +270,7 @@ import {
   im,
   feishuIm,
   telegramIm,
+  prepareImDefaultSettingsChange,
   registerTelegramBotConfigIpc,
   startImOrchestrators,
   startImConnection,
@@ -4700,12 +4701,15 @@ const registerIpcHandlers = () => {
     async (_e, patch: unknown, rawChannel: unknown) => {
       const channel = parseImDefaultSettingsChannel(rawChannel);
       const parsedPatch = parseImDefaultSettingsPatch(patch);
+      // 写新设置之前按旧默认给老任务补跟随记录(见 prepareImDefaultSettingsChange)。
+      await prepareImDefaultSettingsChange(channel);
       writeImDefaultSettingsPatch(parsedPatch, channel);
       return imDefaultSettingsWire(channel);
     },
   );
   ipcMain.handle(MAKER_IPC_INVOKE.IM_DEFAULT_SETTINGS_RESET, async (_e, rawChannel: unknown) => {
     const channel = parseImDefaultSettingsChannel(rawChannel);
+    await prepareImDefaultSettingsChange(channel);
     if (channel) {
       resetImDefaultSettingsChannel(channel);
     } else {

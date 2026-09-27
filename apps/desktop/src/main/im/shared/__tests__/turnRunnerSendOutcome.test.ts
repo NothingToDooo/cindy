@@ -1278,7 +1278,9 @@ describe('turnRunner send outcome policy (feishu adapter characterization)', () 
         turnPermissionPolicy,
       });
 
-      expect(acquirePendingAgentSwitch).toHaveBeenCalledWith('feishu-session');
+      expect(acquirePendingAgentSwitch).toHaveBeenCalledWith('feishu-session', {
+        channelOwned: true,
+      });
       expect(oldSession.send).not.toHaveBeenCalled();
       expect(switchedSession.send).toHaveBeenCalledWith(
         expect.anything(),
@@ -3906,4 +3908,227 @@ describe('初始流式输出面创建失败的收口降级(#2164)', () => {
     });
   });
 });
+  describe('channel default route follow', () => {
+    function coldMakerHarness(session: Session, order: string[]) {
+      let wired = false;
+      return {
+        getSession: vi.fn(() => (wired ? session : undefined)),
+        createSession: vi.fn(async () => {
+          order.push('wire');
+          wired = true;
+          return session;
+        }),
+        on: vi.fn((listener: (event: MakerEvent) => void) => {
+          makerEventListeners.push(listener);
+          return () => {
+            makerEventListeners = makerEventListeners.filter((candidate) => candidate !== listener);
+          };
+        }),
+      };
+    }
+
+    function providersWith(models: string[]) {
+      return [
+        {
+          id: 'xd',
+          name: 'XD',
+          source: 'builtin',
+          connected: true,
+          agents: ['claude-code', 'codex'],
+          models: { 'claude-code': models.map((id) => ({ id })), codex: [] },
+          routing: {
+            'claude-code': { upstream: 'https://gateway.example', authStrategy: 'gateway-key' },
+            codex: { upstream: 'https://gateway.example/v1', authStrategy: 'gateway-key' },
+          },
+        },
+      ];
+    }
+
+    it('follows the new default before wiring a cold channel task', async () => {
+      mocks.listProviders.mockResolvedValue(providersWith(['claude-opus-4-7', 'claude-opus-4-8']));
+      const order: string[] = [];
+      const h = createSessionHarness(async () => ({ accepted: true }), 'feishu-session');
+      const maker = coldMakerHarness(h.session, order);
+      mocks.getMaker.mockReturnValue(maker);
+      mocks.peekSessionById.mockResolvedValue({
+        id: 'feishu-session',
+        agentKind: 'claude-code',
+        workingDir: 'F:\\XDMaker',
+        model: 'claude-opus-4-8',
+        effort: 'high',
+        permissionMode: 'bypassPermissions',
+        fastMode: false,
+        sdkSessionId: null,
+        providerId: null,
+      });
+      let vendorOptionsDuringSync: Record<string, unknown> | undefined;
+      let localRunner!: ImTurnRunner;
+      const channelDefaultRoute = {
+        previewSwitchTarget: vi.fn(async () => ({
+          agentKind: 'claude-code' as const,
+          model: 'claude-opus-4-8',
+          providerId: null,
+          effort: 'high',
+        })),
+        syncBeforeWiring: vi.fn(async () => {
+          order.push('sync');
+          vendorOptionsDuringSync = localRunner.vendorOptionsForSession('feishu-session');
+        }),
+      };
+      const acquirePendingAgentSwitch = vi.fn(async () => vi.fn());
+      localRunner = createTurnRunner(fakeAdapter, fakeRepo, fakeCards, {
+        acquirePendingAgentSwitch,
+        channelDefaultRoute,
+      });
+      try {
+        await localRunner.runAgentTurn({
+          botContextId: 'cli_test_bot',
+          userId: 'ou_user',
+          userMessageId: 'msg-follow-cold',
+          text: 'hello',
+          attachments: [],
+        });
+
+        expect(channelDefaultRoute.previewSwitchTarget).toHaveBeenCalledWith('feishu-session');
+        expect(order).toEqual(['sync', 'wire']);
+        // 切换重建会话(若有)要能拿到渠道 vendorOptions, 否则 bot 专属工具会丢。
+        expect(vendorOptionsDuringSync).toEqual({ feishuChatId: 'ou_user', source: 'feishu' });
+        expect(maker.createSession).toHaveBeenCalledWith(
+          expect.objectContaining({ id: 'feishu-session', model: 'claude-opus-4-8', effort: 'high' }),
+        );
+        expect(acquirePendingAgentSwitch).toHaveBeenCalledWith('feishu-session', {
+          channelOwned: true,
+        });
+        expect(localRunner.vendorOptionsForSession('feishu-session')).toEqual({
+          feishuChatId: 'ou_user',
+          source: 'feishu',
+        });
+      } finally {
+        localRunner.disposeAllSessions();
+      }
+    });
+
+    it('wires the current route when no follow switch is due', async () => {
+      const order: string[] = [];
+      const h = createSessionHarness(async () => ({ accepted: true }), 'feishu-session');
+      const maker = coldMakerHarness(h.session, order);
+      mocks.getMaker.mockReturnValue(maker);
+      const channelDefaultRoute = {
+        previewSwitchTarget: vi.fn(async () => null),
+        syncBeforeWiring: vi.fn(async () => undefined),
+      };
+      const localRunner = createTurnRunner(fakeAdapter, fakeRepo, fakeCards, {
+        acquirePendingAgentSwitch: vi.fn(async () => vi.fn()),
+        channelDefaultRoute,
+      });
+      try {
+        await localRunner.runAgentTurn({
+          botContextId: 'cli_test_bot',
+          userId: 'ou_user',
+          userMessageId: 'msg-follow-none',
+          text: 'hello',
+          attachments: [],
+        });
+
+        expect(channelDefaultRoute.syncBeforeWiring).not.toHaveBeenCalled();
+        expect(maker.createSession).toHaveBeenCalledWith(
+          expect.objectContaining({ id: 'feishu-session', model: 'claude-opus-4-7' }),
+        );
+      } finally {
+        localRunner.disposeAllSessions();
+      }
+    });
+
+    it('checks auth against the followed route when the old default is unusable', async () => {
+      // 旧默认指向已断开的供应商; 新默认可用 —— 不能先被「缺授权」挡掉。
+      mocks.listProviders.mockResolvedValue(providersWith(['claude-opus-4-7', 'claude-opus-4-8']));
+      mocks.findActiveSession.mockResolvedValue({
+        id: 'feishu-session',
+        agentKind: 'claude-code',
+        workingDir: 'F:\\XDMaker',
+        model: 'claude-opus-4-7',
+        effort: 'xhigh',
+        permissionMode: 'bypassPermissions',
+        fastMode: false,
+        sdkSessionId: null,
+        providerId: 'disconnected-provider',
+      });
+      mocks.peekSessionById.mockResolvedValue({
+        id: 'feishu-session',
+        agentKind: 'claude-code',
+        workingDir: 'F:\\XDMaker',
+        model: 'claude-opus-4-8',
+        effort: 'high',
+        permissionMode: 'bypassPermissions',
+        fastMode: false,
+        sdkSessionId: null,
+        providerId: 'xd',
+      });
+      const order: string[] = [];
+      const h = createSessionHarness(async () => ({ accepted: true }), 'feishu-session');
+      const maker = coldMakerHarness(h.session, order);
+      mocks.getMaker.mockReturnValue(maker);
+      const channelDefaultRoute = {
+        previewSwitchTarget: vi.fn(async () => ({
+          agentKind: 'claude-code' as const,
+          model: 'claude-opus-4-8',
+          providerId: 'xd',
+          effort: 'high',
+        })),
+        syncBeforeWiring: vi.fn(async () => undefined),
+      };
+      const localRunner = createTurnRunner(fakeAdapter, fakeRepo, fakeCards, {
+        acquirePendingAgentSwitch: vi.fn(async () => vi.fn()),
+        channelDefaultRoute,
+      });
+      try {
+        await localRunner.runAgentTurn({
+          botContextId: 'cli_test_bot',
+          userId: 'ou_user',
+          userMessageId: 'msg-follow-auth',
+          text: 'hello',
+          attachments: [],
+        });
+
+        expect(channelDefaultRoute.syncBeforeWiring).toHaveBeenCalledWith('feishu-session');
+        expect(maker.createSession).toHaveBeenCalledWith(
+          expect.objectContaining({ model: 'claude-opus-4-8', providerId: 'xd' }),
+        );
+        expect(h.send).toHaveBeenCalled();
+      } finally {
+        localRunner.disposeAllSessions();
+      }
+    });
+
+    it('never follows channel defaults on a /ctr attached desktop task', async () => {
+      const h = setupAttachedSession(async () => ({ accepted: true }));
+      const channelDefaultRoute = {
+        previewSwitchTarget: vi.fn(async () => null),
+        syncBeforeWiring: vi.fn(async () => undefined),
+      };
+      const acquirePendingAgentSwitch = vi.fn(async () => vi.fn());
+      const localRunner = createTurnRunner(fakeAdapter, fakeRepo, fakeCards, {
+        acquirePendingAgentSwitch,
+        channelDefaultRoute,
+      });
+      try {
+        await localRunner.runAgentTurn({
+          botContextId: 'cli_test_bot',
+          userId: 'ou_user',
+          userMessageId: 'msg-follow-attached',
+          text: 'hello',
+          attachments: [],
+        });
+
+        expect(h.send).toHaveBeenCalled();
+        expect(channelDefaultRoute.previewSwitchTarget).not.toHaveBeenCalled();
+        expect(acquirePendingAgentSwitch).toHaveBeenCalledWith('desktop-attached-session', {
+          channelOwned: false,
+        });
+        expect(localRunner.vendorOptionsForSession('desktop-attached-session')).toBeUndefined();
+      } finally {
+        localRunner.disposeAllSessions();
+      }
+    });
+  });
 });

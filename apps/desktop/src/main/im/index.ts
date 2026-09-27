@@ -78,6 +78,8 @@ import { wireWechatOrchestrator } from './wechat';
 import { wireWecomOrchestrator } from './wecom';
 import { resetTelegramGroupContextCursors } from './telegram/groupWindow';
 import { getImOrchestrator, listImOrchestrators } from './shared/orchestrator';
+import { backfillLegacyImDefaultRoutes } from './shared/channelDefaultRouteSync';
+import type { ImDefaultSettingsChannel } from '../../shared/imDefaultSettings';
 import { createSerializedConnectionLifecycle } from './connectionLifecycle';
 import {
   activateImAccountBoundary,
@@ -626,6 +628,27 @@ configureImAccountScope({
  * `feishuBot:save` kept failing with `[IM_NOT_READY]` (the account boundary is
  * activated inside `im.init()`), with no way out but manually updating.
  */
+/**
+ * 渠道默认即将被保存 / 恢复: 先给上线前建的、仍在用旧默认的任务补跟随记录,
+ * 让它们在下一条消息时换到新默认。只处理指定渠道(各渠道设置相互独立, 全局
+ * 设置只给官方 hook 用)。失败不挡保存。
+ */
+export async function prepareImDefaultSettingsChange(
+  channel: ImDefaultSettingsChannel | undefined,
+): Promise<void> {
+  if (!channel) return;
+  const config = getImOrchestrator(channel)?.adapter.config;
+  if (!config) return;
+  try {
+    await backfillLegacyImDefaultRoutes(channel, config);
+  } catch (err) {
+    log.warn(
+      `default route backfill failed for ${channel} (non-fatal): ` +
+        (err instanceof Error ? err.message : String(err)),
+    );
+  }
+}
+
 export function startImConnection(): void {
   if (connectionLifecycle.isStarted()) {
     log.info('startImConnection: already started, skip');

@@ -160,6 +160,8 @@ import {
 } from './sessionRepo';
 import type { ImCardBuilders } from './cardBuilders';
 import type { ImChannelAdapter } from './types';
+import type { ImDefaultRoute } from './channelDefaultRoute';
+import type { ImChannelDefaultRouteSync } from './channelDefaultRouteSync';
 import {
   changeSessionPermissionMode,
   type PermissionModeChangeResult,
@@ -526,6 +528,11 @@ export interface ImTurnRunner {
   disposeOneSession(sessionId: string): Promise<void>;
   /** Get the live Maker Session for a given DB session id, or null. */
   getMakerSessionById(sessionId: string): MakerSession | null;
+  /**
+   * 本渠道已接线自有任务的渠道 vendorOptions(切换引擎重建会话时补回);
+   * 未接线 / 接管 / 通知回复任务返回 undefined。
+   */
+  vendorOptionsForSession(sessionId: string): Record<string, unknown> | undefined;
   /** Permission choices exposed by the session's concrete Agent implementation. */
   getPermissionModes(agentKind: AgentKind): PermissionModeDescriptor[];
   changePermissionMode(args: {
@@ -551,8 +558,16 @@ export interface ImTurnRunner {
 }
 
 export interface ImTurnRunnerDeps {
-  /** 锁住 session 并落实 deferred switch；IM 在刷新 live session + send 后 release。 */
-  acquirePendingAgentSwitch?: (sessionId: string) => Promise<() => void>;
+  /**
+   * 锁住 session 并落实 deferred switch；IM 在刷新 live session + send 后 release。
+   * `channelOwned` = 本渠道自有任务(非 `/ctr` 接管、非通知回复): 锁内先对齐渠道默认跟随。
+   */
+  acquirePendingAgentSwitch?: (
+    sessionId: string,
+    opts?: { channelOwned?: boolean },
+  ) => Promise<() => void>;
+  /** 渠道默认跟随: 发送前授权检查按真实会跑的路由判断; 未接线的任务接线前先对齐。 */
+  channelDefaultRoute?: Pick<ImChannelDefaultRouteSync, 'previewSwitchTarget' | 'syncBeforeWiring'>;
 }
 
 export function createTurnRunner(
@@ -599,6 +614,8 @@ export function createTurnRunner(
    *  the cache, both spawn a maker session, and the second clobbers the first
    *  in `sessionStates`. */
   const wiringInFlight = new Map<string, Promise<SessionState>>();
+  /** 接线前跟随切换期间, 切换重建会话要用的渠道 vendorOptions(见 vendorOptionsForSession)。 */
+  const coldWiringVendorOptions = new Map<string, Record<string, unknown>>();
   /**
    * agent switch 主动 close 的旧 Session。只有对象身份和 close reason 都匹配才
    * 忽略；同一业务 sessionId 下的用户关闭或新引擎关闭必须照常清缓存。
@@ -778,11 +795,26 @@ export function createTurnRunner(
     }
     const row = target.row;
     const allowedFileRoots = resolveTurnFileRoots(row.workingDir, row.remoteHostId);
+    let followTarget: ImDefaultRoute | null | undefined = null;
     if (!target.authChecked) {
-      const auth = await checkImRouteAuthDetailed(row, undefined, authCheckDeps());
+      // 渠道默认跟随: 本条消息会在 send 锁内切到新默认时, 按新路由检查授权 ——
+      // 否则旧默认坏掉(如供应商断开)时, 消息会先被「缺授权」挡掉, 永远换不过去。
+      followTarget =
+        !target.attached && !target.notificationReply
+          ? await deps.channelDefaultRoute?.previewSwitchTarget(row.id)
+          : null;
+      const authRow = followTarget
+        ? {
+            ...row,
+            agentKind: followTarget.agentKind,
+            model: followTarget.model,
+            providerId: followTarget.providerId,
+          }
+        : row;
+      const auth = await checkImRouteAuthDetailed(authRow, undefined, authCheckDeps());
       if (!auth.ok) {
         if (args.queueMode === 'internal') {
-          const authStatus = { ...auth, agentKind: row.agentKind, model: row.model };
+          const authStatus = { ...auth, agentKind: authRow.agentKind, model: authRow.model };
           const text =
             ui.agent.authMissing?.({ ...authStatus, attached: target.attached }) ??
             ui.agent.apiKeyMissing;
@@ -874,9 +906,42 @@ export function createTurnRunner(
       terminalPromise,
       resolveTerminal,
     };
+    // 未接线的任务(如重启后)要跟随新默认: 接线前先对齐, 不先用可能已坏的旧路由
+    // 起一次进程。只换接线用的路由; `row` 保持入口读到的值(标题等逻辑按它判断,
+    // 跨引擎切换清掉的原生会话 id 不应被当成「新对话」)。
+    let wireTarget = target;
+    if (
+      followTarget &&
+      deps.channelDefaultRoute &&
+      !sessionStates.has(row.id) &&
+      !wiringInFlight.has(row.id) &&
+      !getMaker().getSession(row.id)
+    ) {
+      coldWiringVendorOptions.set(row.id, adapter.buildVendorOptions(userId, target.scopeKey));
+      try {
+        await deps.channelDefaultRoute.syncBeforeWiring(row.id);
+      } finally {
+        coldWiringVendorOptions.delete(row.id);
+      }
+      const refreshed = await repo.peekSessionById(row.id);
+      if (refreshed) {
+        wireTarget = {
+          ...target,
+          row: {
+            ...target.row,
+            agentKind: refreshed.agentKind,
+            model: refreshed.model,
+            effort: refreshed.effort,
+            fastMode: refreshed.fastMode,
+            providerId: refreshed.providerId,
+            sdkSessionId: refreshed.sdkSessionId,
+          },
+        };
+      }
+    }
     let state: SessionState;
     try {
-      state = await ensureSessionWired(target, userId);
+      state = await ensureSessionWired(wireTarget, userId);
     } catch (err) {
       if (isCredentialModeSwitchBusyError(err)) {
         if (args.queueMode === 'internal') {
@@ -1089,7 +1154,9 @@ export function createTurnRunner(
         };
         agentSwitchCloseSuppressed.set(rowId, suppression);
         try {
-          releaseAgentSwitchLock = await deps.acquirePendingAgentSwitch(rowId);
+          releaseAgentSwitchLock = await deps.acquirePendingAgentSwitch(rowId, {
+            channelOwned: !state.attached && !item.turn.notificationReply,
+          });
         } finally {
           agentSwitchCloseSuppressed.delete(rowId);
         }
@@ -3743,6 +3810,13 @@ export function createTurnRunner(
     disposeAllSessions,
     disposeOneSession,
     getMakerSessionById,
+    vendorOptionsForSession: (sessionId) => {
+      const cold = coldWiringVendorOptions.get(sessionId);
+      if (cold) return cold;
+      const state = sessionStates.get(sessionId);
+      if (!state || state.preserveSessionConfig) return undefined;
+      return adapter.buildVendorOptions(state.userId, state.scopeKey);
+    },
     getPermissionModes: (agentKind) => getMaker().getCapabilities(agentKind).permissionModes,
     changePermissionMode: (args) =>
       changeSessionPermissionMode({
