@@ -186,3 +186,23 @@ it('drops a memory read that lands after switching to another account', async ()
   expect(latest!.form.agent).toBe('codex');
   expect(latest!.form.permissionMode).toBe('bypassPermissions');
 });
+
+it('moves off an unavailable Agent even after unrelated edits, keeping those edits', async () => {
+  let resolveAgents: (agents: string[]) => void = () => undefined;
+  const maker = {
+    ...fakeMaker(),
+    listAvailableAgents: vi.fn(() => new Promise<string[]>((resolve) => { resolveAgents = resolve; })),
+  } as unknown as MobileMakerTransport;
+  function ActiveProbe() {
+    latest = useOrcaWorkerForm({ maker, prefsScope: 'user-1', active: true, setSheetOpen: () => undefined });
+    return null;
+  }
+  await act(async () => root.render(<ActiveProbe />));
+  act(() => { latest!.reset(); });
+  // Agent 列表还没回来,用户先改了角色和初始任务。
+  act(() => { latest!.patch({ role: 'reviewer', initialTask: 'check tests' }); });
+  await act(async () => { resolveAgents(['claude-code']); await flush(); });
+  expect(latest!.form.agent).toBe('claude-code');
+  expect(latest!.form.role).toBe('reviewer');
+  expect(latest!.form.initialTask).toBe('check tests');
+});

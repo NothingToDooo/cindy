@@ -244,8 +244,9 @@ export function useOrcaWorkerForm(params: {
       .catch(() => undefined);
   }, []);
 
-  // 读被控端实际注册的 Agent。复位时列表可能还是乐观的三个:结果回来后,若用户还没动过
-  // 表单且当前 Agent 不在这台电脑上,切到第一个可用 Agent 并带出它的记忆,避免提交必然失败。
+  // 读被控端实际注册的 Agent。复位时列表可能还是乐观的三个:结果回来后,当前 Agent 不在这台
+  // 电脑上就切到第一个可用 Agent 并带出它的模型记忆(不论用户是否改过其它字段——角色、任务、
+  // 权限原样保留),避免表单停在一个必然提交失败的 Agent 上。
   useEffect(() => {
     if (!active) return undefined;
     let cancelled = false;
@@ -256,7 +257,7 @@ export function useOrcaWorkerForm(params: {
         if (next.length === 0) return;
         agentsRef.current = next;
         setAgents(next);
-        if (touchedRef.current || next.includes(formRef.current.agent)) return;
+        if (next.includes(formRef.current.agent)) return;
         const generation = ++generationRef.current;
         const switched = next[0]!;
         const remembered = prefsRef.current.agents[switched];
