@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { runImportedProcess, redactEnvironmentValues, redactEnvironmentData } from './process.js';
+import { importedProcessEnvironment, runImportedProcess, redactEnvironmentValues, redactEnvironmentData } from './process.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, type Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { McpProvider } from '@cindy/maker-core';
@@ -60,7 +60,7 @@ export function createCompanionConnectionsProvider(): McpProvider {
           if (typeof command !== 'string' || !command.trim() || command.length > 32000) throw new Error('Invalid command');
           const output = await runImportedProcess({ command: process.platform === 'win32' ? process.env.ComSpec || 'cmd.exe' : '/bin/sh',
             args: process.platform === 'win32' ? ['/d', '/s', '/c', command] : ['-c', command],
-            cwd: path.join(scope.userData, 'bots', scope.botId), env: { ...process.env, ...scope.environment.env }, timeoutMs: 120_000,
+            cwd: path.join(scope.userData, 'bots', scope.botId), env: importedProcessEnvironment(scope.environment.env), timeoutMs: 120_000,
             signal: extra.signal, assertOwner: scope.assertOwner });
           return { content: [{ type: 'text', text: redactEnvironmentValues(output.stdout, scope.environment.env) }], isError: output.exitCode !== 0 };
         }

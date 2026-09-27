@@ -12,9 +12,11 @@ import { createCompanionConnectionsProvider } from '../connectionProvider.js';
 import { redactEnvironmentData } from '../process.js';
 import { withImportedConnection } from '../connections.js';
 let root: string | undefined;
-afterEach(async () => { if (root) await fs.rm(root, { recursive: true, force: true }); });
+afterEach(async () => { vi.unstubAllEnvs(); if (root) await fs.rm(root, { recursive: true, force: true }); });
 
 it.skipIf(process.platform === 'win32')('uses original credentials in a real imported command and redacts arbitrary names from its response', async () => {
+  vi.stubEnv('CINDY_UNRELATED_TEST_SECRET', 'fixture-launch-secret');
+  vi.stubEnv('HTTPS_PROXY', 'http://fixture-user:fixture-password@example.invalid');
   root = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-import-command-test-'));
   await fs.mkdir(path.join(root, 'bots/bot'), { recursive: true });
   const env = { GITHUB_PAT: 'fixture-pat', DATABASE_URL: 'postgres://fixture:secret@example.invalid/db', ALIAS: 'short' };
@@ -27,7 +29,7 @@ it.skipIf(process.platform === 'win32')('uses original credentials in a real imp
   await config.instance.connect(serverTransport); await client.connect(clientTransport);
   try {
     expect((await client.listTools()).tools.some(tool => tool.name === 'run_command')).toBe(true);
-    const result = await client.callTool({ name: 'run_command', arguments: { command: 'test "$ALIAS" = "short" && printf "authenticated %s %s %s" "$GITHUB_PAT" "$DATABASE_URL" "$ALIAS"' } });
+    const result = await client.callTool({ name: 'run_command', arguments: { command: 'test -z "$CINDY_UNRELATED_TEST_SECRET" && test -z "$HTTPS_PROXY" && test "$ALIAS" = "short" && printf "authenticated %s %s %s" "$GITHUB_PAT" "$DATABASE_URL" "$ALIAS"' } });
     expect(result.isError).toBe(false);
     expect(JSON.stringify(result)).toContain('authenticated');
     for (const value of Object.values(env)) expect(JSON.stringify(result)).not.toContain(value);

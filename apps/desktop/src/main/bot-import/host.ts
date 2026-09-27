@@ -14,6 +14,7 @@ import { createBotCanonicalSession, createBotProfile, getBotMemoryService, getBo
 import { readBotProfileFolder, writeBotProfileFolder, BOT_PROFILE_TEXT_MAX_BYTES } from '../maker-ipc/botProfileFolder.js';
 import { importBotSkillFiles, normalizeBotSkillSlug } from '../maker-ipc/botSkillStore.js';
 import { getRoutineEngine, routineTools } from '../routines/service.js';
+import { selectedImportEnvironment } from './environmentSelection.js';
 import { discoverImportSources, inspectImportSource, type SourceReaderDeps } from './sources.js';
 import { readOpenClawCronDatabase } from './openclawCron.js';
 import { companionEnvironmentStore } from './runtime.js';
@@ -200,7 +201,7 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
     async saveEnvironment(botId, items) {
       const previous = await companionEnvironmentStore.read(scope.root, botId, scope.assert);
       const chosen = new Set(items.map(item => item.view.id));
-      const env: Record<string, string> = Object.assign({}, ...items.map(item => item.env ?? {}));
+      const env = selectedImportEnvironment(items);
       const resolveReferences = (value: unknown): unknown => {
         if (typeof value === 'string') return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_match, key: string) => {
           if (!Object.hasOwn(env, key)) throw new CompanionImportError('AUTOMATION_DEPENDENCY_NOT_SELECTED');

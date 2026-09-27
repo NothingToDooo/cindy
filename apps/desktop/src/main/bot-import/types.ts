@@ -43,6 +43,8 @@ export interface ImportItem {
   text?: string;
   role?: 'identity' | 'user' | 'instructions';
   env?: Record<string, string>;
+  /** Variable requirements are separate from mandatory entries: profiles are alternatives. */
+  envDependencies?: { names: string[]; entries: string[] };
   mcp?: ImportedMcpServer;
   credential?: { format: string; value: unknown };
   asset?: { name: string; bytes: Buffer };

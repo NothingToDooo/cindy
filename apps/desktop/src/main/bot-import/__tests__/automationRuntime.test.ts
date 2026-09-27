@@ -16,9 +16,11 @@ beforeEach(async () => {
   shared.store = createCompanionEnvironmentStore({ read: key => values.get(key) ?? null, write: (key, value) => { values.set(key, value); return true; }, remove: key => { values.delete(key); return true; } });
   shared.message.mockReset().mockResolvedValue({});
 });
-afterEach(async () => { await fs.rm(root, { recursive: true, force: true }); });
+afterEach(async () => { vi.unstubAllEnvs(); await fs.rm(root, { recursive: true, force: true }); });
 it.skipIf(process.platform === 'win32')('runs a copied script after the source is gone, with private env, once per durable run', async () => {
-  const script = 'test "$DATA_TOKEN" = "fixture-token" || exit 1\nprintf "data read succeeded"\n';
+  vi.stubEnv('CINDY_UNRELATED_TEST_SECRET', 'fixture-launch-secret');
+  vi.stubEnv('HTTPS_PROXY', 'http://fixture-user:fixture-password@example.invalid');
+  const script = 'test "$DATA_TOKEN" = "fixture-token" || exit 1\ntest -z "$CINDY_UNRELATED_TEST_SECRET" || exit 2\ntest -z "$HTTPS_PROXY" || exit 3\nprintf "data read succeeded"\n';
   await shared.store.write(root, 'bot', { version: 1, env: { DATA_TOKEN: 'fixture-token' }, mcp: [], credentials: [], files: { 'scripts/report.sh': Buffer.from(script).toString('base64') }, automations: {
     routine: { kind: 'hermes', handover: 'ready', original: { id: 'original', script: 'report.sh', no_agent: true, repeat: { times: 1, completed: 0 } }, sourceRoot: path.join(root, 'source-does-not-exist'), deliveries: [] },
   } }, () => {});

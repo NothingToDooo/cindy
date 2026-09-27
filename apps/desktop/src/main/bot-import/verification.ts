@@ -9,7 +9,7 @@ import { withImportedConnection } from './connections.js';
 import { object, string, type ImportItem } from './types.js';
 import { verifyImportedDelivery } from './delivery.js';
 import { fingerprint, writeImportFiles } from './files.js';
-import { redactEnvironmentValues, runImportedProcess } from './process.js';
+import { importedProcessEnvironment, redactEnvironmentValues, runImportedProcess } from './process.js';
 
 interface ReadPlan {
   reads?: Array<{
@@ -177,7 +177,7 @@ async function verifyLocalImportedScripts(root: string, botId: string, sourceRoo
       const result = await runImportedProcess({ command: await importedScriptInterpreter(sourceRoot, name),
         args: shell ? ['--noprofile', '--norc', '-n', file]
           : ['-I', '-S', '-c', 'import sys; compile(open(sys.argv[1], "rb").read(), sys.argv[1], "exec")', file],
-        cwd: path.dirname(file), env: { ...process.env, BASH_ENV: '', ENV: '' },
+        cwd: path.dirname(file), env: importedProcessEnvironment({ BASH_ENV: '', ENV: '' }),
         timeoutMs: 15_000, signal: new AbortController().signal, assertOwner });
       if (result.exitCode !== 0) throw new Error('Script prerequisite check failed');
     }

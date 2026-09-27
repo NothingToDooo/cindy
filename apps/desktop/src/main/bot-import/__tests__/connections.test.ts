@@ -4,8 +4,10 @@ import path from 'node:path';
 import os from 'node:os';
 import { withImportedConnection } from '../connections.js';
 let directory: string | undefined;
-afterEach(async () => { if (directory) await fs.rm(directory, { recursive: true, force: true }); });
+afterEach(async () => { vi.unstubAllEnvs(); if (directory) await fs.rm(directory, { recursive: true, force: true }); });
 it('queries a real stdio MCP subprocess with the imported credential after a new connection', async () => {
+  vi.stubEnv('CINDY_UNRELATED_TEST_SECRET', 'fixture-launch-secret');
+  vi.stubEnv('HTTPS_PROXY', 'http://fixture-user:fixture-password@example.invalid');
   directory = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-import-mcp-test-'));
   const file = path.join(directory, 'server.cjs');
   await fs.writeFile(file, `const readline = require('node:readline'); let reads = 0;
@@ -13,7 +15,7 @@ readline.createInterface({input:process.stdin}).on('line', line => {
  const r = JSON.parse(line); if (!('id' in r)) return;
  const result = r.method === 'initialize' ? {protocolVersion:'2024-11-05',capabilities:{tools:{}},serverInfo:{name:'fixture',version:'1'}}
  : r.method === 'tools/list' ? {tools:[{name:'read_data',inputSchema:{type:'object'},annotations:{readOnlyHint:true}}]}
- : {content:[{type:'text',text:JSON.stringify({authenticated:process.env.DATA_TOKEN === 'fixture-mcp-key',rows:[{id:1}],reads:++reads})}]};
+ : {content:[{type:'text',text:JSON.stringify({authenticated:process.env.DATA_TOKEN === 'fixture-mcp-key',isolated:!process.env.CINDY_UNRELATED_TEST_SECRET && !process.env.HTTPS_PROXY,rows:[{id:1}],reads:++reads})}]};
  process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:r.id,result})+'\\n');
 });`);
   const connection = { name: 'fixture', command: process.execPath, args: [file], transport: 'stdio' as const };
@@ -29,6 +31,7 @@ readline.createInterface({input:process.stdin}).on('line', line => {
   const second = await withImportedConnection(connection, { DATA_TOKEN: 'fixture-mcp-key' }, () => {}, client => client.callTool({ name: 'read_data', arguments: {} }), scope);
   const payload = (value: unknown) => JSON.parse((value as { content: Array<{ text: string }> }).content[0]!.text);
   expect(payload(first).reads).toBe(1);
+  expect(payload(first).isolated).toBe(true);
   expect(payload(second).reads).toBe(2);
   // A failed request discards the cached subprocess and leaves no fixture running.
   await expect(withImportedConnection(connection, {}, () => {}, async () => { throw new Error('fixture disconnect'); }, scope)).rejects.toThrow('CONNECTION_FAILED');

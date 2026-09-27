@@ -3,6 +3,8 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { discoverImportSources, inspectImportSource } from '../sources.js';
+import { validateImportSelection } from '../transfer.js';
+import { selectedImportEnvironment } from '../environmentSelection.js';
 
 let home: string;
 beforeEach(async () => { home = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-import-source-test-')); });
@@ -113,4 +115,36 @@ it.each(['daily-report', 'Daily report'])('matches a skill reference %s against 
     skill.view.id, ...snapshot.items.filter(item => item.env).map(item => item.view.id),
   ]));
   expect(skill.files?.find(file => file.name === 'scripts/query.py')).toBeDefined();
+});
+
+
+it('requires an explicit credential account and binds variables to the chosen profile, including MCP references', async () => {
+  await write('.openclaw/openclaw.json', JSON.stringify({ mcpServers: { data: { url: 'https://example.invalid/mcp', headers: { Authorization: 'Bearer ${OPENAI_API_KEY}' } } } }));
+  await write('.openclaw/agents/main/agent/auth-profiles.json', JSON.stringify({ profiles: {
+    'openai:work': { provider: 'openai', type: 'api_key', key: 'fixture-work-key' },
+    'openai:personal': { provider: 'openai', type: 'api_key', key: 'fixture-personal-key' },
+  } }));
+  await write('.openclaw/cron/jobs.json', JSON.stringify({ jobs: [{ id: 'report', agentId: 'main', payload: { message: 'Use data with OPENAI_API_KEY' }, schedule: { kind: 'every', everyMs: 60000 } }] }));
+  const reader = deps(); const [source] = await discoverImportSources(reader);
+  const snapshot = await inspectImportSource(source!, reader);
+  const profiles = snapshot.items.filter(item => item.env?.OPENAI_API_KEY);
+  expect(profiles).toHaveLength(2);
+  expect(profiles.every(item => !item.view.selected)).toBe(true);
+  expect(profiles[0]!.view.exclusiveWith).toEqual([profiles[1]!.view.id]);
+  const defaults = snapshot.items.filter(item => item.view.selected).map(item => item.view.id);
+  const selection = { requestId: 'fixture-credential-request', previewId: 'preview', name: 'Ada', takeover: true, entryIds: defaults };
+  expect(() => validateImportSelection({ ...selection, entryIds: [...defaults, ...profiles.map(item => item.view.id)] }, snapshot)).toThrow('INVALID_SELECTION');
+  for (const profile of profiles) {
+    const selected = validateImportSelection({ ...selection, entryIds: [...defaults, profile.view.id] }, snapshot);
+    expect(selectedImportEnvironment(selected).OPENAI_API_KEY).toBe(profile.env!.OPENAI_API_KEY);
+    for (const consumer of selected.filter(item => item.mcp || item.automation)) {
+      expect(consumer.view.dependsOn).toContain(profile.view.id);
+      expect(consumer.view.dependsOn?.every(id => selected.some(item => item.view.id === id))).toBe(true);
+      expect(consumer.view.issues).toBeUndefined();
+    }
+  }
+  const missing = validateImportSelection(selection, snapshot).find(item => item.automation)!;
+  expect(missing.view.dependsOn?.some(id => !defaults.includes(id))).toBe(true);
+  expect(JSON.stringify(snapshot.items.map(item => item.view))).not.toContain('fixture-work-key');
+  expect(JSON.stringify(snapshot.items.map(item => item.view))).not.toContain('fixture-personal-key');
 });

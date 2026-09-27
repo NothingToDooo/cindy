@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
-import { companionImportIssueKey, companionImportCategories, type CompanionImportApi, type CompanionImportPreview, type CompanionImportResult, type CompanionImportSelection, type CompanionImportSource } from '@cindy/maker-shared/companion-import';
+import { areCompanionImportEntriesSelected, toggleCompanionImportEntries, companionImportIssueKey, companionImportCategories, type CompanionImportApi, type CompanionImportPreview, type CompanionImportResult, type CompanionImportSelection, type CompanionImportSource } from '@cindy/maker-shared/companion-import';
 import { normalizeBotName } from '../../../shared/botCreation';
 import { BotPortraitPicker, galleryPortrait } from './BotPortraitPicker';
 import { useBotProfiles } from './botStore';
@@ -58,7 +58,7 @@ export function BotImportForm({ api = window.electronAPI.companionImport, onBack
     }
     if (alive.current && next) setResult(next);
   });
-  const toggle = (ids: string[], value: boolean) => setSelected(current => value ? [...new Set([...current, ...ids])] : current.filter(id => !ids.includes(id)));
+  const toggle = (ids: string[], value: boolean) => setSelected(current => toggleCompanionImportEntries(preview?.entries ?? [], current, ids, value));
   const locked = busy || !!intent.current;
   return <div className="space-y-5">
     <p className="text-13 text-[var(--text-secondary)]">{tr('description')}</p>
@@ -77,9 +77,10 @@ export function BotImportForm({ api = window.electronAPI.companionImport, onBack
           const entries = preview.entries.filter(item => item.category === category);
           if (!entries.length) return null;
           const count = entries.filter(item => selected.includes(item.id)).length;
+          const allSelected = areCompanionImportEntriesSelected(entries, selected);
           return <div key={category} className="px-4 py-3">
             <div className="flex min-h-9 items-center gap-3">
-              <input type="checkbox" aria-label={tr(category)} checked={count === entries.length} ref={node => { if (node) node.indeterminate = count > 0 && count < entries.length; }} onChange={event => toggle(entries.map(item => item.id), event.target.checked)} className="h-4 w-4 accent-[var(--text-primary)]" />
+              <input type="checkbox" aria-label={tr(category)} checked={allSelected} ref={node => { if (node) node.indeterminate = count > 0 && !allSelected; }} onChange={event => toggle(entries.map(item => item.id), event.target.checked)} className="h-4 w-4 accent-[var(--text-primary)]" />
               <details className="min-w-0 flex-1" open={category === 'automations'}><summary className="cursor-pointer py-2 text-14 font-medium">{tr(category)} <span className="font-normal text-[var(--text-secondary)]">{count} / {entries.length}</span></summary>
                 <div className="max-h-64 overflow-y-auto">
                   {entries.map(entry => <label key={entry.id} className="flex min-h-11 cursor-pointer items-start gap-3 py-2 text-13"><input type="checkbox" className="mt-1 h-4 w-4 shrink-0 accent-[var(--text-primary)]" checked={selected.includes(entry.id)} onChange={event => toggle([entry.id], event.target.checked)} /><span className="min-w-0 break-words">{entry.name}{entry.description ? <span className="mt-1 block text-[var(--text-secondary)]">{entry.description}</span> : null}{entry.enabled === false ? <span className="block text-[var(--text-secondary)]">{tr('paused')}</span> : null}{entry.issues?.length ? <span className="block text-[var(--text-secondary)]">{tr(companionImportIssueKey(entry.issues[0]))}</span> : null}</span></label>)}

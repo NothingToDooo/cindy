@@ -26,10 +26,20 @@ theme tokens. No new native Mobile dependencies or fingerprint inputs are added.
   use the existing account encrypted credential store. The teammate folder has
   a non-secret `environment.json` binding. Cancellation of a variable does not
   secretly copy its expanded value into another selected connection.
+  Profiles supplying different values for one variable are alternatives in the
+  existing checkboxes; none is guessed by file order. Picking one clears its
+  conflicting choices, and group selection keeps an existing account choice.
+  The host also rejects conflicting selections before creating a receipt. Variable
+  dependencies resolve to the selected provider, so unchecking another account does
+  not block takeover. Identical duplicate values remain compatible.
 - Claude Code, Codex and Pi use the shared `companion_connections` bridge for
   imported skills, commands and data queries. Only those host-owned subprocesses
   and connections receive imported variables; the model harness does not inherit
   them. Values stay encrypted across restarts without changing Cindy's model route.
+  Script, command, parser and stdio MCP subprocesses inherit only OS execution
+  basics plus their explicitly selected imported environment (and connection-local
+  env). Unrelated launch tokens, proxy credentials and runtime injection variables
+  are not implicitly inherited; selected proxy/runtime settings remain available.
   Codex hosts remain partitioned by companion environment identity.
   `run_command` remains an authorized general command facility, with the existing
   Auto/Ask/Full Access modes: Auto reviews the actual call against user intent,
@@ -80,6 +90,11 @@ markers; failed checks or a skipped takeover of an active source cannot.
 Retries preserve edits, reuse the same teammate/routines, and do not recopy
 unselected items. Pending selected checkpoints are encrypted and recover after
 restart; handover reconciliation continues if the dialog/device link closes.
+Definitive host input rejections keep their stable error through the Mobile
+Remote Resource boundary so the existing form can be edited and resubmitted.
+Unexpected/ambiguous failures still retain the original request for reconciliation.
+The optional public credential-alternative IDs are additive: older clients may
+ignore them, but the host still rejects a conflicting selection before writing.
 
 An imported definition is not automatically equivalent to every source runtime.
 The preview/result explicitly retains and identifies configurations requiring

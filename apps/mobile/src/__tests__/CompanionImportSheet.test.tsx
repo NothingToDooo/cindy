@@ -2,17 +2,17 @@
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, expect, it, vi } from 'vitest';
-const h = vi.hoisted(() => ({ invoke: vi.fn(), submit: vi.fn(), openLink: vi.fn(), created: vi.fn() }));
+const h = vi.hoisted(() => ({ invoke: vi.fn(), submit: vi.fn(), openLink: vi.fn(), created: vi.fn(), uuid: vi.fn(() => 'fixture-request-12345') }));
 vi.mock('react-native', () => ({
   StyleSheet: { create: (v: unknown) => v }, View: 'div', ScrollView: 'div',
   Pressable: ({ onPress, children }: any) => createElement('button', { onClick: onPress }, children),
   Switch: ({ accessibilityLabel, value, disabled, onValueChange }: any) => createElement('input', { type: 'checkbox', 'aria-label': accessibilityLabel, checked: value, disabled, onChange: (e: any) => onValueChange(e.target.checked) }),
 }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key, i18n: { language: 'en' } }) }));
-vi.mock('expo-crypto', () => ({ randomUUID: () => 'fixture-request-12345' }));
+vi.mock('expo-crypto', () => ({ randomUUID: () => h.uuid() }));
 vi.mock('@/device-link/DeviceLinkContext', () => ({ useDeviceLink: () => ({ invoke: h.invoke, openLink: h.openLink }) }));
 vi.mock('@/device-link/remoteResources', () => ({ invokeRemoteResourceAction: (...args: unknown[]) => h.submit(...args) }));
-vi.mock('@/components/AppText', () => ({ Text: 'span', TextInput: ({ value }: any) => createElement('input', { value, readOnly: true }) }));
+vi.mock('@/components/AppText', () => ({ Text: 'span', TextInput: ({ value, editable, onChangeText }: any) => createElement('input', { value, disabled: !editable, onInput: (e: any) => onChangeText(e.target.value), onChange() {} }) }));
 vi.mock('@/components/MobilePrimitives', () => ({ MainWindowActionButton: ({ action }: any) => createElement('button', { onClick: action.onPress, disabled: action.disabled }, action.label) }));
 vi.mock('@/session/CompanionSheet', () => ({ CompanionSheet: ({ children }: any) => children }));
 vi.mock('@/session/CompanionPortraitPicker', () => ({ randomCompanionPortrait: async () => 'original-portrait', CompanionPortraitPicker: ({ onChange }: any) => createElement('button', { onClick: () => onChange('chosen-existing-portrait') }, 'existing portrait picker') }));
@@ -20,7 +20,7 @@ vi.mock('@/theme', async () => ({ ...await import('@/theme/tokens'), useThemedSt
 import { CompanionImportSheet } from '@/session/CompanionImportSheet';
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root | undefined;
-afterEach(() => { act(() => root?.unmount()); root = undefined; vi.clearAllMocks(); });
+afterEach(() => { act(() => root?.unmount()); root = undefined; vi.clearAllMocks(); h.uuid.mockReset().mockReturnValue('fixture-request-12345'); });
 it('uses the existing portrait picker and sends only the remaining selections through the host resource', async () => {
   let imported = false;
   const result = { requestId: 'fixture-request-12345', botId: 'bot', canonicalSessionId: 'chat', status: 'complete', checks: [] };
@@ -42,4 +42,40 @@ it('uses the existing portrait picker and sends only the remaining selections th
   await click('devices.companionImport.submit');
   expect(h.submit.mock.calls[0]?.[2].input).toMatchObject({ entryIds: ['personality'], avatarImageBase64: 'chosen-existing-portrait' });
   await click('devices.companionImport.open'); expect(h.created).toHaveBeenCalledWith({ collectionId: 'teammates', kind: 'bot', id: 'bot' });
+});
+
+
+it.each(['IMPORT_NAME_EXISTS', 'INVALID_SELECTION', 'PROFILE_TEXT_TOO_LARGE', 'INTERNAL'])('unlocks only definitive %s errors and preserves an ambiguous request', async code => {
+  h.uuid.mockReturnValueOnce('fixture-request-original').mockReturnValue('fixture-request-corrected');
+  h.invoke.mockImplementation(async (_host: string, _channel: string, args: any[]) => {
+    const id = args[0].ref.id;
+    return { blocks: [{ primitive: 'companion-import', data: id === 'sources' ? { sources: [{ id: 'source', name: 'Ada', kind: 'hermes' }] } : id.startsWith('preview:') ? { preview: { id: 'preview', name: 'Ada', source: { id: 'source', name: 'Ada', kind: 'hermes' }, entries: [
+      { id: 'work', name: 'Work', category: 'connections', selected: false, exclusiveWith: ['personal'] },
+      { id: 'personal', name: 'Personal', category: 'connections', selected: false, exclusiveWith: ['work'] },
+    ] } } : { result: null } }] };
+  });
+  h.submit.mockRejectedValue(new Error(code === 'INTERNAL' ? '[INTERNAL] remote resource provider failed' : `[INVALID_PARAMS] ${code}`));
+  const container = document.createElement('div'); root = createRoot(container);
+  await act(async () => root!.render(createElement(CompanionImportSheet, { visible: true, deviceId: 'host', deviceName: 'Mac', online: true, onClose() {}, onCreated: h.created })));
+  const click = async (text: string) => { await act(async () => { const button = [...container.querySelectorAll('button')].find(button => button.textContent?.startsWith(text)); expect(button).toBeDefined(); button!.click(); }); };
+  await click('Ada · Hermes');
+  await click('devices.companionImport.connections');
+  await act(async () => (container.querySelector('[aria-label="Work"]') as HTMLInputElement).click());
+  await act(async () => (container.querySelector('[aria-label="Personal"]') as HTMLInputElement).click());
+  expect((container.querySelector('[aria-label="Work"]') as HTMLInputElement).checked).toBe(false);
+  await click('devices.companionImport.submit');
+  const input = container.querySelector('input:not([type="checkbox"])') as HTMLInputElement;
+  expect(input.disabled).toBe(code === 'INTERNAL');
+  if (code !== 'INTERNAL') {
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'Corrected name');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      (container.querySelector('[aria-label="Personal"]') as HTMLInputElement).click();
+    });
+  }
+  await click('devices.companionImport.submit');
+  const requests = h.submit.mock.calls.map(call => call[2].input);
+  expect(requests).toHaveLength(2);
+  expect(requests[0]).toMatchObject({ name: 'Ada', entryIds: ['personal'], requestId: 'fixture-request-original' });
+  expect(requests[1]).toMatchObject(code === 'INTERNAL' ? requests[0] : { name: 'Corrected name', entryIds: [], requestId: 'fixture-request-corrected' });
 });

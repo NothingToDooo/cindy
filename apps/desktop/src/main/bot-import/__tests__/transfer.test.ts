@@ -117,3 +117,26 @@ it('checkpoints full selected skills before acknowledging or copying and resumes
     expect(deps.pauseSource).toHaveBeenCalledOnce();
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
+
+
+it('takes over with either credential profile, blocks missing credentials, and rejects conflicts before writing', async () => {
+  const original = structuredClone(snapshot);
+  original.items = original.items.filter(item => item.view.id !== 'env');
+  const task = original.items.find(item => item.automation)!;
+  task.envDependencies = { names: ['DATA_TOKEN'], entries: [] };
+  original.items.push(...['first', 'second'].map(id => ({ view: { id, name: id, category: 'connections' as const, selected: false }, env: { DATA_TOKEN: `fixture-${id}` } })));
+  for (const id of ['first', 'second']) {
+    const h = harness();
+    const result = await transferCompanion(original, { ...selection, entryIds: ['task', id] }, h.deps);
+    expect(result.status).toBe('complete');
+    expect(h.deps.verifyAutomation).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ view: expect.objectContaining({ dependsOn: [id] }) }));
+    expect(h.deps.pauseSource).toHaveBeenCalledTimes(1);
+  }
+  const missing = harness();
+  expect((await transferCompanion(original, { ...selection, entryIds: ['task'] }, missing.deps)).status).toBe('needs-attention');
+  expect(missing.deps.pauseSource).not.toHaveBeenCalled();
+  const conflict = harness();
+  await expect(transferCompanion(original, { ...selection, entryIds: ['task', 'first', 'second'] }, conflict.deps)).rejects.toThrow('INVALID_SELECTION');
+  expect(conflict.deps.saveCheckpoint).not.toHaveBeenCalled();
+  expect(conflict.receipt()).toBeUndefined();
+});

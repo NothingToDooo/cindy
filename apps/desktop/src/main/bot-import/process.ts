@@ -2,6 +2,17 @@ import { spawn } from 'node:child_process';
 import { killProcessTree } from '../scheduler-host/proc-util.js';
 import { CompanionImportError } from './types.js';
 
+/** Inherit OS execution basics only; proxy/auth/runtime injection must be explicitly selected. */
+export function importedProcessEnvironment(selected: NodeJS.ProcessEnv = {}, host: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): Record<string, string> {
+  const basics = new Set(['PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ',
+    'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATHEXT', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'HOMEDRIVE', 'HOMEPATH']);
+  const nameOf = (name: string) => platform === 'win32' ? name.toUpperCase() : name;
+  const env: Record<string, string> = {};
+  for (const [name, value] of Object.entries(host)) if (typeof value === 'string' && basics.has(name.toUpperCase())) env[nameOf(name)] = value;
+  for (const [name, value] of Object.entries(selected)) if (typeof value === 'string') env[nameOf(name)] = value;
+  return env;
+}
+
 /** Imported commands get a private subprocess environment; the host environment is never mutated. */
 export function runImportedProcess(input: {
   command: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv; timeoutMs: number;

@@ -40,8 +40,8 @@ export function normalizeAutomation(source: ImportSource, job: Record<string, un
   const searchText = [prompt, ...scriptItems.map(item => item.asset!.bytes.toString('utf8')), ...skillItems.flatMap(item => (item.files ?? []).filter(file => /\.(md|py|js|mjs|sh|ts|json|yaml|yml|toml)$/i.test(file.name)).map(file => file.bytes.toString('utf8')))].join('\n');
   const dependsOn = items.filter(item =>
     skillItems.includes(item) ||
-    item.env && Object.keys(item.env).some(key => new RegExp(`\\b${key}\\b`).test(searchText)) ||
     item.mcp && searchText.includes(item.mcp.name) || item.asset && scriptNames.includes(item.asset.name)).map(item => item.view.id);
+  const environmentNames = [...new Set(items.flatMap(item => Object.keys(item.env ?? {})))].filter(key => new RegExp(`\\b${key}\\b`).test(searchText));
   const delivery = importDelivery(source, job, items);
   dependsOn.push(...delivery.deliveries.map(item => item.connectionId));
   issues.push(...delivery.issues);
@@ -66,6 +66,7 @@ export function normalizeAutomation(source: ImportSource, job: Record<string, un
     view: { id: `automation-${fingerprint(sourceId).slice(0, 20)}`, category: 'automations', name, enabled, selected: true,
       description: string(job.schedule_display) || string(schedule.expr) || (trigger?.kind === 'once' && Number.isFinite(trigger.at) ? new Date(trigger.at).toISOString() : ''),
       dependsOn, ...(issues.length ? { issues } : {}) },
+    envDependencies: { names: environmentNames, entries: dependsOn },
     automation: { sourceId, input, original: job, deliveries: delivery.deliveries, fingerprint: automationFingerprint(job) },
   };
 }

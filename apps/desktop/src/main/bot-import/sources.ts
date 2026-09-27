@@ -1,3 +1,4 @@
+import { markImportEnvironmentChoices, resolveImportEnvironmentDependencies } from './environmentSelection.js';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { importedScriptName } from './scripts.js';
@@ -126,7 +127,6 @@ async function connections(items: ImportItem[], source: ImportSource, values: Re
   }
   const servers = object(values.mcp_servers ?? values.mcpServers ?? object(values.mcp).servers);
   for (const [name, raw] of Object.entries(servers)) {
-    const missing = new Set<string>();
     // References in the selected connection can use an explicitly set process variable.
     // Do not copy the entire Cindy or OS process environment into the companion.
     // Keep placeholders until selection is final. Otherwise deselecting an env item
@@ -138,13 +138,12 @@ async function connections(items: ImportItem[], source: ImportSource, values: Re
         env[key] = deps.env[key]!;
         items.push({ view: { id: entryId('env', key), category: 'connections', name: key, selected: true }, env: { [key]: env[key]! } });
       }
-      if (!Object.hasOwn(env, key)) missing.add(key);
     }
     const record = object(raw);
     const enabled = record.enabled !== false && record.disabled !== true;
     const command = string(record.command), url = string(record.url);
-    items.push({ view: { id: entryId('mcp', name), category: 'connections', name, selected: enabled, enabled, dependsOn: [...references].map(key => entryId('env', key)),
-      ...(missing.size ? { issues: ['MISSING_ENVIRONMENT_REFERENCE'] } : {}) },
+    items.push({ view: { id: entryId('mcp', name), category: 'connections', name, selected: enabled, enabled, dependsOn: [...references].map(key => entryId('env', key)) },
+      envDependencies: { names: [...references], entries: [] },
       mcp: { name, enabled, ...(command ? { command, args: Array.isArray(record.args) ? record.args.map(string) : [], transport: 'stdio' as const } : { url, transport: record.transport === 'sse' ? 'sse' as const : 'http' as const }),
         env: scalarEnv(record.env), headers: scalarEnvHeaders(record.headers) } });
   }
@@ -152,7 +151,6 @@ async function connections(items: ImportItem[], source: ImportSource, values: Re
   const accounts = Object.keys(object(telegram.accounts)).length ? object(telegram.accounts) : { default: telegram };
   for (const [account, raw] of Object.entries(accounts)) {
     const settings = object(raw);
-    const missing = new Set<string>();
     let token = string(settings.botToken) || (source.kind === 'hermes' && env.TELEGRAM_BOT_TOKEN ? '${TELEGRAM_BOT_TOKEN}' : '');
     const references = [...token.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g)].map(match => match[1]!);
     for (const key of references) {
@@ -160,13 +158,12 @@ async function connections(items: ImportItem[], source: ImportSource, values: Re
         env[key] = deps.env[key]!;
         items.push({ view: { id: entryId('env', key), category: 'connections', name: key, selected: true }, env: { [key]: env[key]! } });
       }
-      if (!Object.hasOwn(env, key)) missing.add(key);
     }
     if (!token && typeof settings.tokenFile === 'string') {
       const file = sourcePath(deps.home, settings.tokenFile, source.root);
       token = (await optionalText(path.dirname(file), file))?.trim() ?? '';
     }
-    if (token) items.push({ view: { id: entryId('telegram', account), name: `Telegram · ${account}`, category: 'connections', selected: true, dependsOn: references.map(key => entryId('env', key)), ...(missing.size ? { issues: ['MISSING_ENVIRONMENT_REFERENCE'] } : {}) }, credential: { format: 'telegram', value: { token, account } } });
+    if (token) items.push({ view: { id: entryId('telegram', account), name: `Telegram · ${account}`, category: 'connections', selected: true, dependsOn: references.map(key => entryId('env', key)) }, envDependencies: { names: references, entries: [] }, credential: { format: 'telegram', value: { token, account } } });
   }
   // Keep native auth metadata without exposing its contents or inventing a refresh protocol.
   // API keys have a direct environment equivalent; provider OAuth needs its native refresh adapter.
@@ -303,5 +300,7 @@ export async function inspectImportSource(source: ImportSource, deps: SourceRead
       if (bytes.length < 1_500_000 && (/\.(png|jpe?g|webp)$/i.test(file))) avatarImageBase64 = bytes.toString('base64');
     } catch { /* A stale source portrait falls back to the existing portrait picker. */ }
   }
-  return { source, items, ...(avatarImageBase64 ? { avatarImageBase64 } : {}), fingerprint: fingerprint(items) };
+  markImportEnvironmentChoices(items);
+  const resolved = resolveImportEnvironmentDependencies(items, items.filter(item => item.view.selected));
+  return { source, items: resolved, ...(avatarImageBase64 ? { avatarImageBase64 } : {}), fingerprint: fingerprint(resolved) };
 }

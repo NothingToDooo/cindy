@@ -27,3 +27,23 @@ it('uses the original portrait control and sends only the items still selected',
   fireEvent.click(await screen.findByRole('button', { name: 'bots.import.open' }));
   expect(open).toHaveBeenCalledWith('imported');
 });
+
+
+it('uses the existing credential checkboxes as alternatives without selecting an arbitrary account in bulk', async () => {
+  const api: CompanionImportApi = { sources: async () => [{ id: 'source', name: 'Ada', kind: 'hermes' }], preview: async () => ({ id: 'preview', name: 'Ada', source: { id: 'source', name: 'Ada', kind: 'hermes' }, entries: [
+    { id: 'work', category: 'connections', name: 'Work', selected: false, exclusiveWith: ['personal'] },
+    { id: 'personal', category: 'connections', name: 'Personal', selected: false, exclusiveWith: ['work'] },
+  ] }), status: async () => undefined, start: vi.fn<CompanionImportApi['start']>(async input => ({ requestId: input.requestId, botId: 'bot', status: 'complete', checks: [] })) };
+  render(<BotImportForm api={api} onCreated={() => {}} onBack={() => {}} onBusy={() => {}} />);
+  fireEvent.click(await screen.findByRole('button', { name: /Ada.*Hermes/ }));
+  await screen.findByRole('button', { name: 'existing-portrait-picker' });
+  fireEvent.click(screen.getByText('bots.import.connections', { selector: 'summary' }));
+  fireEvent.click(screen.getByRole('checkbox', { name: 'bots.import.connections' }));
+  expect((screen.getByLabelText('Work') as HTMLInputElement).checked).toBe(false);
+  fireEvent.click(screen.getByLabelText('Work'));
+  fireEvent.click(screen.getByLabelText('Personal'));
+  expect((screen.getByLabelText('Work') as HTMLInputElement).checked).toBe(false);
+  expect((screen.getByLabelText('Personal') as HTMLInputElement).checked).toBe(true);
+  fireEvent.click(screen.getByRole('button', { name: 'bots.import.submit' }));
+  await waitFor(() => expect(api.start).toHaveBeenCalledWith(expect.objectContaining({ entryIds: ['personal'] })));
+});

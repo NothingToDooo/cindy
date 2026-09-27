@@ -17,6 +17,8 @@ export interface CompanionImportEntry {
   /** Source was paused: importing it must never enable it. */
   enabled?: boolean;
   dependsOn?: string[];
+  /** Alternative entries that supply different values for the same variable. */
+  exclusiveWith?: string[];
   /** An explicit compatibility problem, never silently discarded configuration. */
   issues?: string[];
 }
@@ -61,6 +63,26 @@ export interface CompanionImportApi {
 }
 
 export const companionImportCategories: CompanionImportCategory[] = ['personality', 'memory', 'skills', 'connections', 'automations'];
+
+/** An alternative already chosen within this category also satisfies its group checkbox. */
+export function areCompanionImportEntriesSelected(entries: CompanionImportEntry[], selected: string[]): boolean {
+  const selectedHere = new Set(entries.filter(entry => selected.includes(entry.id)).map(entry => entry.id));
+  return entries.every(entry => selectedHere.has(entry.id) || entry.exclusiveWith?.some(id => selectedHere.has(id)));
+}
+
+/** Reuse the existing checkboxes; bulk selection never guesses a credential account. */
+export function toggleCompanionImportEntries(entries: CompanionImportEntry[], current: string[], ids: string[], checked: boolean): string[] {
+  if (!checked) return current.filter(id => !ids.includes(id));
+  const byId = new Map(entries.map(entry => [entry.id, entry]));
+  if (ids.length === 1) {
+    const conflicts = new Set(byId.get(ids[0]!)?.exclusiveWith ?? []);
+    return [...new Set([...current.filter(id => !conflicts.has(id)), ...ids])];
+  }
+  return [...new Set([...current, ...ids.filter(id => {
+    const conflicts = byId.get(id)?.exclusiveWith ?? [];
+    return !conflicts.some(other => current.includes(other) || ids.includes(other));
+  })])];
+}
 
 export function companionImportIssueKey(code?: string): string {
   if (code === 'AUTOMATION_DEPENDENCY_NOT_SELECTED') return 'missingSelection';

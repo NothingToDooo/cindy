@@ -38,7 +38,11 @@ export function registerCompanionImport(): void {
         if (request.actionId !== 'import' || !request.resourceRef?.id.startsWith('preview:')) throw new CompanionImportError('INVALID_REQUEST');
         const result = await startCompanionImport(request.input as unknown as CompanionImportSelection, context.controllerDeviceId);
         return { effects: [{ kind: 'navigate', target: { kind: 'resource', ref: { collectionId: 'companion-import', kind: 'import', id: `result:${result.requestId}` } } }] };
-      } catch (error) { throw new RemoteResourceRegistryError('INTERNAL', error instanceof CompanionImportError ? error.code : 'IMPORT_FAILED'); }
+      } catch (error) {
+        // Stable host rejections must survive the IPC boundary so the phone can
+        // unlock its preflight form. Unexpected failures remain redacted.
+        throw new RemoteResourceRegistryError(error instanceof CompanionImportError ? 'INVALID_PARAMS' : 'INTERNAL', error instanceof CompanionImportError ? error.code : 'IMPORT_FAILED');
+      }
     },
   });
 }

@@ -1,3 +1,4 @@
+import { importedProcessEnvironment } from './process.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
@@ -24,7 +25,7 @@ export async function withImportedConnection<T>(
   const client = new Client({ name: 'cindy-companion', version: '1.0.0' });
   const transport = server.command
     ? new StdioClientTransport({ command: server.command, args: server.args ?? [],
-      env: { ...Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === 'string')), ...environment, ...server.env }, stderr: 'ignore' })
+      env: importedProcessEnvironment({ ...environment, ...server.env }), stderr: 'ignore' })
     : server.transport === 'sse'
       ? new SSEClientTransport(new URL(server.url!), { requestInit: { headers: server.headers } })
       : new StreamableHTTPClientTransport(new URL(server.url!), { requestInit: { headers: server.headers } });

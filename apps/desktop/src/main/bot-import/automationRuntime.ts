@@ -7,7 +7,7 @@ import { createMessage } from '../localDb/ipc/messages.js';
 import { companionEnvironmentStore } from './runtime.js';
 import { object, string, CompanionImportError } from './types.js';
 import { writeImportFiles } from './files.js';
-import { redactEnvironmentValues, runImportedProcess } from './process.js';
+import { importedProcessEnvironment, redactEnvironmentValues, runImportedProcess } from './process.js';
 import { sendImportedDelivery } from './delivery.js';
 import { importedScriptName, importedScriptInterpreter } from './scripts.js';
 
@@ -44,7 +44,7 @@ export async function prepareImportedAutomation(root: string, routine: Routine, 
     if (!Object.hasOwn(environment.files ?? {}, name)) throw new CompanionImportError('AUTOMATION_SCRIPT_MISSING');
     const script = path.join(directory, name);
     const result = await runImportedProcess({ command: await importedScriptInterpreter(binding.sourceRoot, name),
-      args: [script], cwd: path.dirname(script), env: { ...process.env, ...environment.env, HERMES_HOME: directory },
+      args: [script], cwd: path.dirname(script), env: importedProcessEnvironment({ ...environment.env, HERMES_HOME: directory }),
       timeoutMs: 300_000, signal, assertOwner });
     if (result.exitCode !== 0) throw new CompanionImportError('AUTOMATION_COMMAND_FAILED');
     return redactEnvironmentValues(result.stdout.trim(), environment.env);

@@ -2,6 +2,7 @@ import type { CompanionImportResult, CompanionImportSelection } from '@cindy/mak
 import type { RoutineInput } from '@cindy/maker-scheduler';
 import { fingerprint, readImportTree } from './files.js';
 import { CompanionImportError, type ImportItem, type ImportSnapshot } from './types.js';
+import { resolveImportEnvironmentDependencies, selectedImportEnvironment } from './environmentSelection.js';
 
 export interface ImportReceipt {
   selectionHash: string;
@@ -37,7 +38,8 @@ export function validateImportSelection(value: CompanionImportSelection, snapsho
   const selected = new Set(value.entryIds);
   const items = snapshot.items.filter(item => selected.has(item.view.id));
   if (items.length !== selected.size) throw new CompanionImportError('SELECTION_CHANGED');
-  return items;
+  selectedImportEnvironment(items);
+  return resolveImportEnvironmentDependencies(items);
 }
 
 /** One receipt is shared by GUI, remote actions and command callers. Writes are serialized by the host. */

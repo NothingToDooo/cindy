@@ -3,7 +3,7 @@ import { Pressable, ScrollView, StyleSheet, Switch, View } from 'react-native';
 import { randomUUID } from 'expo-crypto';
 import { useTranslation } from 'react-i18next';
 import { REMOTE_RESOURCE_GET_CHANNEL, REMOTE_RESOURCE_PROTOCOL_VERSION, type RemoteResourceRef } from '@cindy/device-link';
-import { companionImportIssueKey, companionImportCategories, remoteCompanionImportApi, type CompanionImportPreview, type CompanionImportResult, type CompanionImportSelection, type CompanionImportSource } from '@cindy/maker-shared/companion-import';
+import { areCompanionImportEntriesSelected, toggleCompanionImportEntries, companionImportIssueKey, companionImportCategories, remoteCompanionImportApi, type CompanionImportPreview, type CompanionImportResult, type CompanionImportSelection, type CompanionImportSource } from '@cindy/maker-shared/companion-import';
 import { Text, TextInput } from '@/components/AppText';
 import { MainWindowActionButton } from '@/components/MobilePrimitives';
 import { useDeviceLink } from '@/device-link/DeviceLinkContext';
@@ -65,7 +65,7 @@ export function CompanionImportSheet({ visible, onClose, onClosed, deviceId, dev
     }
     if (alive.current && value) setResult(value);
   });
-  const toggle = (ids: string[], checked: boolean) => setSelected(value => checked ? [...new Set([...value, ...ids])] : value.filter(id => !ids.includes(id)));
+  const toggle = (ids: string[], checked: boolean) => setSelected(value => toggleCompanionImportEntries(preview?.entries ?? [], value, ids, checked));
   const locked = busy || !!intent.current || !online;
   return <CompanionSheet visible={visible} title={tr('title')} onClose={() => { if (!busy || result) onClose(); }} onClosed={onClosed} preventDismiss={busy && !result}>
     <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.content}>
@@ -79,8 +79,9 @@ export function CompanionImportSheet({ visible, onClose, onClosed, deviceId, dev
           const entries = preview.entries.filter(entry => entry.category === category);
           if (!entries.length) return null;
           const count = entries.filter(entry => selected.includes(entry.id)).length;
+          const allSelected = areCompanionImportEntriesSelected(entries, selected);
           return <View key={category} style={styles.group}>
-            <View style={styles.row}><Pressable accessibilityRole="button" accessibilityState={{ expanded: expanded === category }} style={styles.expand} onPress={() => setExpanded(expanded === category ? '' : category)}><Text style={styles.label}>{tr(category)}</Text><Text style={styles.count}>{count} / {entries.length}</Text></Pressable><Switch accessibilityLabel={tr(category)} value={count === entries.length} disabled={locked} onValueChange={value => toggle(entries.map(entry => entry.id), value)} /></View>
+            <View style={styles.row}><Pressable accessibilityRole="button" accessibilityState={{ expanded: expanded === category }} style={styles.expand} onPress={() => setExpanded(expanded === category ? '' : category)}><Text style={styles.label}>{tr(category)}</Text><Text style={styles.count}>{count} / {entries.length}</Text></Pressable><Switch accessibilityLabel={tr(category)} value={allSelected} disabled={locked} onValueChange={value => toggle(entries.map(entry => entry.id), value)} /></View>
             {expanded === category ? entries.map(entry => <View key={entry.id} style={styles.row}><View style={styles.expand}><Text style={styles.label}>{entry.name}</Text>{entry.description ? <Text style={styles.note}>{entry.description}</Text> : null}{entry.enabled === false ? <Text style={styles.note}>{tr('paused')}</Text> : null}{entry.issues?.length ? <Text style={styles.note}>{tr(companionImportIssueKey(entry.issues[0]))}</Text> : null}</View><Switch accessibilityLabel={entry.name} value={selected.includes(entry.id)} disabled={locked} onValueChange={value => toggle([entry.id], value)} /></View>) : null}
           </View>;
         })}
