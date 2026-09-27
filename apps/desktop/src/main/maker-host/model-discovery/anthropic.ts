@@ -699,15 +699,18 @@ let modelProbe: AnthropicModelProbe | null = null;
 /** 同一授权世代内的在途探测;换代后不复用旧世代的探测。 */
 let probeInflight: { generation: number; promise: Promise<boolean> } | null = null;
 
+/** 注入 / 注销探测(maker 重建或重置时);换掉后旧探测的在途结果不再生效、也不再被复用。 */
 export function setAnthropicModelProbe(probe: AnthropicModelProbe | null): void {
   modelProbe = probe;
+  probeInflight = null;
 }
 
 /**
  * 主动读取一次清单并生效(启动、登录 / 认领后、手动刷新):清单只来自 SDK,没有这一步时
  * 新登录或没有缓存的用户要等跑过一次 Claude Code 任务才看得到模型。
  * 结果按**发起时**的授权世代走 noteAnthropicSdkSupportedModels:探测期间登出 / 换号
- * (clearAnthropicDiscoveredModels 让世代自增)时,旧账号的迟到结果不写入清单与缓存。
+ * (clearAnthropicDiscoveredModels 让世代自增)或 maker 被重置(探测被注销 / 替换)时,
+ * 迟到结果不写入清单与缓存。
  * 返回本次是否拿到了属于当前世代的清单;未登录或 maker 未就绪时返回 false。
  */
 export function refreshAnthropicModelsFromProbe(): Promise<boolean> {
@@ -715,8 +718,11 @@ export function refreshAnthropicModelsFromProbe(): Promise<boolean> {
   if (!probe || !hasClaudeNativeLogin()) return Promise.resolve(false);
   const generation = authGeneration;
   if (probeInflight?.generation === generation) return probeInflight.promise;
-  const promise = probe((models) => noteAnthropicSdkSupportedModels(models, generation))
-    .then((delivered) => delivered && generation === authGeneration)
+  const isCurrent = () => modelProbe === probe && generation === authGeneration;
+  const promise = probe((models) => {
+    if (isCurrent()) noteAnthropicSdkSupportedModels(models, generation);
+  })
+    .then((delivered) => delivered && isCurrent())
     .finally(() => {
       if (probeInflight?.promise === promise) probeInflight = null;
     });

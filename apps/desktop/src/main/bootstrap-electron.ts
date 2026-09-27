@@ -5127,6 +5127,8 @@ const registerIpcHandlers = () => {
     resetProviderModelAutoRefreshCooldowns('anthropic');
     // Binding is the commit point; auxiliary refresh must not prolong the cancellable login.
     connectClaudeNativeLogin();
+    // CLI 登录态变化的监听先于绑定触发,那次探测会因尚未绑定而跳过;绑定后再请求一次。
+    requestAnthropicModelProbe();
     void broadcastClaudeAuthStateChanged();
     syncClaudeSubscriptionUsageForAuthChange();
     return { ok: true, authorized: hasClaudeNativeLogin() };

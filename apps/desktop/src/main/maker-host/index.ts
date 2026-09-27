@@ -2971,6 +2971,8 @@ export function resetMaker(): void {
   // coordinator 闭包捕获了刚作废的那个 maker —— 不清掉的话,换账号窗口期内到达的 auth
   // 事件会拿旧实例去拉模型清单(串号)。下次 getMaker() 会带着干净记账重建它。
   _codexModelBackfill = null;
+  // Anthropic 清单探测同样捕获了旧 maker:注销后,旧实例的在途结果也不再生效。
+  setAnthropicModelProbe(null);
   _initialCustomMcpRefresh = undefined;
   setVisionBridgeController(null);
   _visionBridgeInstance?.dispose();

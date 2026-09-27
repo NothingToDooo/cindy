@@ -427,6 +427,35 @@ describe('noteAnthropicSdkSupportedModels(登录态门控 + 合并纪律)', () =
     setAnthropicModelProbe(null);
   });
 
+  it('探测被注销(maker 重置)后,旧探测的迟到结果不生效,新探测也不复用它', async () => {
+    let deliverOld!: () => void;
+    setAnthropicModelProbe(
+      (onModels) =>
+        new Promise<boolean>((resolve) => {
+          deliverOld = () => {
+            onModels([{ value: 'claude-opus-4-8', displayName: 'Opus 4.8' }]);
+            resolve(true);
+          };
+        }),
+    );
+    const oldFlight = refreshAnthropicModelsFromProbe();
+    setAnthropicModelProbe(null);
+    await expect(refreshAnthropicModelsFromProbe()).resolves.toBe(false);
+
+    const freshProbe = vi.fn(async (onModels: (models: unknown[]) => void) => {
+      onModels([{ value: 'claude-sonnet-4-5', displayName: 'Sonnet 4.5' }]);
+      return true;
+    });
+    setAnthropicModelProbe(freshProbe);
+    await expect(refreshAnthropicModelsFromProbe()).resolves.toBe(true);
+    expect(freshProbe).toHaveBeenCalledTimes(1);
+
+    deliverOld();
+    await expect(oldFlight).resolves.toBe(false);
+    expect(anthropicIds()).toEqual(['claude-sonnet-4-5']);
+    setAnthropicModelProbe(null);
+  });
+
   it('未登录 Claude.ai 时不注入(登出击穿 / 纯网关用户长清单,review P1 回归)', () => {
     authState.loggedIn = false;
     noteAnthropicSdkSupportedModels([
