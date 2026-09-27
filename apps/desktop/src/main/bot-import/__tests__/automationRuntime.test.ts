@@ -13,13 +13,14 @@ vi.mock('../runtime.js', () => ({ companionEnvironmentStore: { read: (...args: P
 vi.mock('../../localDb/ipc/messages.js', () => ({ createMessage: shared.message }));
 import { assertImportedAutomationReady, prepareImportedAutomation, finishImportedAutomation } from '../automationRuntime.js';
 let root: string;
+let secretValues: Map<string, string>;
 beforeEach(async () => {
   root = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-import-runtime-test-'));
-  const values = new Map<string, string>();
+  const values = secretValues = new Map<string, string>();
   shared.store = createCompanionEnvironmentStore({ read: key => values.get(key) ?? null, write: (key, value) => { values.set(key, value); return true; }, remove: key => { values.delete(key); return true; } });
   shared.message.mockReset().mockResolvedValue({});
 });
-afterEach(async () => { vi.unstubAllEnvs(); await fs.rm(root, { recursive: true, force: true }); });
+afterEach(async () => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); await fs.rm(root, { recursive: true, force: true }); });
 
 it.skipIf(process.platform === 'win32')('executes the default imported script and monitor subtrees after removing the source', async () => {
   const sourceRoot = path.join(root, '.hermes');
@@ -144,4 +145,46 @@ it.each(['pending', undefined] as const)('blocks management and defers execution
   // Static adapter/dependency failures remain blocked even after a ready marker.
   await shared.store.update(root, 'bot', () => {}, env => { env.automations!.routine!.issues = ['AUTOMATION_DEPENDENCY_NOT_SELECTED']; });
   await expect(assertImportedAutomationReady(root, 'bot', 'routine', () => {})).rejects.toThrow('AUTOMATION_DEPENDENCY_NOT_SELECTED');
+});
+
+
+it.each([2, 4])('resumes confirmed Telegram target/chunk progress after failure on send %s and restart', async failAt => {
+  const routine = { id: 'routine', botId: 'bot', prompt: 'Must not rerun the model' } as Routine;
+  const signal = new AbortController().signal;
+  const deliveries = [{ connectionId: 'telegram', chatId: 'first' }, { connectionId: 'telegram', chatId: 'second', threadId: 7 }];
+  const text = 'a'.repeat(1750) + 'remaining';
+  await shared.store.write(root, 'bot', { version: 1, env: {}, mcp: [], credentials: [
+    { id: 'telegram', format: 'telegram', value: { token: '123:fixture_token' } },
+  ], automations: { routine: { kind: 'hermes', handover: 'ready', original: { repeat: { times: 1 } }, sourceRoot: root, deliveries,
+    prepared: { runId: 'first-run', prompt: 'Report', monitorHash: 'captured-monitor', monitorOutput: 'captured-state' },
+  } } }, () => {});
+  const sent: Array<{ chat_id: string; text: string; message_thread_id?: number }> = [];
+  let attempts = 0;
+  const fetcher = vi.fn(async (_url: unknown, input: RequestInit) => {
+    if (++attempts === failAt) return new Response(JSON.stringify({ ok: false }), { status: 500 });
+    sent.push(JSON.parse(String(input.body)));
+    return new Response(JSON.stringify({ ok: true, result: { message_id: attempts } }));
+  });
+  vi.stubGlobal('fetch', fetcher);
+  await expect(finishImportedAutomation(root, routine, 'chat', 'first-run', text, false, signal, () => {})).rejects.toThrow('DELIVERY_FAILED');
+  const unfinished = (await shared.store.read(root, 'bot', () => {}))!.automations!.routine!;
+  expect(unfinished.deliveryProgress?.next).toBe(failAt - 1);
+  expect(unfinished.completed).toBeUndefined();
+  // Reopen the durable encrypted store with no in-process environment cache.
+  shared.store = createCompanionEnvironmentStore({ read: key => secretValues.get(key) ?? null,
+    write: (key, value) => { secretValues.set(key, value); return true; }, remove: key => { secretValues.delete(key); return true; } });
+  const retryId = failAt === 2 ? 'first-run' : 'next-occurrence';
+  expect(await prepareImportedAutomation(root, routine, retryId, signal, () => {})).toMatchObject({ direct: text });
+  await expect(finishImportedAutomation(root, routine, 'chat', retryId, 'changed output must not replace pending chunks', true, signal, () => {})).resolves.toBe(true);
+  expect(sent).toEqual([
+    { chat_id: 'first', text: 'a'.repeat(1750) }, { chat_id: 'first', text: 'remaining' },
+    { chat_id: 'second', text: 'a'.repeat(1750), message_thread_id: 7 }, { chat_id: 'second', text: 'remaining', message_thread_id: 7 },
+  ]);
+  expect(shared.message).not.toHaveBeenCalled(); // Model output was already recorded by its original run.
+  const completed = (await shared.store.read(root, 'bot', () => {}))!.automations!.routine!;
+  expect(completed).toMatchObject({ completed: 1, lastRun: retryId, monitorHash: 'captured-monitor', monitorOutput: 'captured-state' });
+  expect(completed.deliveryProgress).toBeUndefined();
+  const calls = fetcher.mock.calls.length;
+  await finishImportedAutomation(root, routine, 'chat', retryId, text, true, signal, () => {});
+  expect(fetcher).toHaveBeenCalledTimes(calls);
 });

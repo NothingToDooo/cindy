@@ -55,10 +55,16 @@ export async function verifyImportedDelivery(env: CompanionEnvironment, deliveri
 }
 
 /** Existing source destination is retained; local routine history remains in the teammate chat. */
-export async function sendImportedDelivery(env: CompanionEnvironment, deliveries: ImportedDelivery[], text: string, assertOwner: () => void, signal: AbortSignal): Promise<void> {
+export async function sendImportedDelivery(env: CompanionEnvironment, deliveries: ImportedDelivery[], text: string, assertOwner: () => void, signal: AbortSignal,
+  progress?: { next: number; acknowledge(next: number): Promise<void> }): Promise<void> {
+  const characters = Array.from(text);
+  let index = 0;
   for (const target of deliveries) {
     // Plain text avoids treating model output as Telegram HTML; retain all output in bounded messages.
-    const characters = Array.from(text);
-    for (let start = 0; start < characters.length; start += 1750) await telegram(env, target, 'sendMessage', { chat_id: target.chatId, text: characters.slice(start, start + 1750).join(''), ...(target.threadId ? { message_thread_id: target.threadId } : {}) }, assertOwner, signal);
+    for (let start = 0; start < characters.length; start += 1750) {
+      if (index++ < (progress?.next ?? 0)) continue;
+      await telegram(env, target, 'sendMessage', { chat_id: target.chatId, text: characters.slice(start, start + 1750).join(''), ...(target.threadId ? { message_thread_id: target.threadId } : {}) }, assertOwner, signal);
+      await progress?.acknowledge(index);
+    }
   }
 }

@@ -15,6 +15,9 @@ includes; neither reads cron databases, memory, portraits or skill resources.
 Discovery config overflow reports the existing source-size error. Unreadable or
 over-budget name metadata uses an opaque numbered label for an already discovered source. The selected
 preview retains its full snapshot and normal error path. Discovery performs no writes.
+Retained previews are limited to one per controller, four total and 128 MiB of
+snapshot data combined. Oldest previews are evicted through the existing expired
+preview flow. Recovery reads its durable checkpoint without caching another preview.
 All command operations use the existing per-call approval policy. Discovery never
 persists a native tool/server grant that could authorize a later `start` operation.
 Auto still reviews the actual invocation; Full Access retains its normal behavior.
@@ -60,6 +63,10 @@ omitting it retains normal companion defaults, and a rejected request can be cor
   form unlocks on a definitive pre-import limit rejection. Fingerprints hash raw
   file bytes, and encrypted checkpoints use base64 while still reading legacy
   numeric-array checkpoints.
+  Before the first receipt/checkpoint/profile write, selected skills also use the
+  existing store validation: at most 100 skills and a 64 KiB SKILL.md entrypoint,
+  measured after any publication guidance is appended. Invalid selections return
+  the existing editable-form error without leaving a partial companion.
 - Selected variables, MCP env/headers, source credentials and automation assets
   use the existing account encrypted credential store. The teammate folder has
   a non-secret `environment.json` binding. Variable/connection names in that file
@@ -200,6 +207,11 @@ omitting it retains normal companion defaults, and a rejected request can be cor
   Pure-script output appears in the canonical teammate chat. Explicit Telegram
   source destinations use the selected original bot credential; they do not
   change Cindy's official/personal bot implementations.
+  Each confirmed target/message chunk advances progress in the same encrypted
+  automation binding. A retry or next occurrence resumes the captured output and
+  destinations before rerunning the model/script; counters commit only after all
+  sends finish. This does not guarantee exactly-once delivery if Telegram accepts
+  a message but its response or the subsequent local checkpoint is lost.
 
 Copying and field conversion do not call a model. The optional takeover check
 uses the teammate's current model to plan bounded read-only probes, then the

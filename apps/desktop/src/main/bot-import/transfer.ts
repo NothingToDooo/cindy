@@ -25,6 +25,7 @@ export interface TransferDeps {
   readReceipt(requestId: string): Promise<ImportReceipt | undefined>;
   saveReceipt(receipt: ImportReceipt): Promise<void>;
   createCompanion(botId: string, selection: CompanionImportSelection): Promise<void>;
+  validateItems?(items: ImportItem[]): void;
   importItem(botId: string, item: ImportItem, snapshot: ImportSnapshot): Promise<void>;
   saveEnvironment(botId: string, items: ImportItem[]): Promise<void>;
   saveCheckpoint(botId: string, items: ImportItem[]): Promise<void>;
@@ -84,6 +85,7 @@ export async function transferCompanion(snapshot: ImportSnapshot, selection: Com
         deps.assertOwner();
       }
     }
+    deps.validateItems?.(items);
     await save();
     await deps.saveCheckpoint(botId, items);
     deps.assertOwner();

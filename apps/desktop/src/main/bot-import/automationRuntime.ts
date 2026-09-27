@@ -43,6 +43,9 @@ export async function prepareImportedAutomation(root: string, routine: Routine, 
   if (repeatExhausted(binding)) return { runId, prompt: '', skipped: true, exhausted: true };
   const secrets = importedContentRedactions(environment, job.monitor_url ? [string(job.monitor_url)] : []);
   const redact = (text: string) => redactEnvironmentValues(text, secrets);
+  // A retry or the next occurrence finishes the captured result first, without
+  // rerunning the script/model and changing the remaining message chunks.
+  if (binding.deliveryProgress) return { runId, prompt: '', direct: redact(binding.deliveryProgress.text) };
   // Old persisted output is private too: never bypass current masking on retry.
   if (binding.prepared?.runId === runId) return { ...binding.prepared, prompt: redact(binding.prepared.prompt),
     ...(binding.prepared.direct === undefined ? {} : { direct: redact(binding.prepared.direct) }),
@@ -100,25 +103,43 @@ export async function finishImportedAutomation(root: string, routine: Routine, s
   const env = await companionEnvironmentStore.read(root, routine.botId, assertOwner);
   const binding = env?.automations?.[routine.id];
   if (!env || !binding) return false;
+  if (binding.lastRun === runId) return repeatExhausted(binding);
+  let progress = binding.deliveryProgress;
+  text = progress?.text ?? text;
   text = redactEnvironmentValues(text, importedContentRedactions(env, binding.original.monitor_url ? [string(binding.original.monitor_url)] : []));
-  if (direct) {
+  if (!progress) {
+    progress = { runId, text, direct, deliveries: binding.deliveries ?? [], next: 0 };
+    const captured = progress;
+    await companionEnvironmentStore.update(root, routine.botId, assertOwner, environment => {
+      const current = environment.automations?.[routine.id];
+      if (current) current.deliveryProgress = captured;
+    });
+  }
+  const deliveryRunId = progress.runId;
+  if (progress.direct) {
     assertOwner();
     // Idempotent DB clientId and the existing message broadcast put script results in the main chat.
-    await createMessage(sessionId, { clientId: `imported-routine:${runId}`, role: 'assistant', content: text });
+    await createMessage(sessionId, { clientId: `imported-routine:${deliveryRunId}`, role: 'assistant', content: text });
     assertOwner();
   }
-  if (binding.lastRun === runId) return repeatExhausted(binding);
-  if (text) await sendImportedDelivery(env, binding.deliveries ?? [], text, assertOwner, signal);
+  if (text) await sendImportedDelivery(env, progress.deliveries, text, assertOwner, signal, {
+    next: progress.next,
+    acknowledge: next => companionEnvironmentStore.update(root, routine.botId, assertOwner, environment => {
+      const current = environment.automations?.[routine.id]?.deliveryProgress;
+      if (current?.runId === deliveryRunId) current.next = next;
+    }),
+  });
   let exhausted = false;
   await companionEnvironmentStore.update(root, routine.botId, assertOwner, environment => {
     const current = environment.automations?.[routine.id];
     if (!current) return;
     if (current.lastRun === runId) { exhausted = repeatExhausted(current); return; }
-    if (current.prepared?.runId === runId && current.prepared.monitorHash !== undefined) {
+    if (current.prepared?.runId === deliveryRunId && current.prepared.monitorHash !== undefined) {
       current.monitorHash = current.prepared.monitorHash; current.monitorOutput = current.prepared.monitorOutput;
     }
     current.completed = (current.completed ?? Number(object(current.original.repeat).completed ?? 0)) + 1;
     current.lastRun = runId;
+    delete current.deliveryProgress;
     exhausted = repeatExhausted(current);
   });
   return exhausted;

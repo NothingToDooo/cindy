@@ -12,7 +12,7 @@ import type { CompanionImportPreview, CompanionImportResult, CompanionImportSele
 import { activeOwnerScopeKey, getActiveAppSession, isAppSessionBoundaryPending, ownerScopedUserDataPath } from '../appSessionState.js';
 import { createBotCanonicalSession, createBotProfile, getBotMemoryService, getBotRemoteResourceSource, reconcileBotProfileFolder } from '../localDb/ipc/bots.js';
 import { readBotProfileFolder, writeBotProfileFolder, BOT_PROFILE_TEXT_MAX_BYTES } from '../maker-ipc/botProfileFolder.js';
-import { importBotSkillFiles, normalizeBotSkillSlug } from '../maker-ipc/botSkillStore.js';
+import { importBotSkillFiles, normalizeBotSkillSlug, validateBotSkillFiles, BOT_SKILL_MAX_COUNT } from '../maker-ipc/botSkillStore.js';
 import { withBotProfileLocks } from '../maker-ipc/botProfileLock.js';
 import { getRoutineEngine, routineTools } from '../routines/service.js';
 import { previewImportRedactions, retainedImportRedactions, resolveImportReferences, selectedImportEnvironment, selectedImportRedactions } from './environmentSelection.js';
@@ -20,7 +20,7 @@ import { redactEnvironmentValues } from './process.js';
 import { createImportSourceReader, discoverImportSources, inspectImportSource, type SourceReaderDeps } from './sources.js';
 import { readOpenClawCronDatabase } from './openclawCron.js';
 import { companionEnvironmentStore, recoverCompanionEnvironmentRemovals } from './runtime.js';
-import { deserializeImportSnapshotAsync, fingerprint, serializeImportSnapshotAsync } from './files.js';
+import { deserializeImportSnapshotAsync, fingerprint, serializeImportSnapshotAsync, reserveSnapshotItems, MAX_SNAPSHOT_BYTES } from './files.js';
 import { transferCompanion, validateImportSelection, type ImportReceipt, type TransferDeps } from './transfer.js';
 import { CompanionImportError, type ImportSnapshot, type ImportSource } from './types.js';
 import { changeSourceAutomationState } from './takeover.js';
@@ -30,7 +30,7 @@ import { assertImportedAutomationReady } from './automationRuntime.js';
 
 interface Owned<T> { owner: string; controller: string; value: T; createdAt: number }
 const sources = new Map<string, Owned<ImportSource>>();
-const previews = new Map<string, Owned<ImportSnapshot>>();
+const previews = new Map<string, Owned<ImportSnapshot> & { bytes: number }>();
 const jobs = new Map<string, Promise<CompanionImportResult>>();
 const TTL = 30 * 60_000;
 function owner() {
@@ -79,6 +79,23 @@ export async function listCompanionImportSources(controller: string): Promise<Co
   return result;
 }
 
+/** Keep at most one preview per controller, four total, within one snapshot byte budget. */
+function retainPreview(id: string, entry: Owned<ImportSnapshot>) {
+  previews.delete(id);
+  let bytes = Buffer.byteLength(JSON.stringify({ ...entry.value, items: undefined }));
+  const reserve = (size: number) => { bytes += size; };
+  reserveSnapshotItems(entry.value.items, { reserve, reserveFile: reserve });
+  if (bytes > MAX_SNAPSHOT_BYTES) throw new CompanionImportError('SOURCE_SNAPSHOT_TOO_LARGE');
+  prune(previews);
+  for (const [key, prior] of previews) if (prior.controller === entry.controller) previews.delete(key);
+  let total = [...previews.values()].reduce((sum, preview) => sum + preview.bytes, 0);
+  for (const [key, prior] of previews) {
+    if (previews.size < 4 && total + bytes <= MAX_SNAPSHOT_BYTES) break;
+    previews.delete(key); total -= prior.bytes;
+  }
+  previews.set(id, { ...entry, bytes });
+}
+
 export async function previewCompanionImport(sourceId: string, controller: string): Promise<CompanionImportPreview> {
   const scope = owner();
   const source = owned(sources, sourceId, controller);
@@ -90,8 +107,7 @@ export async function previewCompanionImport(sourceId: string, controller: strin
     scope.assert();
   }
   const id = randomUUID();
-  prune(previews);
-  previews.set(id, { owner: scope.scope, controller, value: snapshot, createdAt: Date.now() });
+  retainPreview(id, { owner: scope.scope, controller, value: snapshot, createdAt: Date.now() });
   const secrets = previewImportRedactions(snapshot.items);
   const redact = (text: string) => redactEnvironmentValues(text, secrets);
   return { id, source: { id: sourceId, kind: source.kind, name: redact(source.name) }, name: redact(source.name),
@@ -210,10 +226,8 @@ export async function getCompanionImportResult(requestId: string): Promise<Compa
     const environment = await companionEnvironmentStore.read(scope.root, receipt.result.botId, scope.assert);
     const pending = environment?.pendingImport;
     if (pending && pending.selection.requestId === requestId) {
-      const snapshot = await deserializeImportSnapshotAsync(pending.snapshotJson, scope.assert);
-      const controller = `recovery:${scope.scope}`;
-      previews.set(pending.selection.previewId, { owner: scope.scope, controller, value: snapshot, createdAt: Date.now() });
-      return startCompanionImport(pending.selection, controller, true);
+      // Recovery already has a durable checkpoint; do not retain another preview.
+      return startCompanionImport(pending.selection, `recovery:${scope.scope}`, true);
     }
     await withBotProfileLocks([receipt.result.botId], async () => {
       receipt = await readReceipt(scope.root, requestId); scope.assert();
@@ -271,6 +285,7 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
     snapshot = await deserializeImportSnapshotAsync(pending.snapshotJson, scope.assert);
   }
   const selected = validateImportSelection(selection, snapshot);
+  if (selected.filter(item => item.view.category === 'skills').length > BOT_SKILL_MAX_COUNT) throw new CompanionImportError('INVALID_SELECTION');
   if (selection.avatarImageBase64 !== undefined) {
     try { decodeBotAvatarImage(selection.avatarImageBase64); } catch { throw new CompanionImportError('INVALID_SELECTION'); }
   }
@@ -303,6 +318,17 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
   if (running) return accepted(running, scope.root, selection.requestId);
   const transferDeps: TransferDeps = {
     assertOwner: scope.assert,
+    validateItems(items) {
+      // Capturing lazily selected resources may grow even a rejected selection.
+      const cached = previews.get(selection.previewId);
+      if (cached?.value === snapshot) retainPreview(selection.previewId, cached);
+      try {
+        for (const item of items.filter(item => item.view.category === 'skills')) {
+          const slug = skillSlug(item);
+          validateBotSkillFiles(slug, projectImportedSkill(item.files ?? [], slug, contentSecrets).files);
+        }
+      } catch { throw new CompanionImportError('INVALID_SELECTION'); }
+    },
     readReceipt: requestId => readReceipt(scope.root, requestId),
     saveReceipt: receipt => saveReceipt(scope.root, receipt),
     async createCompanion(botId, input) {

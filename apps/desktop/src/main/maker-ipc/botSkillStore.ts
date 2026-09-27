@@ -485,14 +485,24 @@ export async function saveBotSkill(
   };
 }
 
-/** Import a selected real skill with its scripts/templates; keep the native SKILL.md bytes. */
-export async function importBotSkillFiles(userDataDir: string, botId: string, slug: string,
-  files: readonly { name: string; bytes: Buffer; executable: boolean }[], assertOwner: () => void): Promise<void> {
+/** Shared preflight for imports, before creating a profile or persisting its checkpoint. */
+export function validateBotSkillFiles(slug: string,
+  files: readonly { name: string; bytes: Buffer; executable: boolean }[]): void {
   if (!normalizeBotSkillSlug(slug) || normalizeBotSkillSlug(slug) !== slug)
     throw new BotSkillStoreError('INVALID_ARGS', 'Invalid imported skill');
   const entrypoint = files.find(file => file.name === 'SKILL.md');
   if (!entrypoint || entrypoint.bytes.length > BOT_SKILL_MAX_BODY_BYTES)
     throw new BotSkillStoreError('SKILL_BODY_TOO_LARGE', 'Invalid skill entrypoint');
+  for (const file of files) {
+    if (file.name.includes('\\') || file.name.split('/').some(part => !part || part === '.' || part === '..') || path.isAbsolute(file.name))
+      throw new BotSkillStoreError('INVALID_ARGS', 'Invalid skill resource');
+  }
+}
+
+/** Import a selected real skill with its scripts/templates; keep the native SKILL.md bytes. */
+export async function importBotSkillFiles(userDataDir: string, botId: string, slug: string,
+  files: readonly { name: string; bytes: Buffer; executable: boolean }[], assertOwner: () => void): Promise<void> {
+  validateBotSkillFiles(slug, files);
   const existing = await listBotSkills(userDataDir, botId);
   assertOwner();
   if (!existing.some(skill => skill.slug === slug) && existing.length >= BOT_SKILL_MAX_COUNT)
@@ -504,8 +514,6 @@ export async function importBotSkillFiles(userDataDir: string, botId: string, sl
   await fs.mkdir(temporary, { mode: 0o700 });
   try {
     for (const file of files) {
-      if (file.name.includes('\\') || file.name.split('/').some(part => !part || part === '.' || part === '..') || path.isAbsolute(file.name))
-        throw new BotSkillStoreError('INVALID_ARGS', 'Invalid skill resource');
       const output = path.join(temporary, ...file.name.split('/'));
       await fs.mkdir(path.dirname(output), { recursive: true, mode: 0o700 });
       assertOwner();

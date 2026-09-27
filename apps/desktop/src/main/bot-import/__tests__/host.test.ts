@@ -690,3 +690,61 @@ it('keeps the source paused and execution deferred when the ready marker write f
   await expect(assertImportedAutomationReady(h.root, routine.botId, routine.id, () => {})).resolves.toBeUndefined();
   expect(h.pause).toHaveBeenCalledExactlyOnceWith(false);
 }, 10000);
+
+
+it.each(['count', 'entrypoint', 'projected-entrypoint', 'captured-entrypoint'])('rejects skill %s limits before storing a checkpoint or creating a companion, then accepts a corrected selection', async mode => {
+  const count = mode === 'count' ? 101 : 1;
+  h.snapshot.items = Array.from({ length: count }, (_, index) => ({
+    view: { id: `skill-${index}`, category: 'skills' as const, name: `skill-${index}`, selected: true }, filesComplete: true,
+    files: [{ name: 'SKILL.md', bytes: Buffer.alloc(mode === 'entrypoint' ? 65537 : mode === 'projected-entrypoint' ? 65536 : 10, 'a'), executable: false }],
+  }));
+  if (mode === 'projected-entrypoint') {
+    h.snapshot.items[0]!.files!.push({ name: 'resource.txt', bytes: Buffer.from('fixture-private-key'), executable: false });
+    h.snapshot.items.push({ view: { id: 'key', name: 'Key', category: 'connections', selected: true }, env: { API_KEY: 'fixture-private-key' } });
+  }
+  if (mode === 'captured-entrypoint') {
+    const directory = path.join(h.root, 'source-skill');
+    await fs.mkdir(directory); await fs.writeFile(path.join(directory, 'SKILL.md'), Buffer.alloc(65537, 'a'));
+    Object.assign(h.snapshot.items[0]!, { sourceDirectory: directory, files: [], filesComplete: false });
+  }
+  const [source] = await listCompanionImportSources('fixture');
+  const preview = await previewCompanionImport(source!.id, 'fixture');
+  const selection = { requestId: `fixture-skill-limit-${mode}`, previewId: preview.id, name: 'Ada', entryIds: h.snapshot.items.map(item => item.view.id), takeover: false };
+  await expect(startCompanionImport(selection, 'fixture')).rejects.toThrow('INVALID_SELECTION');
+  expect(createBotProfile).not.toHaveBeenCalled();
+  expect(h.secretValues.size).toBe(0);
+  expect(await getCompanionImportResult(selection.requestId)).toBeUndefined();
+  await expect(fs.access(path.join(h.root, 'companion-imports'))).rejects.toThrow();
+  // The same preview remains editable; existing INVALID_SELECTION handling clears intent.
+  const entryIds = mode === 'count' ? ['skill-0'] : [];
+  await startCompanionImport({ ...selection, requestId: `${selection.requestId}-retry`, entryIds }, 'fixture');
+  await vi.waitFor(async () => expect((await getCompanionImportResult(`${selection.requestId}-retry`))?.status).toBe('complete'));
+});
+
+it('replaces previous previews for the same controller and keeps the latest usable', async () => {
+  h.snapshot.items = [];
+  const [source] = await listCompanionImportSources('fixture');
+  const first = await previewCompanionImport(source!.id, 'fixture');
+  const last = await previewCompanionImport(source!.id, 'fixture');
+  const selection = { requestId: 'fixture-preview-replace', previewId: first.id, name: 'Ada', entryIds: [], takeover: false };
+  await expect(startCompanionImport(selection, 'fixture')).rejects.toThrow('PREVIEW_EXPIRED');
+  await startCompanionImport({ ...selection, previewId: last.id }, 'fixture');
+  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('complete'));
+});
+
+it.each(['count', 'bytes'])('bounds retained previews across controllers by %s', async mode => {
+  const ids: string[] = [];
+  for (let index = 0; index < (mode === 'count' ? 5 : 2); index++) {
+    h.snapshot = { ...h.snapshot, items: mode === 'bytes' ? [{
+      view: { id: 'asset', name: 'Resource', category: 'skills', selected: false },
+      asset: { name: 'large.bin', bytes: Buffer.alloc(65 * 1024 * 1024) },
+    }] : [] };
+    const controller = `fixture-${index}`;
+    const [source] = await listCompanionImportSources(controller);
+    ids.push((await previewCompanionImport(source!.id, controller)).id);
+  }
+  const selection = { requestId: `fixture-preview-limit-${mode}`, previewId: ids[0]!, name: 'Ada', entryIds: [], takeover: false };
+  await expect(startCompanionImport(selection, 'fixture-0')).rejects.toThrow('PREVIEW_EXPIRED');
+  await startCompanionImport({ ...selection, previewId: ids.at(-1)! }, `fixture-${ids.length - 1}`);
+  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('complete'));
+});
