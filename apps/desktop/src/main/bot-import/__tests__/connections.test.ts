@@ -2,10 +2,22 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { withImportedConnection } from '../connections.js';
+import { listImportedTools, withImportedConnection } from '../connections.js';
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 let directory: string | undefined;
 afterEach(async () => { vi.unstubAllEnvs(); if (directory) await fs.rm(directory, { recursive: true, force: true }); });
+it('bounds paginated tool discovery and rejects incomplete catalogs instead of publishing a partial page', async () => {
+  const tool = { name: 'read', inputSchema: { type: 'object' as const } };
+  const listTools = vi.fn().mockResolvedValue({ tools: [tool], nextCursor: 'more' });
+  const client = { listTools } as unknown as Client;
+  await expect(listImportedTools(client)).rejects.toThrow('Connection page limit exceeded');
+  expect(listTools).toHaveBeenCalledTimes(100);
+  listTools.mockReset().mockResolvedValueOnce({ tools: Array.from({ length: 1000 }, () => tool), nextCursor: 'overflow' }).mockResolvedValueOnce({ tools: [tool] });
+  await expect(listImportedTools(client)).rejects.toThrow('Connection tool limit exceeded');
+  expect(listTools).toHaveBeenCalledTimes(2);
+  listTools.mockReset().mockResolvedValueOnce({ tools: [tool], nextCursor: 'offline' }).mockRejectedValueOnce(new Error('offline'));
+  await expect(listImportedTools(client)).rejects.toThrow('offline');
+});
 it('queries a real stdio MCP subprocess with the imported credential after a new connection', async () => {
   vi.stubEnv('CINDY_UNRELATED_TEST_SECRET', 'fixture-launch-secret');
   vi.stubEnv('HTTPS_PROXY', 'http://fixture-user:fixture-password@example.invalid');

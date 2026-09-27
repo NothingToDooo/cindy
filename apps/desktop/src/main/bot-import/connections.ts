@@ -3,6 +3,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { ImportedMcpServer } from './types.js';
 import { CompanionImportError } from './types.js';
 import { fingerprint } from './files.js';
@@ -10,6 +11,22 @@ import { fingerprint } from './files.js';
 interface Connection { client: Client; close(): Promise<void>; idle?: ReturnType<typeof setTimeout> }
 interface CachedConnection { pending: Promise<Connection>; inUse: boolean }
 const connections = new Map<string, CachedConnection>();
+
+export const IMPORTED_TOOL_LIMIT = 1000;
+
+/** Discovery and takeover must see the same complete, bounded catalog. */
+export async function listImportedTools(client: Pick<Client, 'listTools'>, limit = IMPORTED_TOOL_LIMIT): Promise<Tool[]> {
+  const tools: Tool[] = [];
+  let cursor: string | undefined;
+  for (let pageNumber = 0; pageNumber < 100; pageNumber++) {
+    const page = await client.listTools({ cursor }, { timeout: 15_000 });
+    if (tools.length + page.tools.length > limit) throw new Error('Connection tool limit exceeded');
+    tools.push(...page.tools);
+    cursor = page.nextCursor;
+    if (!cursor) return tools;
+  }
+  throw new Error('Connection page limit exceeded');
+}
 
 async function connectImportedConnection(
   server: ImportedMcpServer,

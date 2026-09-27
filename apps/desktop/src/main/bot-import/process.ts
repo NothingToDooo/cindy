@@ -50,14 +50,27 @@ export function runImportedProcess(input: {
   });
 }
 
+/** Only bounded, recognisable locale/region settings are public configuration. */
+export function environmentRedactions(env: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(env).filter(([name, value]) => {
+    if (/^(LANG|LANGUAGE|LC_ALL|LC_CTYPE)$/i.test(name) && /^(?:C|POSIX|[a-z]{2,3}(?:[_-][a-z]{2})?)(?:\.UTF-?8)?$/i.test(value)) return false;
+    if (/^(?:[A-Z0-9]+_)*REGION$/i.test(name) && /^(?:[a-z]{2}|global|[a-z]{2}(?:-[a-z]+)+-\d)$/i.test(value)) return false;
+    return value.length > 0;
+  }));
+}
+
 export function redactEnvironmentValues(text: string, env: Record<string, string>): string {
-  // Source variable names are arbitrary (PATs and credential-bearing URLs need
-  // no TOKEN suffix). Match in one pass so replacements cannot redact each other.
-  const values = new Map(Object.entries(env).filter(([, value]) => value.length > 0).map(([name, value]) => [value, `[${name}]`]));
+  // Unknown variable names remain private. Short values match whole tokens so
+  // "us" cannot corrupt "status"; exact short credentials are still masked.
+  // Match in one pass so replacements cannot redact each other.
+  const values = new Map(Object.entries(environmentRedactions(env)).map(([name, value]) => [value, `[${name}]`]));
   if (!values.size) return text;
   const pattern = [...values.keys()].sort((a, b) => b.length - a.length)
-    .map(value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
-  return text.replace(new RegExp(pattern, 'g'), value => values.get(value)!);
+    .map(value => {
+      const literal = value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return value.length < 8 ? `(?<![\\p{L}\\p{N}])${literal}(?![\\p{L}\\p{N}])` : literal;
+    }).join('|');
+  return text.replace(new RegExp(pattern, 'gu'), value => values.get(value)!);
 }
 
 /** Redact string values without corrupting JSON numbers or booleans. */

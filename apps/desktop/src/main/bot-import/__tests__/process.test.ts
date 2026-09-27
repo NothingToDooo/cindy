@@ -1,5 +1,16 @@
 import { expect, it } from 'vitest';
-import { importedProcessEnvironment } from '../process.js';
+import { importedProcessEnvironment, redactEnvironmentData, redactEnvironmentValues } from '../process.js';
+import { connectionRedactions } from '../connectionCatalog.js';
+
+it('keeps locale/region configuration and ordinary words intact while masking unknown short credentials as tokens', () => {
+  const env = { REGION: 'us', LANG: 'en', LC_ALL: 'en_US.UTF-8', AWS_REGION: 'us-east-1', PRIVATE: 'xy', ARBITRARY: 'fixture-private-value' };
+  const value = { status: 'success', language: 'en', region: 'us', detail: 'English status in us-east-1; private xy / fixture-private-value' };
+  expect(redactEnvironmentData(value, env)).toEqual({ ...value, detail: 'English status in us-east-1; private [PRIVATE] / [ARBITRARY]' });
+  expect(redactEnvironmentValues('status open username us en', { PRIVATE: 'us', UNKNOWN: 'en' })).toBe('status open username [PRIVATE] [UNKNOWN]');
+  expect(redactEnvironmentValues('xy_read read_xy xylophone', { PRIVATE: 'xy' })).toBe('[PRIVATE]_read read_[PRIVATE] xylophone');
+  // A known locale value does not override an explicit connection credential.
+  expect(redactEnvironmentValues('en', connectionRedactions({ name: 'fixture', headers: { Authorization: 'Bearer en' } }, { LANG: 'en' }))).not.toBe('en');
+});
 it.each(['darwin', 'win32'] as const)('inherits only OS basics and explicit imports on %s', platform => {
   const result = importedProcessEnvironment({ DATA_TOKEN: 'fixture-import-token', HTTPS_PROXY: 'fixture-selected-proxy', PATH: 'selected-bin' }, {
     [platform === 'win32' ? 'Path' : 'PATH']: 'host-bin', HOME: 'fixture-home', SystemRoot: 'fixture-system',

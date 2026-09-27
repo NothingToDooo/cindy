@@ -67,6 +67,12 @@ theme tokens. No new native Mobile dependencies or fingerprint inputs are added.
   are masked in tool responses. JSON Schema type syntax remains intact; names
   containing credentials use public aliases and resolve to original names only
   inside the host. The connection configuration itself is not modified.
+  Bounded locale/region settings such as LANG=en and REGION=us remain ordinary
+  configuration. Other short values are masked as whole tokens, not substrings
+  inside words such as "status"; explicitly configured header/URL credentials are
+  still included even when they equal a locale value. Numeric data and schema
+  types remain intact. Discovery, dispatch and verification share paginated tool
+  listing with the same 100-page and 1000-tool catalog budgets.
 - Cron/timezone, anchored intervals, one-time triggers, paused state and selected
   Hermes scripts/monitors/repeat counters feed the existing routine engine.
   Pure-script output appears in the canonical teammate chat. Explicit Telegram
@@ -78,6 +84,18 @@ uses the teammate's current model to plan bounded read-only probes, then the
 host executes real MCP/HTTP reads and validates response data. The planner sees
 variable names and redacted task/script text, not credential values. HTTP checks
 reject redirects; Telegram checks read identity/destination without test sends.
+Authenticated HTTP probes bind variables to origins in host code before planning:
+explicit source MCP headers establish their configured origin, and conventional
+service groups (DATA_URL/DATA_TOKEN, OPENAI_BASE_URL/OPENAI_API_KEY, or a single
+BASE_URL/API_KEY group) bind only when the selected group has one origin. Merely
+mentioning a credential and a URL in the same skill does not pair them. Ambiguous
+or unknown bindings cannot send a private header; their selected values remain
+stored and the existing result reports an unverified read. The planner receives
+only the bound variable names and cannot move the credential to another origin.
+Literal monitor_url dependencies always receive a separate host-owned GET of the
+exact source URL before planning, with the runtime's 30-second / 2 MiB bounds and
+no redirects. Text/HTML monitors are valid; unrelated reads cannot substitute for
+a failed monitor. Only its verification status, not its raw URL, enters planning.
 Verified delivery-only credentials are excluded from data-read dependencies, so
 local reminders can retain their Telegram destination. Variables also referenced
 by the task or its skills still require data verification.

@@ -1,11 +1,11 @@
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { ImportedMcpServer } from './types.js';
 import { fingerprint } from './files.js';
-import { redactEnvironmentData, redactEnvironmentValues } from './process.js';
+import { environmentRedactions, redactEnvironmentData, redactEnvironmentValues } from './process.js';
 
 /** Include resolved connection-local values without overwriting same-named imports. */
 export function connectionRedactions(server: ImportedMcpServer, environment: Record<string, string>): Record<string, string> {
-  const values = [...Object.values(environment), ...Object.values(server.env ?? {}), ...Object.values(server.headers ?? {})];
+  const values = [...Object.values(environmentRedactions(environment)), ...Object.values(environmentRedactions(server.env ?? {})), ...Object.values(server.headers ?? {})];
   for (const [name, value] of Object.entries(server.headers ?? {})) {
     if (/^(proxy-)?authorization$/i.test(name)) {
       const credential = /^\S+\s+(.+)$/.exec(value)?.[1];

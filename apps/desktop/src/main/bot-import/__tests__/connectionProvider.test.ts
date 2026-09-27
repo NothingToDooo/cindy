@@ -40,9 +40,32 @@ it.skipIf(process.platform === 'win32')('uses original credentials in a real imp
   } finally { await client.close(); await config.instance.close(); }
 });
 
-it('preserves structured numeric data while redacting string credentials without name or length heuristics', () => {
+it('preserves structured numeric data while masking exact credentials under arbitrary names', () => {
   expect(redactEnvironmentData({ count: 1, value: '1', key: 'a+b', nested: ['x'] }, { arbitrary: 'a+b', code: '1', another: 'x' }))
     .toEqual({ count: 1, value: '[code]', key: '[arbitrary]', nested: ['[another]'] });
+});
+
+it('preserves catalog enums and normal results with short locale variables, and forwards the selected enum unchanged', async () => {
+  const env = { REGION: 'us', LANG: 'en', PRIVATE: 'fixture-secret-token' };
+  const connection = { name: 'status', url: 'https://example.invalid/mcp' };
+  const tool: Tool = { name: 'read_status', description: 'Read status in English', inputSchema: { type: 'object', properties: { mode: { type: 'string', enum: ['status', 'en', 'us'] } }, required: ['mode'] }, annotations: { readOnlyHint: true } };
+  const callTool = vi.fn(async () => ({ content: [{ type: 'text', text: 'status en us fixture-secret-token' }], structuredContent: { status: 'success', region: 'us', language: 'en' } }));
+  const imported = vi.spyOn(connectionModule, 'withImportedConnection').mockImplementation(async (_server, _env, _assert, run) => run({ listTools: async () => ({ tools: [tool] }), callTool } as never));
+  vi.mocked(readCompanionSessionEnvironment).mockResolvedValue({ identity: 'short-values', botId: 'bot', userData: '/fixture', assertOwner() {}, environment: { version: 1, env, mcp: [connection], credentials: [] } });
+  const config = createCompanionConnectionsProvider().toClaudeSdkConfig!({} as never) as { instance: McpServer };
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'fixture', version: '1' });
+  await config.instance.connect(serverTransport); await client.connect(clientTransport);
+  try {
+    const published = (await client.listTools()).tools[1]!;
+    expect(published.inputSchema).toEqual(tool.inputSchema);
+    expect(published.description).toContain('Read status in English');
+    const result = await client.callTool({ name: published.name, arguments: { mode: 'status' } });
+    expect(callTool).toHaveBeenCalledWith({ name: 'read_status', arguments: { mode: 'status' } }, undefined, { timeout: 120000 });
+    expect(result.structuredContent).toEqual({ status: 'success', region: 'us', language: 'en' });
+    expect(JSON.stringify(result)).not.toContain(env.PRIVATE);
+    expect(JSON.stringify(result)).toContain('status en us');
+  } finally { imported.mockRestore(); await client.close(); await config.instance.close(); }
 });
 
 it('redacts resolved catalog credentials without changing schema syntax, tool dispatch or connection configuration', async () => {

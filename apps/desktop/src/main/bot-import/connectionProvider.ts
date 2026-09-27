@@ -5,7 +5,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema, type Tool } from '@model
 import type { McpProvider } from '@cindy/maker-core';
 import { resolveLiziMcpSessionContext } from '@cindy/mcps';
 import { readCompanionSessionEnvironment } from './runtime.js';
-import { withImportedConnection } from './connections.js';
+import { IMPORTED_TOOL_LIMIT, listImportedTools, withImportedConnection } from './connections.js';
 import { fingerprint } from './files.js';
 import { connectionRedactions, publicConnectionName, redactImportedTool } from './connectionCatalog.js';
 
@@ -33,20 +33,11 @@ export function createCompanionConnectionsProvider(): McpProvider {
           // Never swallow cancellation or an account change as an optional outage.
           try {
             const available = await withImportedConnection(connection, scope.environment.env, scope.assertOwner, async client => {
-              const entries: Tool[] = [];
-              let cursor: string | undefined;
-              let pages = 0;
-              do {
-                if (++pages > 100) throw new Error('Connection page limit exceeded');
-                const page = await client.listTools({ cursor }, { timeout: 15_000 });
-                for (const tool of page.tools) {
-                  const redacted = redactImportedTool({ ...tool, description: `${connection.name} · ${tool.name}\n${tool.description ?? ''}` }, secrets);
-                  entries.push({ ...redacted, name: toolName(connection.name, tool.name, redacted.name) });
-                }
-                cursor = page.nextCursor;
-                if (tools.length + entries.length > 1000) throw new Error('Connection tool limit exceeded');
-              } while (cursor);
-              return entries;
+              const entries = await listImportedTools(client, IMPORTED_TOOL_LIMIT - tools.length);
+              return entries.map(tool => {
+                const redacted = redactImportedTool({ ...tool, description: `${connection.name} · ${tool.name}\n${tool.description ?? ''}` }, secrets);
+                return { ...redacted, name: toolName(connection.name, tool.name, redacted.name) };
+              });
             }, { identity: scope.identity, signal: extra.signal });
             tools.push(...available);
           } catch {
@@ -73,18 +64,9 @@ export function createCompanionConnectionsProvider(): McpProvider {
         for (const connection of scope.environment.mcp.filter(connection => connection.enabled !== false && request.params.name.startsWith(`c_${fingerprint(connection.name).slice(0, 12)}_`))) {
           const secrets = connectionRedactions(connection, scope.environment.env);
           const result = await withImportedConnection(connection, scope.environment.env, scope.assertOwner, async client => {
-            let cursor: string | undefined;
-            let count = 0; let pages = 0;
-            do {
-              if (++pages > 100) throw new Error('Connection page limit exceeded');
-              const page = await client.listTools({ cursor }, { timeout: 15_000 });
-              count += page.tools.length;
-              const tool = page.tools.find(item => toolName(connection.name, item.name, publicConnectionName(item.name, secrets)) === request.params.name);
-              if (tool) return client.callTool({ name: tool.name, arguments: request.params.arguments ?? {} }, undefined, { timeout: 120_000 });
-              if (count > 1000) throw new Error('Connection tool limit exceeded');
-              cursor = page.nextCursor;
-            } while (cursor);
-            return undefined;
+            const tools = await listImportedTools(client);
+            const tool = tools.find(item => toolName(connection.name, item.name, publicConnectionName(item.name, secrets)) === request.params.name);
+            return tool ? client.callTool({ name: tool.name, arguments: request.params.arguments ?? {} }, undefined, { timeout: 120_000 }) : undefined;
           }, { identity: scope.identity, signal: extra.signal });
           if (result) {
             const redacted = redactEnvironmentData(result, secrets);
