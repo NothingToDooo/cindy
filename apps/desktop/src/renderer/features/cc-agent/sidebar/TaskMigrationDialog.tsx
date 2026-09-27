@@ -130,7 +130,7 @@ export function TaskMigrationDialog({
       if (current()) setBusy(false);
     }
   };
-  const started = !!status?.stage && !['cancelled', 'active'].includes(status.stage);
+  const started = !!status?.stage && !['cancelled', 'active', 'complete'].includes(status.stage);
   const openTarget = async () => {
     if (!status?.targetSessionId || !status.targetDeviceId || pending.current || !current()) return;
     pending.current = true;
@@ -190,12 +190,17 @@ export function TaskMigrationDialog({
           <Dialog.Description className="mt-2 text-sm text-[var(--confirm-desc)]">
             {t('taskMigration.description')}
           </Dialog.Description>
+          <p className="mt-2 text-sm text-[var(--confirm-desc)]">
+            {t('taskMigration.bindingsNotice')}
+          </p>
           {!started && destination && (
             <div className="mt-4 space-y-2 text-sm text-[var(--confirm-title)]">
               <p>
                 {t('taskMigration.device')}: {destination.deviceName}
                 {(destination.isSelf || destination.deviceId === self) && (
-                  <span className="ml-2 text-[var(--confirm-desc)]">{t('settings.devices.thisDevice')}</span>
+                  <span className="ml-2 text-[var(--confirm-desc)]">
+                    {t('settings.devices.thisDevice')}
+                  </span>
                 )}
               </p>
               <p className="break-all">
@@ -217,9 +222,10 @@ export function TaskMigrationDialog({
                     disabled={busy}
                     options={devices.map((d) => ({
                       value: d.deviceId,
-                      label: d.isSelf || d.deviceId === self
-                        ? `${d.name} · ${t('settings.devices.thisDevice')}`
-                        : d.name,
+                      label:
+                        d.isSelf || d.deviceId === self
+                          ? `${d.name} · ${t('settings.devices.thisDevice')}`
+                          : d.name,
                     }))}
                     onValueChange={setTarget}
                   />
@@ -273,7 +279,7 @@ export function TaskMigrationDialog({
             </Button>
             {started &&
               !status?.running &&
-              ['preparing', 'transferring', 'moved'].includes(status?.stage ?? '') && (
+              ['preparing', 'transferring'].includes(status?.stage ?? '') && (
                 <>
                   {status?.stage === 'preparing' && (
                     <Button

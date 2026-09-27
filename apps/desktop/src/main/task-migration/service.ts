@@ -19,9 +19,7 @@ import {
 } from '@cindy/device-link';
 import { getDbClient, tryGetDbClient } from '../localDb/client/current';
 import { emitSessionCreated } from '../localDb/ipc/sessionCreatedBroadcast';
-import { createSharedTaskJournal } from '../localDb/sharedTasks';
 import { withSessionRouteLocks } from '../localDb/sessionRouteLock';
-import { withTaskMigrationBoundary } from './writeBoundary';
 import { getActiveTeamByLead } from '../localDb/orcaTeamStore';
 import { getSelfDeviceId, remoteInvoke } from '../device-link';
 import { getDeviceLinkInvokeContext } from '../device-link/invoke-context';
@@ -45,24 +43,22 @@ import {
   type ShareImportDraftPrefs,
 } from '../session-share/sessionShareImport';
 import type { moveSessionProjectFromHost } from '../mcp-integrations/moveSession';
-import { bindingStore } from '../im/binding';
 import { physicalWorktreeKey, withWorktreeResourceLocks } from '../worktree/resourceLock';
 import { getMakerIfReady } from '../maker-host';
 import { getDesktopProviderService } from '../maker-host/createDesktopProviderService';
 import { pickEnabledFallbackModel } from '../maker-host/model-route-guard';
 import { advanceHandoff, canCancelHandoff, type MigrationHandoff } from './handoff';
-import {
-  assertTaskMigrationWritable,
-  migrationScope,
-  type MigrationRecord,
-  type IncomingMigration,
-} from './journal';
+import { migrationScope, type MigrationRecord, type IncomingMigration } from './journal';
 import { snapshotWorkspace, restoreWorkspace, type PortableWorkspace } from './workspace';
 
 import { memoryBudget, assertMemoryCapacity, assertDiskCapacity } from './resources';
 import { sendParts, receiveParts } from './transferParts';
 
-type MoveProject = (sessionId: string, workingDir: string | null, assertAuthority: () => void) => ReturnType<typeof moveSessionProjectFromHost>;
+type MoveProject = (
+  sessionId: string,
+  workingDir: string | null,
+  assertAuthority: () => void,
+) => ReturnType<typeof moveSessionProjectFromHost>;
 // Bootstrap supplies the existing business handler; importing maker IPC here creates a cycle.
 let moveProjectOnHost: MoveProject | undefined;
 let sourceBoundary: { isBusy(sessionId: string): boolean; drain(): Promise<void> } | undefined;
@@ -109,7 +105,12 @@ async function projects(scope: Scope): Promise<string[]> {
   // Recent paths are history, not proof that a mount or directory still exists.
   // Reuse this check for capabilities, preflight and receive-time validation.
   for (const row of rows) {
-    if (await fs.stat(row.path).then((stat) => stat.isDirectory(), () => false))
+    if (
+      await fs.stat(row.path).then(
+        (stat) => stat.isDirectory(),
+        () => false,
+      )
+    )
       available.push(row.path);
   }
   scope.assertCurrent();
@@ -184,20 +185,6 @@ async function assertSource(
     !['desktop', 'shared', 'feishu'].includes(row.source)
   )
     throw new Error('MIGRATION_TASK_UNSUPPORTED');
-  if (bindingStore.findByTarget(sessionId)) throw new Error('MIGRATION_TASK_BOUND');
-  const bound = await scope.db.queryOne<{ n: number }>(
-    `SELECT
-    (SELECT count(*) FROM schedules WHERE target_session_id = ?) +
-    (SELECT count(*) FROM bot_session_links WHERE session_id = ?) +
-    (SELECT count(*) FROM session_goals WHERE session_id = ? AND status != 'complete') AS n`,
-    [sessionId, sessionId, sessionId],
-  );
-  scope.assertCurrent();
-  if (bound?.n) throw new Error('MIGRATION_TASK_BOUND');
-  const sharing = await createSharedTaskJournal(scope.db).latest();
-  scope.assertCurrent();
-  if (sharing.some(entry => entry.sessionId === sessionId && !entry.terminal))
-    throw new Error('MIGRATION_TASK_BOUND');
   const queued = await scope.db.queryOne<{ payload: string }>(
     'SELECT payload FROM agent_input_queue_snapshots WHERE session_id = ?',
     [sessionId],
@@ -313,9 +300,6 @@ async function prepare(scope: Scope, record: MigrationHandoff) {
         }
       }
       scope.assertCurrent();
-      const maker = getMakerIfReady();
-      for (const member of members)
-        if (maker?.getSession(member.id)) await maker.closeSession(member.id);
       await sourceBoundary!.drain();
       scope.assertCurrent();
       if (members.some((member) => sourceBoundary!.isBusy(member.id)))
@@ -472,7 +456,7 @@ async function transfer(scope: Scope, record: MigrationHandoff) {
     { action: 'receipt', id: record.id, sourceSessionId: record.sessionId },
     scope,
   );
-  if (existing.stage === 'ready' || existing.stage === 'active') return;
+  if (existing.stage === 'active') return;
   const directory = path.join(scope.root, 'outgoing', record.id);
   const workspace = JSON.parse(
     readAtomicFileSync(path.join(directory, 'workspace.json')) ?? 'null',
@@ -544,8 +528,7 @@ async function transfer(scope: Scope, record: MigrationHandoff) {
     },
     scope,
   );
-  if (result.stage !== 'ready' && result.stage !== 'active')
-    throw new Error('MIGRATION_TARGET_NOT_READY');
+  if (result.stage !== 'active') throw new Error('MIGRATION_TARGET_NOT_READY');
 }
 
 function launch(scope: Scope, record: MigrationHandoff & { kind: 'outgoing' }) {
@@ -564,15 +547,7 @@ function launch(scope: Scope, record: MigrationHandoff & { kind: 'outgoing' }) {
         save: async (next) => scope.save({ ...next, kind: 'outgoing' }),
         prepare: (r) => prepare(scope, r),
         import: (r) => transfer(scope, r),
-        activate: async (r) => {
-          const result = await invoke(
-            r.targetDeviceId,
-            { action: 'activate', id: r.id, sourceSessionId: r.sessionId },
-            scope,
-          );
-          if (result.stage !== 'active') throw new Error('MIGRATION_TARGET_NOT_READY');
-          // Keep the replayable moved stage until local transfer cleanup succeeds.
-          // A restart retries activation idempotently before repeating this cleanup.
+        cleanup: async (r) => {
           const directory = path.join(scope.root, 'outgoing', r.id);
           const keys = JSON.parse(
             readAtomicFileSync(path.join(directory, 'transfer-keys.json')) ?? '[]',
@@ -638,7 +613,7 @@ async function receive(
       const directory = path.join(scope.root, 'incoming', request.id);
       await fs.rm(directory, { recursive: true, force: true });
       scope.assertCurrent();
-      if (record?.stage === 'ready' || record?.stage === 'active') return view(scope, record);
+      if (record?.stage === 'active') return view(scope, record);
       const existing = await scope.db.queryOne<{ workingDir: string }>(
         'SELECT working_dir AS workingDir FROM sessions WHERE id = ?',
         [request.id],
@@ -655,8 +630,10 @@ async function receive(
           );
           if (row?.workingDir !== worker.workingDir) throw new Error('MIGRATION_ID_CONFLICT');
         }
-        record = { ...record, stage: 'ready' } as IncomingMigration;
+        record = { ...record, stage: 'active' } as IncomingMigration;
         scope.save(record);
+        for (const id of [record.sessionId, ...(record.workers ?? []).map((w) => w.sessionId)])
+          emitSessionCreated(id);
         return view(scope, record);
       }
       const knownProjects = await projects(scope);
@@ -762,14 +739,19 @@ async function receive(
         for (let index = 1; index < snapshots.length; index++) {
           const target = path.join(parent, `cindy-${request.id.slice(0, 8)}-${randomUUID()}`);
           // Persist intent before allocation: even a process exit cannot orphan a directory.
-          record = { ...record, retainedWorkingDirs: [...(record.retainedWorkingDirs ?? []), target] };
+          record = {
+            ...record,
+            retainedWorkingDirs: [...(record.retainedWorkingDirs ?? []), target],
+          };
           scope.save(record);
           await fs.mkdir(target);
           targetDirs.push(target);
         }
         record = {
           ...record,
-          retainedWorkingDirs: record.retainedWorkingDirs?.filter((dir) => !targetDirs.includes(dir)),
+          retainedWorkingDirs: record.retainedWorkingDirs?.filter(
+            (dir) => !targetDirs.includes(dir),
+          ),
           workers: workspace.workers?.map((worker) => ({
             sourceSessionId: worker.sourceSessionId,
             sessionId: worker.sessionId,
@@ -853,12 +835,14 @@ async function receive(
         }
       } finally {
         // These are transfer artifacts only. Keep project files on all outcomes, including an unknown DB commit.
-        // Publish ready only after cleanup: the source can query the receipt after a lost reply.
+        // Confirm the active copy only after cleanup: the source can query the receipt after a lost reply.
         await fs.rm(directory, { recursive: true, force: true });
       }
       scope.assertCurrent();
-      record = { ...record, stage: 'ready' } as IncomingMigration;
+      record = { ...record, stage: 'active' } as IncomingMigration;
       scope.save(record);
+      for (const id of [record.sessionId, ...(record.workers ?? []).map((w) => w.sessionId)])
+        emitSessionCreated(id);
       return view(scope, record);
     },
   );
@@ -901,11 +885,7 @@ export async function requestTaskMigration(raw: unknown): Promise<TaskMigrationV
       ),
     };
   }
-  if (
-    request.action === 'receive' ||
-    request.action === 'activate' ||
-    request.action === 'receipt'
-  ) {
+  if (request.action === 'receive' || request.action === 'receipt') {
     const peer = getDeviceLinkInvokeContext()?.controllerDeviceId;
     if (!peer || isSharedTaskPeer(peer)) throw new Error('MIGRATION_ACCESS_REVOKED');
     if (request.action === 'receive') return receive(scope, request, peer);
@@ -918,19 +898,7 @@ export async function requestTaskMigration(raw: unknown): Promise<TaskMigrationV
         throw new Error('MIGRATION_ID_CONFLICT');
       return view(scope, record);
     }
-    if (
-      !record ||
-      record.kind !== 'incoming' ||
-      record.sourceDeviceId !== peer ||
-      record.sourceSessionId !== request.sourceSessionId ||
-      !['ready', 'active'].includes(record.stage)
-    )
-      throw new Error('MIGRATION_TARGET_NOT_READY');
-    scope.save({ ...record, stage: 'active' });
-    // Replayed activation also refreshes subscribers after a lost notification.
-    for (const id of [record.sessionId, ...(record.workers ?? []).map(worker => worker.sessionId)])
-      emitSessionCreated(id);
-    return view(scope, { ...record, stage: 'active' });
+    throw new Error('MIGRATION_INVALID_REQUEST');
   }
   if (request.action === 'status') return view(scope, scope.read(request.sessionId));
   await fs.mkdir(scope.root, { recursive: true, mode: 0o700 });
@@ -939,91 +907,86 @@ export async function requestTaskMigration(raw: unknown): Promise<TaskMigrationV
     request.action === 'start' ? await sourceGroup(scope, request.sessionId) : [];
   return withSessionRouteLocks(
     [request.sessionId, ...initialMembers.map((member) => member.id)],
-    () =>
-      withTaskMigrationBoundary(
-        [request.sessionId, ...initialMembers.map((member) => member.id)],
-        async () => {
-          scope.assertCurrent();
-          let record = scope.read(request.sessionId);
-          if (request.action === 'cancel') {
-            if (
-              !record ||
-              record.kind !== 'outgoing' ||
-              !canCancelHandoff(record) ||
-              running.has(`${scope.root}:${record.sessionId}`)
-            )
+    async () => {
+      scope.assertCurrent();
+      let record = scope.read(request.sessionId);
+      if (request.action === 'cancel') {
+        if (
+          !record ||
+          record.kind !== 'outgoing' ||
+          !canCancelHandoff(record) ||
+          running.has(`${scope.root}:${record.sessionId}`)
+        )
+          throw new Error('MIGRATION_CANNOT_CANCEL');
+        return withCrossProcessLock(
+          path.join(scope.root, `${record.id}.lock`),
+          { label: 'task-migration', waitMs: 0 },
+          async (lock) => {
+            const latest = scope.read(request.sessionId);
+            if (!lock.held || latest?.kind !== 'outgoing' || !canCancelHandoff(latest))
               throw new Error('MIGRATION_CANNOT_CANCEL');
-            return withCrossProcessLock(
-              path.join(scope.root, `${record.id}.lock`),
-              { label: 'task-migration', waitMs: 0 },
-              async (lock) => {
-                const latest = scope.read(request.sessionId);
-                if (!lock.held || latest?.kind !== 'outgoing' || !canCancelHandoff(latest))
-                  throw new Error('MIGRATION_CANNOT_CANCEL');
-                const cancelled = { ...latest, stage: 'cancelled' as const, error: undefined };
-                scope.save(cancelled);
-                await fs
-                  .rm(path.join(scope.root, 'outgoing', latest.id), {
-                    recursive: true,
-                    force: true,
-                  })
-                  .catch(() => {});
-                return view(scope, cancelled);
-              },
-            );
-          }
-          if (request.action === 'start') {
-            if (
-              record &&
-              !(record.kind === 'outgoing' && record.stage === 'cancelled') &&
-              !(record.kind === 'incoming' && record.stage === 'active')
-            )
-              throw new Error('MIGRATION_ALREADY_STARTED');
-            if (request.targetDeviceId === selfId() || isSharedTaskPeer(request.targetDeviceId))
-              throw new Error('MIGRATION_TARGET_INVALID');
-            const target = await invoke(request.targetDeviceId, { action: 'caps' }, scope);
-            if (request.targetProject && !target.projects?.includes(request.targetProject))
-              throw new Error('MIGRATION_TARGET_UNKNOWN');
-            const members = await sourceGroup(scope, request.sessionId);
-            if (
-              members.length !== initialMembers.length ||
-              members.some((member, index) => member.id !== initialMembers[index].id)
-            )
-              throw new Error('MIGRATION_TEAM_CHANGED');
-            const source = members[0];
-            if (source.orcaRole === 'lead' && target.teamMigration !== true)
-              throw new Error('MIGRATION_UNSUPPORTED');
-            if (members.some((member) => !target.agents?.includes(member.agentKind)))
-              throw new Error('MIGRATION_TARGET_MODEL_UNAVAILABLE');
-            for (const member of members) assertTaskMigrationWritable(member.id);
-            const id = randomUUID();
-            record = {
-              kind: 'outgoing',
-              id,
-              sessionId: request.sessionId,
-              sourceDeviceId: selfId(),
-              targetDeviceId: request.targetDeviceId,
-              targetSessionId: id,
-              targetProject: request.targetProject ?? null,
-              workingDir: source.workingDir,
-              ...(source.orcaRole === 'lead'
-                ? {
-                    workers: members.slice(1).map((member) => ({
-                      sessionId: member.id,
-                      targetSessionId: randomUUID(),
-                      workingDir: member.workingDir,
-                    })),
-                  }
-                : {}),
-              stage: 'preparing',
-            };
-            scope.save(record);
-          }
-          if (!record || record.kind !== 'outgoing') throw new Error('MIGRATION_NOT_FOUND');
-          launch(scope, record);
-          return view(scope, record);
-        },
-      ),
+            const cancelled = { ...latest, stage: 'cancelled' as const, error: undefined };
+            scope.save(cancelled);
+            await fs
+              .rm(path.join(scope.root, 'outgoing', latest.id), {
+                recursive: true,
+                force: true,
+              })
+              .catch(() => {});
+            return view(scope, cancelled);
+          },
+        );
+      }
+      if (request.action === 'start') {
+        if (
+          record &&
+          !(record.kind === 'outgoing' && ['cancelled', 'complete'].includes(record.stage)) &&
+          !(record.kind === 'incoming' && record.stage === 'active')
+        )
+          throw new Error('MIGRATION_ALREADY_STARTED');
+        if (request.targetDeviceId === selfId() || isSharedTaskPeer(request.targetDeviceId))
+          throw new Error('MIGRATION_TARGET_INVALID');
+        const target = await invoke(request.targetDeviceId, { action: 'caps' }, scope);
+        if (request.targetProject && !target.projects?.includes(request.targetProject))
+          throw new Error('MIGRATION_TARGET_UNKNOWN');
+        const members = await sourceGroup(scope, request.sessionId);
+        if (
+          members.length !== initialMembers.length ||
+          members.some((member, index) => member.id !== initialMembers[index].id)
+        )
+          throw new Error('MIGRATION_TEAM_CHANGED');
+        const source = members[0];
+        if (source.orcaRole === 'lead' && target.teamMigration !== true)
+          throw new Error('MIGRATION_UNSUPPORTED');
+        if (members.some((member) => !target.agents?.includes(member.agentKind)))
+          throw new Error('MIGRATION_TARGET_MODEL_UNAVAILABLE');
+        const id = randomUUID();
+        record = {
+          kind: 'outgoing',
+          id,
+          sessionId: request.sessionId,
+          sourceDeviceId: selfId(),
+          targetDeviceId: request.targetDeviceId,
+          targetSessionId: id,
+          targetProject: request.targetProject ?? null,
+          workingDir: source.workingDir,
+          ...(source.orcaRole === 'lead'
+            ? {
+                workers: members.slice(1).map((member) => ({
+                  sessionId: member.id,
+                  targetSessionId: randomUUID(),
+                  workingDir: member.workingDir,
+                })),
+              }
+            : {}),
+          stage: 'preparing',
+        };
+        scope.save(record);
+      }
+      if (!record || record.kind !== 'outgoing') throw new Error('MIGRATION_NOT_FOUND');
+      launch(scope, record);
+      return view(scope, record);
+    },
   );
 }
 
@@ -1036,11 +999,7 @@ export function registerTaskMigrationIpc(
   ipcMain.handle(TASK_MIGRATION_LOCAL_CHANNEL, async (event, device: unknown, raw: unknown) => {
     assertTrustedAppRendererEvent(event);
     const request = parseTaskMigrationRequest(raw);
-    if (
-      request.action === 'receive' ||
-      request.action === 'activate' ||
-      request.action === 'receipt'
-    )
+    if (request.action === 'receive' || request.action === 'receipt')
       throwIpcError('PERMISSION_DENIED', 'MIGRATION_ACCESS_REVOKED');
     try {
       if (device == null || device === getSelfDeviceId())

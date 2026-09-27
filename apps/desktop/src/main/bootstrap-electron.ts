@@ -1,4 +1,3 @@
-import { listImOrchestrators } from './im/shared/orchestrator';
 import { listWorktreeRecycleStatus, controlWorktreeRecycle } from './worktree/recycleControls';
 import { registerFilePeerIpc } from './device-link/filePeer';
 import { registerTaskMigrationIpc } from './task-migration/service';
@@ -763,7 +762,6 @@ import {
   registerMakerIpc as registerMakerCoreIpc,
   restoreBotRuntimeForCurrentOwner,
   isSessionTurnPendingCompletion,
-  isSessionTaskMigrationBusy,
   isSessionInTurn,
   stopOrcaIdleWatcher,
   setGoalClearObserver,
@@ -9619,8 +9617,7 @@ app.on('ready', async () => {
   registerTaskMigrationIpc((sessionId, workingDir, assertAuthority) =>
     moveSessionProjectFromHost(isSessionInTurn, sessionId, workingDir, assertAuthority),
     {
-      isBusy: (id) => isSessionTaskMigrationBusy(id) ||
-        listImOrchestrators().some(({ turnRunner }) => turnRunner.isSessionBusy?.(id)),
+      isBusy: (id) => isSessionInTurn(id) || isSessionTurnPendingCompletion(id),
       drain: drainPersistQueue,
     },
   );

@@ -109,13 +109,13 @@ it('uses the source host for commands and the target host for destination projec
   expect(state.dismiss).toHaveBeenCalledOnce();
   expect(state.request.mock.calls.some(([, command]) => command.action === 'cancel')).toBe(false);
 });
-it('offers retry, without cancellation, when the source already retired but activation was interrupted', async () => {
+it('offers retry, without cancellation, when a copy transfer was interrupted', async () => {
   state.request.mockImplementation(async (device: string | null, command: { action: string }) => ({
     supported: true,
     deviceId: device ?? 'local',
     ...(command.action === 'status'
       ? {
-          stage: 'moved',
+          stage: 'transferring',
           running: false,
           error: 'MIGRATION_FAILED',
           targetDeviceId: 'B',
@@ -146,7 +146,10 @@ it('loads the completed task from the target computer before navigation and dism
   }));
   state.invoke.mockResolvedValue({ id: 'migrated', status: 'active' });
   mount();
-  fireEvent.click(await screen.findByRole('button', { name: 'taskMigration.openTarget' }));
+  await screen.findByRole('button', { name: 'taskMigration.openTarget' });
+  expect(screen.getByRole('button', { name: 'taskMigration.start' })).toBeTruthy();
+  expect(screen.getByText('taskMigration.bindingsNotice')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'taskMigration.openTarget' }));
   await waitFor(() => expect(state.dismiss).toHaveBeenCalledOnce());
   expect(state.openLink).toHaveBeenCalledWith('B');
   expect(state.invoke).toHaveBeenCalledWith('B', 'local-db:sessions:get', ['migrated']);

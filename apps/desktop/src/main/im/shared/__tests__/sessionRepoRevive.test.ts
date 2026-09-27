@@ -48,17 +48,6 @@ vi.mock('drizzle-orm', () => ({
       .join(''),
   }),
 }));
-vi.mock('../../../task-migration/journal', () => ({
-  assertTaskMigrationWritable: vi.fn(),
-}));
-vi.mock('../../../task-migration/writeBoundary', () => ({
-  withTaskMigrationWrite: async (_id: string, write: () => Promise<unknown>) => {
-    const { assertTaskMigrationWritable } = await import('../../../task-migration/journal');
-    assertTaskMigrationWritable(_id);
-    return write();
-  },
-}));
-
 vi.mock('electron', () => ({
   BrowserWindow: {
     getAllWindows: () => [
@@ -120,8 +109,6 @@ vi.mock('../../defaultSessionSettings', () => ({
   })),
 }));
 
-import { assertTaskMigrationWritable } from '../../../task-migration/journal';
-import { resetSessionToDefaults, switchSessionWorkingDir, updatePermissionMode, updateModelEffort } from '../sessionRepo';
 import { createImSessionRepo, type ImSessionRow } from '../sessionRepo';
 import { setSessionRouteLockImplementation } from '../../../localDb/sessionRouteLock';
 import type { ImOrchestratorConfig, ImSessionNamespace } from '../types';
@@ -131,7 +118,6 @@ const routeLock = vi.fn(async <T>(_sessionId: string, task: () => Promise<T>): P
 ) as SessionRouteLockMock;
 
 beforeEach(() => {
-  vi.mocked(assertTaskMigrationWritable).mockReset();
   routeLock.mockClear();
   routeLock.mockImplementation(async (_sessionId, task) => task());
   setSessionRouteLockImplementation(routeLock);
@@ -485,27 +471,5 @@ describe('sessionRepo.createFreshSession', () => {
     );
     expect(routeLock).toHaveBeenCalledWith('telegram_bot_user', expect.any(Function));
     expect(routeLock).toHaveBeenCalledWith('old-task', expect.any(Function));
-  });
-});
-
-
-describe('migrated Feishu tasks', () => {
-  it('does not revive or recreate the old native route after handoff', async () => {
-    mocks.selectLimit.mockResolvedValue([dbRow('active')]);
-    mocks.updateSet.mockClear();
-    mocks.insertValues.mockClear();
-    vi.mocked(assertTaskMigrationWritable).mockImplementation(() => {
-      throw new Error('MIGRATION_TASK_MOVED');
-    });
-    const repo = makeRepo();
-    await expect(repo.findActiveSession('bot', 'user')).rejects.toThrow('MIGRATION_TASK_MOVED');
-    await expect(repo.peekSession('bot', 'user')).rejects.toThrow('MIGRATION_TASK_MOVED');
-    await expect(repo.createSession('bot', 'user')).rejects.toThrow('MIGRATION_TASK_MOVED');
-    await expect(resetSessionToDefaults('feishu_bot_user', {} as ImOrchestratorConfig)).rejects.toThrow('MIGRATION_TASK_MOVED');
-    await expect(switchSessionWorkingDir('feishu_bot_user', '/other', 'project')).rejects.toThrow('MIGRATION_TASK_MOVED');
-    await expect(updatePermissionMode('feishu_bot_user', 'ask')).rejects.toThrow('MIGRATION_TASK_MOVED');
-    await expect(updateModelEffort('feishu_bot_user', 'model', 'high')).rejects.toThrow('MIGRATION_TASK_MOVED');
-    expect(mocks.updateSet).not.toHaveBeenCalled();
-    expect(mocks.insertValues).not.toHaveBeenCalled();
   });
 });

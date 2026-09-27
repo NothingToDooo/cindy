@@ -7,8 +7,6 @@
 
 import { physicalWorktreeKey, withWorktreeResourceLocks } from '../../worktree/resourceLock';
 import { managedWorktreeRoot } from '../../worktree/runtimeLeases';
-import { assertTaskMigrationWritable } from '../../task-migration/journal';
-import { withTaskMigrationBoundary, withTaskMigrationWrite } from '../../task-migration/writeBoundary';
 import { queueSessionWorktreeRecycle } from '../../worktree/recycleQueue';
 import { notifyWorktreeRecycleOpportunity } from '../../worktree/recycleEvents';
 import fs from 'node:fs/promises';
@@ -213,7 +211,7 @@ async function withStatusWriteLock<T>(
   task: () => Promise<T>,
   alreadyLocked = false,
 ): Promise<T> {
-  const write = () => withTaskMigrationWrite(sessionId, async () => {
+  const write = async () => {
     const resources = status === undefined ? [] : await readSessionWorktreeResources(db, sessionId);
     const physicalResources = await Promise.all(resources.map(physicalWorktreeKey));
     const mutate = async () => {
@@ -224,7 +222,7 @@ async function withStatusWriteLock<T>(
       return result;
     };
     return withWorktreeMutation(resources, mutate);
-  });
+  };
   if (status === undefined || alreadyLocked) return write();
   return withSessionRouteLock(sessionId, write);
 }
@@ -799,10 +797,8 @@ export async function persistSessionFields(
     bumpUpdatedAt: false,
   });
   if (Object.keys(setObj).length === 0) return;
-  await withTaskMigrationWrite(sessionId, async () => {
-    await db.update(sessions).set(setObj).where(eq(sessions.id, sessionId));
-    if (isOwnerScopeCurrent(ownerScope)) broadcastSessionPatched(sessionId, clean, ownerScope);
-  });
+  await db.update(sessions).set(setObj).where(eq(sessions.id, sessionId));
+  if (isOwnerScopeCurrent(ownerScope)) broadcastSessionPatched(sessionId, clean, ownerScope);
 }
 
 const MAX_LIMIT = 1000;
@@ -1128,41 +1124,39 @@ export async function persistSessionTitleIfStillDraft(
   title: string,
   expectedTitle: string = DEFAULT_DRAFT_SESSION_TITLE,
 ): Promise<boolean> {
-  return withTaskMigrationWrite(sessionId, async () => {
-    const ownerScope = captureOwnerScope();
-    const cleanTitle = normalizeAutoTitle(title);
-    if (!cleanTitle || cleanTitle === DEFAULT_DRAFT_SESSION_TITLE) return false;
+  const ownerScope = captureOwnerScope();
+  const cleanTitle = normalizeAutoTitle(title);
+  if (!cleanTitle || cleanTitle === DEFAULT_DRAFT_SESSION_TITLE) return false;
 
-    const db = getDbClient().drizzle;
-    // 目标值与期望值相同 → UPDATE 无事可做,但**不能凭期望值直接报成功**:期望值
-    // 可能已经过期(用户在资格检查之后手动改了名),那时库里根本不是这个标题。
-    // 读一次真实标题再回答,避免调用方把"没写成"当成"已写入"(PR #510 review)。
-    if (cleanTitle === expectedTitle) {
-      const current = await selectSessionWithCount(db, sessionId);
-      return !!current && current.title === cleanTitle;
-    }
+  const db = getDbClient().drizzle;
+  // 目标值与期望值相同 → UPDATE 无事可做,但**不能凭期望值直接报成功**:期望值
+  // 可能已经过期(用户在资格检查之后手动改了名),那时库里根本不是这个标题。
+  // 读一次真实标题再回答,避免调用方把"没写成"当成"已写入"(PR #510 review)。
+  if (cleanTitle === expectedTitle) {
+    const current = await selectSessionWithCount(db, sessionId);
+    return !!current && current.title === cleanTitle;
+  }
 
-    const setObj = sessionPatchToRow({ title: cleanTitle }, { bumpUpdatedAt: false });
-    await db
-      .update(sessions)
-      .set(setObj)
-      .where(and(eq(sessions.id, sessionId), eq(sessions.title, expectedTitle)));
+  const setObj = sessionPatchToRow({ title: cleanTitle }, { bumpUpdatedAt: false });
+  await db
+    .update(sessions)
+    .set(setObj)
+    .where(and(eq(sessions.id, sessionId), eq(sessions.title, expectedTitle)));
 
-    const row = await selectSessionWithCount(db, sessionId);
-    if (!row || row.title !== cleanTitle) return false;
+  const row = await selectSessionWithCount(db, sessionId);
+  if (!row || row.title !== cleanTitle) return false;
 
-    const updated = sessionToCamel(row);
-    notifyAgentIslandSessionPatch(updated.id, {
-      status: updated.status,
-      title: updated.title,
-      workingDir: updated.workingDir,
-      workspaceKind: updated.workspaceKind,
-    });
-    if (isOwnerScopeCurrent(ownerScope)) {
-      broadcastSessionPatched(sessionId, { title: cleanTitle }, ownerScope);
-    }
-    return true;
+  const updated = sessionToCamel(row);
+  notifyAgentIslandSessionPatch(updated.id, {
+    status: updated.status,
+    title: updated.title,
+    workingDir: updated.workingDir,
+    workspaceKind: updated.workspaceKind,
   });
+  if (isOwnerScopeCurrent(ownerScope)) {
+    broadcastSessionPatched(sessionId, { title: cleanTitle }, ownerScope);
+  }
+  return true;
 }
 
 /**
@@ -1820,7 +1814,6 @@ export async function updateSessionInDb(
   // 工作目录切换必须和发送/懒启动共用同一把路由锁。否则发送可能在
   // 读取旧目录后、写入新目录前重建 runtime，随后仍在旧目录执行。
   const update = async () => {
-    assertTaskMigrationWritable(sid);
     if (moveGuard) {
       moveGuard.assertCurrent();
       await moveGuard.beforeUpdate();
@@ -1967,12 +1960,12 @@ export async function updateSessionInDb(
     // 有真实时间差,在那期间智能标题仍能满足 `WHERE title = 期望值` 把名字盖掉。
     // 先记号后写库,代价只是写库失败时该会话本进程内不再自动起名 —— 用户毕竟确实
     // 按下过保存,这个方向的偏差是安全的。
+    if (typeof p.title === 'string') noteUserTitleWritten(sid);
     await withStatusWriteLock(
       db,
       sid,
       p.status,
       async () => {
-        if (typeof p.title === 'string') noteUserTitleWritten(sid);
         moveGuard?.assertCurrent();
         if (p.status !== undefined) await assertGenericSessionLifecycleAllowed(db, sid);
         await moveGuard?.beforeWrite?.();
@@ -2022,9 +2015,7 @@ export async function updateSessionInDb(
     if (!row) throwIpcError('NOT_FOUND', 'Session 不存在');
     // 取消置顶后摘要不再有展示面,立刻清掉,避免列表/再次置顶前继续吃旧句。
     if (p.pinnedAt !== undefined && row.pinnedAt == null) {
-      await withTaskMigrationWrite(sid, () =>
-        db.update(sessions).set({ summary: null }).where(eq(sessions.id, sid)).then(() => undefined),
-      );
+      await db.update(sessions).set({ summary: null }).where(eq(sessions.id, sid));
       row.summary = null;
     }
     const updated = sessionToCamel(row);
@@ -2125,7 +2116,7 @@ export async function updateSessionInDb(
         : null;
     const resources = await readSessionWorktreeResources(db, sid);
     if (resource) resources.push(resource);
-    return withTaskMigrationWrite(sid, () => withWorktreeMutation(resources, update));
+    return withWorktreeMutation(resources, update);
   });
 }
 
@@ -2136,15 +2127,6 @@ export async function patchSessionMetaInDb(
     title?: string;
     pinnedAt?: string | null;
   },
-): Promise<ReturnType<typeof sessionToCamel>> {
-  return withSessionRouteLock(sessionId, () =>
-    withTaskMigrationWrite(sessionId, () => patchSessionMetaWritable(sessionId, patch)),
-  );
-}
-
-async function patchSessionMetaWritable(
-  sessionId: string,
-  patch: Parameters<typeof patchSessionMetaInDb>[1],
 ): Promise<ReturnType<typeof sessionToCamel>> {
   const ownerScope = captureOwnerScope();
   for (const k of Object.keys(patch)) {
@@ -2202,7 +2184,7 @@ async function patchSessionMetaWritable(
       await closeSharedTaskForTask(sessionId, dbClient);
     }
     return sessionToCamel(row);
-  }, true);
+  });
   notifyAgentIslandSessionPatch(updated.id, {
     status: updated.status,
     title: updated.title,
@@ -2253,7 +2235,6 @@ async function assertGenericSessionLifecycleAllowed(
   db: DbClient['drizzle'],
   sessionId: string,
 ): Promise<void> {
-  assertTaskMigrationWritable(sessionId);
   const [target] = await db
     .select({ source: sessions.source })
     .from(sessions)
@@ -2287,17 +2268,6 @@ export async function renameSessionTitlesInDb(
   dryRun: boolean,
 ): Promise<RenameSessionMetaItem[]> {
   if (changes.length === 0) return [];
-  if (dryRun) return renameSessionTitlesWritable(changes, true);
-  return withTaskMigrationBoundary(changes.map(change => change.sessionId), async () => {
-    for (const change of changes) assertTaskMigrationWritable(change.sessionId);
-    return renameSessionTitlesWritable(changes, false);
-  });
-}
-
-async function renameSessionTitlesWritable(
-  changes: RenameSessionMetaChange[],
-  dryRun: boolean,
-): Promise<RenameSessionMetaItem[]> {
   const ownerScope = captureOwnerScope();
 
   const db = getDbClient().drizzle;
@@ -2388,8 +2358,7 @@ export async function setSessionsStatusInDb(
   if (sessionIds.length === 0) return [];
   const ownerScope = captureOwnerScope();
   const dbClient = getDbClient();
-  const applied = await withSessionRouteLocks(sessionIds, () => withTaskMigrationBoundary(sessionIds, async () => {
-    for (const id of sessionIds) assertTaskMigrationWritable(id);
+  const applied = await withSessionRouteLocks(sessionIds, async () => {
     const resources: string[] = [];
     const perSession = new Map<string, string[]>();
     for (const id of sessionIds) {
@@ -2422,7 +2391,7 @@ export async function setSessionsStatusInDb(
       for (const resource of physicalResources) notifyWorktreeRecycleOpportunity(resource);
       return rows;
     });
-  }));
+  });
   for (const item of applied) {
     compactTerminalSessionToolResults(dbClient, item.sessionId, item.status);
   }

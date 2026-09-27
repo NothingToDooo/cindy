@@ -1,6 +1,6 @@
-/** Same-account task handoff. File bytes use existing peer attachments / OSS, never relay frames. */
-export const TASK_MIGRATION_CHANNEL = "maker:task-migration";
-export const TASK_MIGRATION_LOCAL_CHANNEL = "task-migration:request";
+/** Same-account independent task copy. File bytes use existing peer attachments / OSS, never relay frames. */
+export const TASK_MIGRATION_CHANNEL = "maker:task-copy";
+export const TASK_MIGRATION_LOCAL_CHANNEL = "task-copy:request";
 export interface MigrationFileRef {
   ref: string;
   size: number;
@@ -48,7 +48,6 @@ export type TaskMigrationRequest =
       targetProject: string | null;
       files: MigrationFiles;
     }
-  | { action: "activate"; id: string; sourceSessionId: string }
   | { action: "receipt"; id: string; sourceSessionId: string };
 export interface TaskMigrationView {
   supported: true;
@@ -61,11 +60,9 @@ export interface TaskMigrationView {
   stage?:
     | "preparing"
     | "transferring"
-    | "moved"
     | "complete"
     | "cancelled"
     | "receiving"
-    | "ready"
     | "active";
   running?: boolean;
   targetDeviceId?: string;
@@ -150,7 +147,7 @@ export function parseTaskMigrationRequest(
       targetProject: r.targetProject as string | null,
     };
   if (
-    (r.action === "activate" || r.action === "receipt") &&
+    r.action === "receipt" &&
     uuid(r.id) &&
     id(r.sourceSessionId)
   )

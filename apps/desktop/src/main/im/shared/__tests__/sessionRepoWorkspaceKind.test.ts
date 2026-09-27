@@ -19,17 +19,6 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { getTableConfig } from 'drizzle-orm/sqlite-core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../../task-migration/journal', () => ({
-  assertTaskMigrationWritable: vi.fn(),
-}));
-vi.mock('../../../task-migration/writeBoundary', () => ({
-  withTaskMigrationWrite: async (_id: string, write: () => Promise<unknown>) => {
-    const { assertTaskMigrationWritable } = await import('../../../task-migration/journal');
-    assertTaskMigrationWritable(_id);
-    return write();
-  },
-}));
-
 vi.mock('electron', () => ({
   BrowserWindow: { getAllWindows: () => [] },
   app: { getPath: () => '/tmp/never-used-here' },

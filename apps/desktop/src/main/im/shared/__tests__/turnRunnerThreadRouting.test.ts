@@ -50,18 +50,6 @@ const mocks = vi.hoisted(() => ({
   dbSelect: vi.fn(),
 }));
 
-vi.mock('../../../task-migration/inputGuard', () => ({
-  assertTaskMigrationInputAllowed: vi.fn(async () => {}),
-  withTaskMigrationInputAcceptance: async (id: string, accept: () => Promise<unknown>) => {
-    const { assertTaskMigrationInputAllowed } = await import('../../../task-migration/inputGuard');
-    await assertTaskMigrationInputAllowed(id);
-    return accept();
-  },
-}));
-vi.mock('../../../task-migration/writeBoundary', () => ({
-  withTaskMigrationWrite: async (_id: string, write: () => Promise<unknown>) => write(),
-}));
-
 vi.mock('../../../logger', () => ({ createLogger: () => mocks.logger }));
 vi.mock('../../../maker-host', () => ({ getMaker: mocks.getMaker }));
 vi.mock('../../../maker-host/createDesktopProviderService', () => ({

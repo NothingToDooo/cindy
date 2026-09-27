@@ -33,8 +33,6 @@ import { requireString, throwIpcError } from '../utils/ipcValidate.js';
 import { MAKER_INVOKE } from './channels.js';
 import { withSessionInputStoppedForRewind } from './register.js';
 import { agentHandoffPending } from './agentHandoffPendingSingleton.js';
-import { assertTaskMigrationWritable } from '../task-migration/journal';
-import { withTaskMigrationWrite } from '../task-migration/writeBoundary';
 
 const log = createLogger('maker-ipc/rewind');
 const STOPPED_REWIND_RETRY_MS = 100;
@@ -69,11 +67,11 @@ async function commitAfterPersistBarrier(
   // withdrawn work visible again. Drain first, then let commitRewindAtMessage
   // reload its target and transaction boundary from the durable store.
   await drainPersistQueue();
-  return withSendToSessionLock(sessionId, () => withTaskMigrationWrite(sessionId, async () => {
+  return withSendToSessionLock(sessionId, async () => {
     const result = await commitRewindAtMessage(sessionId, clientId, opts);
     advanceSessionRewindGeneration(sessionId);
     return result;
-  }));
+  });
 }
 
 function wrapErr(err: unknown): never {
@@ -136,7 +134,6 @@ export function registerMakerRewindIpc(): void {
       let fenceCommitted = false;
       let visibleSubagentIdentitiesAfterCommit: VisibleSubagentObservationIdentity[] = [];
       try {
-        assertTaskMigrationWritable(sid);
         subagentFence = beginSubagentRewindFence(sid);
         primeSubagentRewindFence(
           subagentFence,

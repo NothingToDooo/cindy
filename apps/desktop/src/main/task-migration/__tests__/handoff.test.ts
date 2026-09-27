@@ -24,30 +24,23 @@ function fixture(stage: MigrationHandoff['stage'] = 'preparing') {
     import: async () => {
       calls.push('import');
     },
-    activate: async () => {
-      expect(durable.stage).toBe('moved');
-      calls.push('activate');
+    cleanup: async () => {
+      expect(durable.stage).toBe('transferring');
+      calls.push('cleanup');
     },
     assertCurrent: () => {},
   };
   return { record: structuredClone(durable), deps, calls, durable: () => durable };
 }
 
-describe('task migration handoff', () => {
-  it('copies before importing and persists source retirement before target activation', async () => {
+describe('task copy progress', () => {
+  it('snapshots, imports and cleans up before recording completion', async () => {
     const f = fixture();
     await advanceHandoff(f.record, f.deps);
-    expect(f.calls).toEqual([
-      'snapshot',
-      'transferring',
-      'import',
-      'moved',
-      'activate',
-      'complete',
-    ]);
+    expect(f.calls).toEqual(['snapshot', 'transferring', 'import', 'cleanup', 'complete']);
     expect(f.durable().workingDir).toBe('/shared');
   });
-  it('does not release source after target commits but its reply is lost', async () => {
+  it('keeps retryable progress after the target reply is lost', async () => {
     const f = fixture('transferring');
     f.deps.import = async () => {
       throw new Error('lost acknowledgement');
@@ -56,28 +49,28 @@ describe('task migration handoff', () => {
     expect(f.durable().stage).toBe('transferring');
     expect(canCancelHandoff(f.record)).toBe(false);
   });
-  it('restarts from moved after a lost activation reply without importing again', async () => {
+  it('replays the idempotent import when cleanup was interrupted', async () => {
     const f = fixture('transferring');
-    f.deps.activate = async () => {
+    f.deps.cleanup = async () => {
       throw new Error('reply lost');
     };
     await expect(advanceHandoff(f.record, f.deps)).rejects.toThrow();
     const restart = fixture(f.durable().stage);
     await advanceHandoff(restart.record, restart.deps);
-    expect(restart.calls).toEqual(['activate', 'complete']);
+    expect(restart.calls).toEqual(['import', 'cleanup', 'complete']);
   });
-  it('never activates if persisting source retirement fails', async () => {
+  it('keeps progress retryable if recording completion fails', async () => {
     const f = fixture('transferring');
     f.deps.save = async () => {
       throw new Error('disk full');
     };
     await expect(advanceHandoff(f.record, f.deps)).rejects.toThrow('disk full');
-    expect(f.calls).toEqual(['import']);
+    expect(f.calls).toEqual(['import', 'cleanup']);
     expect(f.record.stage).toBe('transferring');
   });
   it('allows cancellation only before any target import could have started', () => {
     expect(canCancelHandoff(fixture().record)).toBe(true);
-    for (const stage of ['transferring', 'moved', 'complete', 'cancelled'] as const)
+    for (const stage of ['transferring', 'complete', 'cancelled'] as const)
       expect(canCancelHandoff(fixture(stage).record)).toBe(false);
   });
 });

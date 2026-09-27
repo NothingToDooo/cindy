@@ -24,7 +24,6 @@ import type {
   TurnPermissionPolicy,
 } from '@cindy/maker-core';
 import type { ChannelIM } from '@cindy/im';
-import { assertTaskMigrationInputAllowed } from '../../../task-migration/inputGuard';
 import { setMainLocale } from '../../../i18n';
 import { enqueueAskCardPatch } from '../askCardPatchQueue';
 import { createSerializedConnectionLifecycle } from '../../connectionLifecycle';
@@ -83,18 +82,6 @@ const mocks = vi.hoisted(() => ({
   generateAndPersistFbotTitle: vi.fn(),
   desktopSessionRows: vi.fn(),
   materializeLocalMarkdownImages: vi.fn(),
-}));
-
-vi.mock('../../../task-migration/inputGuard', () => ({
-  assertTaskMigrationInputAllowed: vi.fn(async () => {}),
-  withTaskMigrationInputAcceptance: async (id: string, accept: () => Promise<unknown>) => {
-    const { assertTaskMigrationInputAllowed } = await import('../../../task-migration/inputGuard');
-    await assertTaskMigrationInputAllowed(id);
-    return accept();
-  },
-}));
-vi.mock('../../../task-migration/writeBoundary', () => ({
-  withTaskMigrationWrite: async (_id: string, write: () => Promise<unknown>) => write(),
 }));
 
 vi.mock('../../../logger', () => ({
@@ -523,7 +510,6 @@ function expectSafeSendOutcomeLog(expected: { source: string; reason: string }):
 describe('turnRunner send outcome policy (feishu adapter characterization)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(assertTaskMigrationInputAllowed).mockReset();
     makerEventListeners = [];
     mocks.readXdGatewayApiKey.mockReturnValue('xd-gateway-key');
     mocks.hasCustomProviderKey.mockReturnValue(false);
@@ -629,26 +615,6 @@ describe('turnRunner send outcome policy (feishu adapter characterization)', () 
       expect.stringContaining('错误'),
       expect.anything(),
     );
-  });
-
-  it('rejects a send resolved before migration without sending or persisting it', async () => {
-    const h = setupSession(async () => ({ accepted: true }));
-    vi.mocked(assertTaskMigrationInputAllowed).mockRejectedValue(new Error('MIGRATION_TASK_MOVED'));
-    await runDefaultTurn();
-    expect(h.send).not.toHaveBeenCalled();
-    expect(mocks.persistUserMessage).not.toHaveBeenCalled();
-    expect(getRunner().isSessionBusy?.('feishu-session')).toBe(false);
-  });
-
-  it('does not pre-persist incoming Feishu messages after migration starts', async () => {
-    const h = setupSession(async () => ({ accepted: true }));
-    mocks.getMaker.mockReturnValue({ ...createMakerHarness(h.session), getSession: () => h.session });
-    vi.mocked(assertTaskMigrationInputAllowed).mockRejectedValue(new Error('MIGRATION_TASK_BUSY'));
-    await expect(getRunner().persistInboundUserMessageEarly!({
-      botContextId: 'cli_test_bot', userId: 'ou_user', text: 'late input',
-    })).rejects.toThrow('MIGRATION_TASK_BUSY');
-    expect(mocks.persistUserMessage).not.toHaveBeenCalled();
-    expect(h.send).not.toHaveBeenCalled();
   });
 
   it('anchors direct IM capture to the durable accepted user message', async () => {
@@ -2420,7 +2386,6 @@ describe('turnRunner send outcome policy (feishu adapter characterization)', () 
     expect(h.send).toHaveBeenCalledTimes(1);
     expect(mocks.feishuIm.sendText).not.toHaveBeenCalled();
     expect(mocks.feishuIm.sendMarkdownText).toHaveBeenCalledTimes(1);
-    expect(getRunner().isSessionBusy?.('feishu-session')).toBe(true);
     expect(secondComplete).not.toHaveBeenCalled();
     expect(secondRouteResolved).not.toHaveBeenCalled();
     expect(mocks.persistUserMessage).toHaveBeenCalledTimes(1);

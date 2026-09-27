@@ -11,7 +11,12 @@ import {
   resolveRemoteInvokeTimeoutMs,
 } from "../invokePolicy.js";
 
-describe("task migration protocol", () => {
+describe("task copy protocol", () => {
+  it("cannot dispatch the previous ownership-handoff protocol", () => {
+    expect(TASK_MIGRATION_CHANNEL).toBe("maker:task-copy");
+    expect(REMOTE_INVOKE_ALLOWLIST.has("maker:task-migration")).toBe(false);
+    expect(() => parseTaskMigrationRequest({ action: "activate", id: "01234567-0123-4123-a123-012345678901", sourceSessionId: "source" })).toThrow();
+  });
   it("accepts only explicit project or dialogue moves on the narrow host action", () => {
     for (const workingDir of [null, "/projects/new", "C:/projects/new"])
       expect(parseTaskMigrationRequest({ action: "move-project", sessionId: "task", workingDir })).toEqual({ action: "move-project", sessionId: "task", workingDir });

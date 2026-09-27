@@ -53,8 +53,6 @@ import {
   isTurnContinuationBoundaryEvent,
 } from '@cindy/maker-shared/turn-continuation';
 import { getMaker } from '../../maker-host';
-import { assertTaskMigrationInputAllowed, withTaskMigrationInputAcceptance } from '../../task-migration/inputGuard';
-import { withTaskMigrationWrite } from '../../task-migration/writeBoundary';
 import { getDesktopProviderService } from '../../maker-host/createDesktopProviderService';
 import { isCredentialModeSwitchBusyError } from '../../maker-host/codex-credential-switch';
 import {
@@ -480,8 +478,6 @@ export type ImTurnDispatch =
 /** createTurnRunner 返回的编排实例 — per channel 一个。 */
 export interface ImTurnRunner {
   runAgentTurn(args: ImRunAgentTurnArgs): Promise<void>;
-  /** Include IM dispatch and queued input in migration admission. */
-  isSessionBusy?(sessionId: string): boolean;
   /**
    * 把渠道用户消息**提前**写进本地 messages 表 —— 只给「dispatch 之前还有重活」
    * 的渠道用(群上下文拼装: 回翻群历史 + 轻量模型扫描, 实测 15~60s)。
@@ -1166,139 +1162,134 @@ export function createTurnRunner(
         return { kind: 'rejected', reason: 'aborted' };
       }
 
-      // The deferred-switch bridge already owns the route lock. Reuse the
-      // migration write boundary here without acquiring the route lock again.
-      const sendResult = await withTaskMigrationWrite(rowId, async () => {
-        await assertTaskMigrationInputAllowed(rowId);
-        return state.makerSession.send(outgoingMessage as typeof item.userMessage, {
-          planMode: false,
-          // The channel adapter and routing state live in Main. A symbol-keyed
-          // context survives the in-process Session → Agent handoff but cannot be
-          // fabricated by Renderer/device-link structured-clone input.
-          [MAIN_OWNED_SEND_CONTEXT]: {
-            origin: { kind: 'im', channel, taskId: item.turn.userMessageId ?? undefined },
-            rawChannelText: item.text,
-          },
-          ...(effectiveTurnPolicy ? { turnPermissionPolicy: effectiveTurnPolicy } : {}),
-          beforeProviderStart: async () => {
-            const noticeSession = state.makerSession;
-            const noticeScope = item.turn.scopeKey;
-            bindRuntimeRecoveryNotice(noticeSession, async (text) => {
-              if (sessionStates.get(rowId)?.makerSession !== noticeSession) return false;
-              return im.sendText(userId, text, { threadTs: noticeScope });
-            }, log);
-            // 策略轮持一张 host turn lease:期间 setPermissionMode 切到 agent 声明为
-            // turnPermissionPolicy-unsupported 的档位(如 Pi Full Access)会被阻塞到本轮
-            // 终态,堵死"热切到 bypass 让 bridge 直接放行、策略连冒泡机会都没有"的绕过。
-            // 两个 surface 都需要:channel 与 desktop 的策略同样必须扛住热切。
-            if (effectiveTurnPolicy) {
-              item.turn.hostTurnLeaseRelease = state.makerSession.acquireTurnLease();
-            }
-            if (item.groupHistoryAccess) {
-              item.turn.groupHistoryAccessRelease = beginGroupHistoryAccess({
-                sessionId: rowId,
-                sessionInstanceId: state.makerSession.instanceId,
-                scope: item.groupHistoryAccess,
-              });
-            }
-            item.turn.interactionRouteLease =
-              effectiveTurnPolicy?.confirmationSurface === 'desktop'
-                ? beginInteractionRoute(state.makerSession, {
-                    route: {
-                      sessionId: rowId,
-                      turnId: item.turn.turnId,
-                      origin: effectiveTurnPolicy.origin,
-                      interactionSurface: 'desktop',
-                      ...(effectiveTurnPolicy.confirmationTimeoutMs
-                        ? {
-                            timeoutMs: effectiveTurnPolicy.confirmationTimeoutMs,
-                          }
-                        : {}),
-                      ...(effectiveTurnPolicy.onInteractionStateChange
-                        ? {
-                            onStateChange: effectiveTurnPolicy.onInteractionStateChange,
-                          }
-                        : {}),
-                    },
-                  })
-                : beginInteractionRoute(state.makerSession, {
-                    route: {
-                      sessionId: rowId,
-                      turnId: item.turn.turnId,
-                      origin: effectiveTurnPolicy?.origin ?? { kind: 'im', channel },
-                      interactionSurface: 'channel-card',
-                      ...(effectiveTurnPolicy?.confirmationTimeoutMs
-                        ? { timeoutMs: effectiveTurnPolicy.confirmationTimeoutMs }
-                        : {}),
-                      ...(effectiveTurnPolicy?.onInteractionStateChange
-                        ? { onStateChange: effectiveTurnPolicy.onInteractionStateChange }
-                        : {}),
-                    },
-                    handle: handleInteractionFor(
-                      rowId,
-                      userId,
-                      item.turn.scopeKey,
-                      effectiveTurnPolicy?.confirmationTimeoutMs,
-                    ),
-                    // 文本渠道自己认领掉的不动卡片(它本来就没有卡);其余走
-                    // dropInteractionCard —— 作废 pending 的同时把那张卡收口。
-                    onCancel: (requestId, decision) =>
-                      adapter.cancelTextInteraction?.(userId, requestId, decision) === true
-                      || dropInteractionCard(
-                        requestId,
-                        'reason' in decision
-                          ? decision.reason ?? 'interaction_route_released'
-                          : 'interaction_route_released',
-                      ),
-                  });
-            await item.beforeProviderStart?.();
-            acceptedAt = Date.now();
-          },
-          // B' 阶段: 把渠道用户消息也写本地 messages 表 — 跟 desktop renderer
-          // 写自己 user message 等价 (renderer 走 IPC, 我们 main 端直接调函数)。
-          onAccepted: async () => {
-            // attached IM turn 临时替换了 desktop interaction listener，必须从真正
-            // dispatch 起将 Setup 交互视为 headless。未接管的渠道 session 已由
-            // vendorOptions.source 标识，不需要 marker。若本 turn 已终止，跳过迟到
-            // callback 的落库等陈旧副作用。
-            if (!markAttachedImTurnHeadlessDispatched(item.turn, rowId, item.turn.reusesExistingSession === true)) return;
-            // 真实用户消息 → 给 silent-stop 守卫充值自动续跑额度(renderer 发送
-            // 走 createMakerSendTransaction 内部已充值;scheduler / hook 与本
-            // 路径直接 session.send,必须额外调这里,否则守卫额度恒 0,首次
-            // silent-stop 就落"已耗尽"误导横幅且永不自动续跑)。
-            noteSilentStopUserSend(rowId);
-            // 已经提前落过库(群上下文拼装前, 见 persistInboundUserMessageEarly)就
-            // 复用那条记录, 不再写第二条。sessionId 必须相符 —— 拼装期间路由若换到
-            // 别的 session(/new 重置等), 那份预落库不属于本轮, 照常自己落一条。
-            const prePersisted =
-              item.prePersistedUserMessage?.sessionId === rowId ? item.prePersistedUserMessage : null;
-            // 受保护群的触发消息不进会话存档 —— 正文与附件都不落。turn 照常跑,
-            // agent 拿得到内容; 只是这一轮的输入不留在长期记录里。
-            const persisted = item.protectedContent
-              ? null
-              : await persistUserMessage({
-                  sessionId: rowId,
-                  text: item.text,
-                  attachments: item.attachments,
-                  source: createLocalImSource(
-                    adapter.messageSourceIm?.() ?? channel,
-                    item.text,
-                    item.contextSnapshot,
-                  ),
-                  existingClientId: prePersisted?.clientId,
-                });
-            await adapter.onUserMessagePersisted?.({
+      const sendResult = await state.makerSession.send(outgoingMessage as typeof item.userMessage, {
+        planMode: false,
+        // The channel adapter and routing state live in Main. A symbol-keyed
+        // context survives the in-process Session → Agent handoff but cannot be
+        // fabricated by Renderer/device-link structured-clone input.
+        [MAIN_OWNED_SEND_CONTEXT]: {
+          origin: { kind: 'im', channel, taskId: item.turn.userMessageId ?? undefined },
+          rawChannelText: item.text,
+        },
+        ...(effectiveTurnPolicy ? { turnPermissionPolicy: effectiveTurnPolicy } : {}),
+        beforeProviderStart: async () => {
+          const noticeSession = state.makerSession;
+          const noticeScope = item.turn.scopeKey;
+          bindRuntimeRecoveryNotice(noticeSession, async (text) => {
+            if (sessionStates.get(rowId)?.makerSession !== noticeSession) return false;
+            return im.sendText(userId, text, { threadTs: noticeScope });
+          }, log);
+          // 策略轮持一张 host turn lease:期间 setPermissionMode 切到 agent 声明为
+          // turnPermissionPolicy-unsupported 的档位(如 Pi Full Access)会被阻塞到本轮
+          // 终态,堵死"热切到 bypass 让 bridge 直接放行、策略连冒泡机会都没有"的绕过。
+          // 两个 surface 都需要:channel 与 desktop 的策略同样必须扛住热切。
+          if (effectiveTurnPolicy) {
+            item.turn.hostTurnLeaseRelease = state.makerSession.acquireTurnLease();
+          }
+          if (item.groupHistoryAccess) {
+            item.turn.groupHistoryAccessRelease = beginGroupHistoryAccess({
               sessionId: rowId,
-              userMessageId: item.turn.userMessageId,
-              persisted: persisted !== null,
+              sessionInstanceId: state.makerSession.instanceId,
+              scope: item.groupHistoryAccess,
             });
-            if (persisted) {
-              item.prePersistedUserMessage = { sessionId: rowId, clientId: persisted.clientId };
-              await beginTurnChangeSetAtDispatch(state.makerSession, persisted.clientId);
-              turnChangeSetStarted = true;
-            }
-          },
-        });
+          }
+          item.turn.interactionRouteLease =
+            effectiveTurnPolicy?.confirmationSurface === 'desktop'
+              ? beginInteractionRoute(state.makerSession, {
+                  route: {
+                    sessionId: rowId,
+                    turnId: item.turn.turnId,
+                    origin: effectiveTurnPolicy.origin,
+                    interactionSurface: 'desktop',
+                    ...(effectiveTurnPolicy.confirmationTimeoutMs
+                      ? {
+                          timeoutMs: effectiveTurnPolicy.confirmationTimeoutMs,
+                        }
+                      : {}),
+                    ...(effectiveTurnPolicy.onInteractionStateChange
+                      ? {
+                          onStateChange: effectiveTurnPolicy.onInteractionStateChange,
+                        }
+                      : {}),
+                  },
+                })
+              : beginInteractionRoute(state.makerSession, {
+                  route: {
+                    sessionId: rowId,
+                    turnId: item.turn.turnId,
+                    origin: effectiveTurnPolicy?.origin ?? { kind: 'im', channel },
+                    interactionSurface: 'channel-card',
+                    ...(effectiveTurnPolicy?.confirmationTimeoutMs
+                      ? { timeoutMs: effectiveTurnPolicy.confirmationTimeoutMs }
+                      : {}),
+                    ...(effectiveTurnPolicy?.onInteractionStateChange
+                      ? { onStateChange: effectiveTurnPolicy.onInteractionStateChange }
+                      : {}),
+                  },
+                  handle: handleInteractionFor(
+                    rowId,
+                    userId,
+                    item.turn.scopeKey,
+                    effectiveTurnPolicy?.confirmationTimeoutMs,
+                  ),
+                  // 文本渠道自己认领掉的不动卡片(它本来就没有卡);其余走
+                  // dropInteractionCard —— 作废 pending 的同时把那张卡收口。
+                  onCancel: (requestId, decision) =>
+                    adapter.cancelTextInteraction?.(userId, requestId, decision) === true
+                    || dropInteractionCard(
+                      requestId,
+                      'reason' in decision
+                        ? decision.reason ?? 'interaction_route_released'
+                        : 'interaction_route_released',
+                    ),
+                });
+          await item.beforeProviderStart?.();
+          acceptedAt = Date.now();
+        },
+        // B' 阶段: 把渠道用户消息也写本地 messages 表 — 跟 desktop renderer
+        // 写自己 user message 等价 (renderer 走 IPC, 我们 main 端直接调函数)。
+        onAccepted: async () => {
+          // attached IM turn 临时替换了 desktop interaction listener，必须从真正
+          // dispatch 起将 Setup 交互视为 headless。未接管的渠道 session 已由
+          // vendorOptions.source 标识，不需要 marker。若本 turn 已终止，跳过迟到
+          // callback 的落库等陈旧副作用。
+          if (!markAttachedImTurnHeadlessDispatched(item.turn, rowId, item.turn.reusesExistingSession === true)) return;
+          // 真实用户消息 → 给 silent-stop 守卫充值自动续跑额度(renderer 发送
+          // 走 createMakerSendTransaction 内部已充值;scheduler / hook 与本
+          // 路径直接 session.send,必须额外调这里,否则守卫额度恒 0,首次
+          // silent-stop 就落"已耗尽"误导横幅且永不自动续跑)。
+          noteSilentStopUserSend(rowId);
+          // 已经提前落过库(群上下文拼装前, 见 persistInboundUserMessageEarly)就
+          // 复用那条记录, 不再写第二条。sessionId 必须相符 —— 拼装期间路由若换到
+          // 别的 session(/new 重置等), 那份预落库不属于本轮, 照常自己落一条。
+          const prePersisted =
+            item.prePersistedUserMessage?.sessionId === rowId ? item.prePersistedUserMessage : null;
+          // 受保护群的触发消息不进会话存档 —— 正文与附件都不落。turn 照常跑,
+          // agent 拿得到内容; 只是这一轮的输入不留在长期记录里。
+          const persisted = item.protectedContent
+            ? null
+            : await persistUserMessage({
+                sessionId: rowId,
+                text: item.text,
+                attachments: item.attachments,
+                source: createLocalImSource(
+                  adapter.messageSourceIm?.() ?? channel,
+                  item.text,
+                  item.contextSnapshot,
+                ),
+                existingClientId: prePersisted?.clientId,
+              });
+          await adapter.onUserMessagePersisted?.({
+            sessionId: rowId,
+            userMessageId: item.turn.userMessageId,
+            persisted: persisted !== null,
+          });
+          if (persisted) {
+            item.prePersistedUserMessage = { sessionId: rowId, clientId: persisted.clientId };
+            await beginTurnChangeSetAtDispatch(state.makerSession, persisted.clientId);
+            turnChangeSetStarted = true;
+          }
+        },
       });
       if (pendingHandoff && sendResult.accepted) {
         agentHandoffPending.consume(rowId);
@@ -3627,24 +3618,22 @@ export function createTurnRunner(
     }
     if (!target) return null;
     const sessionId = target.row.id;
-    return withTaskMigrationInputAcceptance(sessionId, async () => {
-      // 空闲判据要覆盖**所有**入口, 不只本渠道: 接管态下 desktop / scheduler 也会
-      // 在同一个 session 上起 turn, 它那轮的 assistant 输出会落在我们之后。
-      // getSession 是只读查在内存里的 session(不新建), 拿不到 ⇒ 本进程没有活
-      // session, 也就没有在跑的 turn。
-      if (getMaker().getSession(sessionId)?.isTurnRunning() === true) return null;
-      const state = sessionStates.get(sessionId);
-      if (state && (state.queue.length > 0 || state.sendQueue.length > 0)) return null;
-      const persisted = await persistUserMessage({
-        sessionId,
-        text: args.text,
-        source: createLocalImSource(adapter.messageSourceIm?.() ?? channel, args.text),
-        ...(args.attachments ? { attachments: args.attachments } : {}),
-      });
-      if (!persisted) return null;
-      log.info(`pre-persisted user message for session=${sessionId.slice(-8)}`);
-      return { sessionId, clientId: persisted.clientId };
+    // 空闲判据要覆盖**所有**入口, 不只本渠道: 接管态下 desktop / scheduler 也会
+    // 在同一个 session 上起 turn, 它那轮的 assistant 输出会落在我们之后。
+    // getSession 是只读查在内存里的 session(不新建), 拿不到 ⇒ 本进程没有活
+    // session, 也就没有在跑的 turn。
+    if (getMaker().getSession(sessionId)?.isTurnRunning() === true) return null;
+    const state = sessionStates.get(sessionId);
+    if (state && (state.queue.length > 0 || state.sendQueue.length > 0)) return null;
+    const persisted = await persistUserMessage({
+      sessionId,
+      text: args.text,
+      source: createLocalImSource(adapter.messageSourceIm?.() ?? channel, args.text),
+      ...(args.attachments ? { attachments: args.attachments } : {}),
     });
+    if (!persisted) return null;
+    log.info(`pre-persisted user message for session=${sessionId.slice(-8)}`);
+    return { sessionId, clientId: persisted.clientId };
   }
 
   async function stopActiveTurn(args: {
@@ -3744,10 +3733,6 @@ export function createTurnRunner(
 
   return {
     runAgentTurn,
-    isSessionBusy: (sessionId) => {
-      const state = sessionStates.get(sessionId);
-      return wiringInFlight.has(sessionId) || Boolean(state && (state.queue.length || state.sendQueue.length));
-    },
     persistInboundUserMessageEarly,
     dispatchAgentTurn,
     resolveRouteTarget,

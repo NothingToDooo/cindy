@@ -35,7 +35,9 @@ const state = vi.hoisted(() => ({
   }>,
   workers: [] as string[],
 }));
-vi.mock('../../localDb/ipc/sessionCreatedBroadcast', () => ({ emitSessionCreated: (id: string) => state.created(id) }));
+vi.mock('../../localDb/ipc/sessionCreatedBroadcast', () => ({
+  emitSessionCreated: (id: string) => state.created(id),
+}));
 vi.mock('electron', () => ({ app: { getPath: () => state.root }, ipcMain: { handle: vi.fn() } }));
 vi.mock('../resources', async (original) => {
   const actual = await original<typeof import('../resources')>();
@@ -131,8 +133,8 @@ vi.mock('../../maker-host/createDesktopProviderService', () => ({
 vi.mock('../../maker-host/model-route-guard', () => ({
   pickEnabledFallbackModel: () => ({ model: 'target-model', providerId: 'target-provider' }),
 }));
-vi.mock('../../worktree/resourceLock', async original => ({
-  ...await original<typeof import('../../worktree/resourceLock')>(),
+vi.mock('../../worktree/resourceLock', async (original) => ({
+  ...(await original<typeof import('../../worktree/resourceLock')>()),
   withWorktreeResourceLock: (_cwd: string, fn: () => unknown) => fn(),
   withWorktreeResourceLocks: (_cwds: string[], fn: () => unknown) => fn(),
 }));
@@ -162,8 +164,6 @@ vi.mock('../../session-share/sessionShareImport', () => ({
   ) => {
     state.imports();
     const { sessionId, workingDir } = scope.migration;
-    // Imports remain fenced until source has durably retired.
-    expect(() => assertTaskMigrationWritable(sessionId)).toThrow('MIGRATION_TASK_BUSY');
     state.rows.get(device())!.set(sessionId, {
       id: sessionId,
       workingDir,
@@ -174,7 +174,6 @@ vi.mock('../../session-share/sessionShareImport', () => ({
       orcaRole: null,
     });
     for (const worker of scope.migration.workers ?? []) {
-      expect(() => assertTaskMigrationWritable(worker.sessionId)).toThrow('MIGRATION_TASK_BUSY');
       state.rows.get(device())!.set(worker.sessionId, {
         id: worker.sessionId,
         workingDir: worker.workingDir,
@@ -206,21 +205,25 @@ vi.mock('../workspace', () => ({
 }));
 import { requestTaskMigration, registerTaskMigrationIpc } from '../service';
 import { moveSessionProjectFromHost } from '../../mcp-integrations/moveSession';
-import { assertTaskMigrationWritable, migrationScope } from '../journal';
-import { assertTaskMigrationInputAllowed } from '../inputGuard';
+import { migrationScope } from '../journal';
 
 async function settled(sessionId = 'fork') {
   // Match vitest.config.ts's platform budget rather than waitFor's 1-second default.
-  await vi.waitFor(async () => {
-    const status = await requestTaskMigration({ action: 'status', sessionId });
-    expect(status.running).not.toBe(true);
-  }, { timeout: process.platform === 'win32' ? 60_000 : 5_000 });
+  await vi.waitFor(
+    async () => {
+      const status = await requestTaskMigration({ action: 'status', sessionId });
+      expect(status.running).not.toBe(true);
+    },
+    { timeout: process.platform === 'win32' ? 60_000 : 5_000 },
+  );
   return requestTaskMigration({ action: 'status', sessionId });
 }
-describe('durable cross-machine handoff', () => {
+describe('resumable cross-computer copy', () => {
   beforeEach(async () => {
-    registerTaskMigrationIpc((id, dir, authority) => moveSessionProjectFromHost(() => false, id, dir, authority),
-      { isBusy: () => state.boundaryBusy, drain: state.drain });
+    registerTaskMigrationIpc(
+      (id, dir, authority) => moveSessionProjectFromHost(() => false, id, dir, authority),
+      { isBusy: () => state.boundaryBusy, drain: state.drain },
+    );
     state.boundaryBusy = false;
     state.drain.mockReset();
     state.exported.mockClear();
@@ -282,35 +285,6 @@ describe('durable cross-machine handoff', () => {
     }
     await fs.rm(state.root, { recursive: true, force: true });
   });
-  it('flushes journal files using writable handles without truncation', async () => {
-    const open = vi.spyOn(syncFs, 'openSync');
-    const flush = syncFs.fsyncSync.bind(syncFs);
-    const fsync = vi.spyOn(syncFs, 'fsyncSync').mockImplementation(fd => {
-      const index = open.mock.results.findLastIndex(result => result.type === 'return' && result.value === fd);
-      if (syncFs.fstatSync(fd).isFile()) {
-        // Emulate Windows: FlushFileBuffers rejects a read-only file handle.
-        expect(open.mock.calls[index]?.[1]).toBe('r+');
-      }
-      flush(fd);
-    });
-    try {
-      await start();
-      const result = await settled();
-      expect(result.stage).toBe('complete');
-      expect(migrationScope().read('fork')?.stage).toBe('complete');
-      expect(fsync).toHaveBeenCalled();
-    } finally {
-      fsync.mockRestore();
-      open.mockRestore();
-    }
-  });
-  it('routes a remote project move through the source host helper without starting a transfer', async () => {
-    vi.mocked(moveSessionProjectFromHost).mockResolvedValueOnce({ ok: true, sessionId: 'fork', workingDir: '/another', workspaceKind: 'project' });
-    const result = await state.context.run({ device: 'A', peer: 'B' }, () => requestTaskMigration({ action: 'move-project', sessionId: 'fork', workingDir: '/another' }));
-    expect(moveSessionProjectFromHost).toHaveBeenLastCalledWith(expect.any(Function), 'fork', '/another', expect.any(Function));
-    expect(result).toMatchObject({ deviceId: 'A', projectMove: { sessionId: 'fork', workingDir: '/another', workspaceKind: 'project' } });
-    expect(state.snapshot).not.toHaveBeenCalled(); expect(state.imports).not.toHaveBeenCalled();
-  });
   const start = () =>
     requestTaskMigration({ action: 'start', sessionId: 'fork', targetDeviceId: 'B' });
 
@@ -331,6 +305,53 @@ describe('durable cross-machine handoff', () => {
     return separate;
   }
 
+  it('flushes journal files using writable handles without truncation', async () => {
+    const open = vi.spyOn(syncFs, 'openSync');
+    const flush = syncFs.fsyncSync.bind(syncFs);
+    const fsync = vi.spyOn(syncFs, 'fsyncSync').mockImplementation((fd) => {
+      const index = open.mock.results.findLastIndex(
+        (result) => result.type === 'return' && result.value === fd,
+      );
+      if (syncFs.fstatSync(fd).isFile()) {
+        // Emulate Windows: FlushFileBuffers rejects a read-only file handle.
+        expect(open.mock.calls[index]?.[1]).toBe('r+');
+      }
+      flush(fd);
+    });
+    try {
+      await start();
+      const result = await settled();
+      expect(result.stage).toBe('complete');
+      expect(migrationScope().read('fork')?.stage).toBe('complete');
+      expect(fsync).toHaveBeenCalled();
+    } finally {
+      fsync.mockRestore();
+      open.mockRestore();
+    }
+  });
+  it('routes a remote project move through the source host helper without starting a transfer', async () => {
+    vi.mocked(moveSessionProjectFromHost).mockResolvedValueOnce({
+      ok: true,
+      sessionId: 'fork',
+      workingDir: '/another',
+      workspaceKind: 'project',
+    });
+    const result = await state.context.run({ device: 'A', peer: 'B' }, () =>
+      requestTaskMigration({ action: 'move-project', sessionId: 'fork', workingDir: '/another' }),
+    );
+    expect(moveSessionProjectFromHost).toHaveBeenLastCalledWith(
+      expect.any(Function),
+      'fork',
+      '/another',
+      expect.any(Function),
+    );
+    expect(result).toMatchObject({
+      deviceId: 'A',
+      projectMove: { sessionId: 'fork', workingDir: '/another', workspaceKind: 'project' },
+    });
+    expect(state.snapshot).not.toHaveBeenCalled();
+    expect(state.imports).not.toHaveBeenCalled();
+  });
   it('replaces only preparation staging on retry instead of accumulating archive copies', async () => {
     state.noSpace = true;
     await start();
@@ -340,109 +361,11 @@ describe('durable cross-machine handoff', () => {
     await fs.writeFile(path.join(dir, 'superseded.tar.gz.enc'), 'old snapshot');
     await requestTaskMigration({ action: 'retry', sessionId: 'fork' });
     await settled();
-    await expect(fs.stat(path.join(dir, 'superseded.tar.gz.enc'))).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(fs.stat(path.join(dir, 'superseded.tar.gz.enc'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
     expect(await fs.readFile(path.join(state.root, 'shared', 'draft'), 'utf8')).toBe('original');
   });
-  it('journals every team directory before allocation can fail', async () => {
-    await team();
-    const mkdir = fs.mkdir.bind(fs);
-    let allocations = 0;
-    const spy = vi.spyOn(fs, 'mkdir').mockImplementation((async (target: string, options?: unknown) => {
-      if (path.basename(String(target)).startsWith('cindy-')) {
-        allocations++;
-        const receipt = state.context.run({ device: 'B' }, () => migrationScope().list(true)[0]);
-        expect(receipt).toBeDefined();
-        expect([receipt!.workingDir, ...('retainedWorkingDirs' in receipt! ? receipt!.retainedWorkingDirs ?? [] : [])]).toContain(target);
-        if (allocations === 2) throw new Error('allocation failed');
-      }
-      return mkdir(target, options as never);
-    }) as typeof fs.mkdir);
-    try {
-      await start();
-      expect((await settled()).stage).toBe('transferring');
-      expect(allocations).toBe(2);
-    } finally { spy.mockRestore(); }
-  });
-  it('notifies all members only after durable activation and repeats notifications on replay', async () => {
-    await team();
-    state.loseReply = 'receive';
-    const started = await start();
-    await settled();
-    expect(state.created).not.toHaveBeenCalled();
-    state.created.mockImplementation((id: string) => {
-      expect(device()).toBe('B');
-      expect(migrationScope().readIncoming(started.targetSessionId!)?.stage).toBe('active');
-      expect(state.rows.get('B')!.has(id)).toBe(true);
-    });
-    await requestTaskMigration({ action: 'retry', sessionId: 'fork' });
-    expect((await settled()).stage).toBe('complete');
-    expect(state.created).toHaveBeenCalledTimes(3);
-    const ids = state.created.mock.calls.map(([id]) => id);
-    await state.context.run({ device: 'B', peer: 'A' }, () => requestTaskMigration({
-      action: 'activate', id: started.targetSessionId!, sourceSessionId: 'fork',
-    }));
-    expect(state.created.mock.calls.slice(3).map(([id]) => id)).toEqual(ids);
-  });
-  it('moves the entire team, copies shared directories once and keeps every source file', async () => {
-    const separate = await team();
-    const started = await start();
-    expect((await settled()).stage).toBe('complete');
-    expect(state.snapshot).toHaveBeenCalledTimes(2);
-    for (const id of ['fork', ...state.workers])
-      expect(() => assertTaskMigrationWritable(id)).toThrow('MIGRATION_TASK_MOVED');
-    expect(() => assertTaskMigrationWritable('sibling')).not.toThrow();
-    expect(await fs.readFile(path.join(separate, 'draft'), 'utf8')).toBe('worker files');
-    expect(await fs.readFile(path.join(state.root, 'shared', 'draft'), 'utf8')).toBe('original');
-    await state.context.run({ device: 'B' }, async () => {
-      const receipt = migrationScope().readIncoming(started.targetSessionId!)!;
-      expect(receipt.workers).toHaveLength(2);
-      expect(receipt.workers![0].workingDir).toBe(receipt.workingDir);
-      expect(receipt.workers![1].workingDir).not.toBe(receipt.workingDir);
-      expect(await fs.readFile(path.join(receipt.workers![1].workingDir, 'draft'), 'utf8')).toBe(
-        'worker files',
-      );
-      for (const member of receipt.workers!)
-        expect(() => assertTaskMigrationWritable(member.sessionId)).not.toThrow();
-    });
-  });
-
-  it('adopts the complete team after a lost import acknowledgement without duplicating workers', async () => {
-    await team();
-    state.importsFail = true;
-    await start();
-    expect((await settled()).stage).toBe('transferring');
-    for (const id of state.workers)
-      expect(() => assertTaskMigrationWritable(id)).toThrow('MIGRATION_TASK_BUSY');
-    await requestTaskMigration({ action: 'retry', sessionId: 'fork' });
-    expect((await settled()).stage).toBe('complete');
-    expect(state.imports).toHaveBeenCalledTimes(1);
-    expect(state.rows.get('B')!.size).toBe(3);
-  });
-
-  it('rejects the whole team when any worker has queued input and keeps the lead writable', async () => {
-    await team();
-    state.rows.get('A')!.get('separate-worker')!.payload = JSON.stringify([{ text: 'pending' }]);
-    await expect(start()).rejects.toThrow('MIGRATION_TASK_QUEUED');
-    expect(() => assertTaskMigrationWritable('fork')).not.toThrow();
-    expect(state.exported).not.toHaveBeenCalled();
-  });
-
-  it('fences every member directory during preparation and releases the whole group on cancellation', async () => {
-    const separate = await team();
-    state.noSpace = true;
-    await start();
-    expect((await settled()).stage).toBe('preparing');
-    await expect(assertTaskMigrationInputAllowed(undefined, separate)).rejects.toThrow(
-      'MIGRATION_SHARED_DIRECTORY_BUSY',
-    );
-    for (const id of state.workers)
-      expect(() => assertTaskMigrationWritable(id)).toThrow('MIGRATION_TASK_BUSY');
-    await requestTaskMigration({ action: 'cancel', sessionId: 'fork' });
-    for (const id of ['fork', ...state.workers])
-      expect(() => assertTaskMigrationWritable(id)).not.toThrow();
-    await expect(assertTaskMigrationInputAllowed(undefined, separate)).resolves.toBeUndefined();
-  });
-
   it('filters stale project history and rechecks a directory removed after listing', async () => {
     const existing = path.join(state.root, 'shared');
     const missing = path.join(state.root, 'missing');
@@ -457,12 +380,30 @@ describe('durable cross-machine handoff', () => {
     );
     expect(caps.projects).toEqual([existing, removable]);
     await fs.rmdir(removable);
-    await expect(state.context.run({ device: 'B' }, () => requestTaskMigration({
-      action: 'preflight', targetProject: removable,
-      resources: { transferBytes: 0, unpackedBytes: 0, contextBytes: 0, manifestBytes: 0, repositoryBytes: 0, entries: 0 },
-    }))).rejects.toThrow('MIGRATION_TARGET_UNKNOWN');
-    await expect(requestTaskMigration({ action: 'start', sessionId: 'fork', targetDeviceId: 'B', targetProject: file }))
-      .rejects.toThrow('MIGRATION_TARGET_UNKNOWN');
+    await expect(
+      state.context.run({ device: 'B' }, () =>
+        requestTaskMigration({
+          action: 'preflight',
+          targetProject: removable,
+          resources: {
+            transferBytes: 0,
+            unpackedBytes: 0,
+            contextBytes: 0,
+            manifestBytes: 0,
+            repositoryBytes: 0,
+            entries: 0,
+          },
+        }),
+      ),
+    ).rejects.toThrow('MIGRATION_TARGET_UNKNOWN');
+    await expect(
+      requestTaskMigration({
+        action: 'start',
+        sessionId: 'fork',
+        targetDeviceId: 'B',
+        targetProject: file,
+      }),
+    ).rejects.toThrow('MIGRATION_TARGET_UNKNOWN');
     expect(state.snapshot).not.toHaveBeenCalled();
   });
 
@@ -474,7 +415,12 @@ describe('durable cross-machine handoff', () => {
   });
   it('waits for pending message persistence before exporting the conversation', async () => {
     let release!: () => void;
-    state.drain.mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve; }));
+    state.drain.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
     await start();
     await vi.waitFor(() => expect(state.drain).toHaveBeenCalledOnce());
     expect(state.exported).not.toHaveBeenCalled();
@@ -487,7 +433,7 @@ describe('durable cross-machine handoff', () => {
     state.remove.mockRejectedValueOnce(new Error('cleanup interrupted'));
     await start();
     const interrupted = await settled();
-    expect(interrupted.stage).toBe('moved');
+    expect(interrupted.stage).toBe('transferring');
     const directory = path.join(migrationScope().root, 'outgoing', interrupted.targetSessionId!);
     expect(await fs.readdir(directory)).toContain('workspace.json');
     const imports = state.imports.mock.calls.length;
@@ -498,6 +444,191 @@ describe('durable cross-machine handoff', () => {
     expect(await fs.readFile(path.join(state.root, 'shared', 'draft'), 'utf8')).toBe('original');
   });
 
+  it('retains every failed receive directory in the existing receipt after a successful retry', async () => {
+    state.restoresFail = true;
+    await start();
+    const first = await settled();
+    expect(first.stage).toBe('transferring');
+    const receipt = () =>
+      state.context.run({ device: 'B' }, () =>
+        migrationScope().readIncoming(first.targetSessionId!)!,
+      );
+    const firstDir = receipt().workingDir;
+    await fs.writeFile(path.join(firstDir, 'draft'), 'user recovery edit');
+    await requestTaskMigration({ action: 'retry', sessionId: 'fork' });
+    await settled();
+    const secondDir = receipt().workingDir;
+    expect(receipt().retainedWorkingDirs).toEqual([firstDir]);
+    state.restoresFail = false;
+    await requestTaskMigration({ action: 'retry', sessionId: 'fork' });
+    expect((await settled()).stage).toBe('complete');
+    expect(receipt().retainedWorkingDirs).toEqual([firstDir, secondDir]);
+    expect(await fs.readFile(path.join(firstDir, 'draft'), 'utf8')).toBe('user recovery edit');
+    expect(await fs.readFile(path.join(secondDir, 'draft'), 'utf8')).toBe('original');
+    expect(receipt().workingDir).not.toBe(firstDir);
+    expect(receipt().workingDir).not.toBe(secondDir);
+  });
+  it('rejects insufficient destination space before uploading and remains cancellable', async () => {
+    state.noSpace = true;
+    await start();
+    const status = await settled();
+    expect(status.stage).toBe('preparing');
+    expect(status.error).toBe('MIGRATION_NO_SPACE');
+    expect(state.files.size).toBe(0);
+    expect(state.imports).not.toHaveBeenCalled();
+    await requestTaskMigration({ action: 'cancel', sessionId: 'fork' });
+    expect(await fs.readFile(path.join(state.root, 'shared', 'draft'), 'utf8')).toBe('original');
+  });
+  it('reclaims interrupted upload parts before resource checks, preserving snapshots and other handoffs', async () => {
+    const workerDir = await team();
+    state.restoresFail = true;
+    await start();
+    const interrupted = await settled();
+    expect(interrupted.stage).toBe('transferring');
+    const directory = path.join(
+      state.root,
+      'A',
+      'task-copies',
+      'outgoing',
+      interrupted.targetSessionId!,
+    );
+    const leftovers = [directory, path.join(directory, '1')].map((dir) =>
+      path.join(dir, 'parts-Ab12Cd'),
+    );
+    const unrelated = path.join(
+      state.root,
+      'A',
+      'task-copies',
+      'outgoing',
+      'another-handoff',
+      'parts-Ab12Cd',
+    );
+    const sourceParts = path.join(workerDir, 'parts-Ab12Cd');
+    for (const dir of [...leftovers, unrelated, sourceParts]) {
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(path.join(dir, 'part'), 'retained bytes');
+    }
+    const snapshot = await fs.readFile(path.join(directory, 'session.cshare'));
+    const uploads = state.files.size;
+    const remove = fs.rm.bind(fs);
+    const failCleanup = vi.spyOn(fs, 'rm').mockImplementation(async (file, options) => {
+      if (String(file) === leftovers[0]) throw new Error('cleanup denied');
+      return remove(file, options);
+    });
+    try {
+      await requestTaskMigration({ action: 'retry', sessionId: 'fork' });
+      expect((await settled()).stage).toBe('transferring');
+      expect(state.files.size).toBe(uploads);
+      expect(await fs.readFile(path.join(leftovers[0], 'part'), 'utf8')).toBe('retained bytes');
+    } finally {
+      failCleanup.mockRestore();
+    }
+    state.noSpace = true;
+    await requestTaskMigration({ action: 'retry', sessionId: 'fork' });
+    expect((await settled()).error).toBe('MIGRATION_NO_SPACE');
+    for (const dir of leftovers)
+      await expect(fs.stat(dir)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await fs.readFile(path.join(directory, 'session.cshare'))).toEqual(snapshot);
+    expect(state.files.size).toBe(uploads);
+    state.noSpace = false;
+    state.restoresFail = false;
+    await requestTaskMigration({ action: 'retry', sessionId: 'fork' });
+    expect((await settled()).stage).toBe('complete');
+    for (const dir of [unrelated, sourceParts])
+      expect(await fs.readFile(path.join(dir, 'part'), 'utf8')).toBe('retained bytes');
+    expect(await fs.readFile(path.join(workerDir, 'draft'), 'utf8')).toBe('worker files');
+  });
+  it('adopts a committed import after its database reply is lost', async () => {
+    state.importsFail = true;
+    await start();
+    expect((await settled()).stage).toBe('transferring');
+    await requestTaskMigration({ action: 'retry', sessionId: 'fork' });
+    expect((await settled()).stage).toBe('complete');
+    expect(state.imports).toHaveBeenCalledTimes(1);
+  });
+
+  it('copies tasks with automation bindings without modifying the source', async () => {
+    const db = state.dbs.get('A')!;
+    const original = db.queryOne.getMockImplementation()!;
+    db.queryOne.mockImplementation(async (sql, args) =>
+      sql.includes('schedules') ? { n: 4 } : original(sql, args),
+    );
+    const before = structuredClone(state.rows.get('A')!.get('fork'));
+    await start();
+    const result = await settled();
+    expect(result.stage).toBe('complete');
+    expect(state.rows.get('A')!.get('fork')).toEqual(before);
+    expect(state.close).not.toHaveBeenCalled();
+    expect(db.queryOne.mock.calls.some(([sql]) => sql.includes('schedules'))).toBe(false);
+    expect(await fs.readFile(path.join(state.root, 'shared', 'draft'), 'utf8')).toBe('original');
+  });
+  it('copies the complete team and keeps independent target directories', async () => {
+    const separate = await team();
+    const before = structuredClone([...state.rows.get('A')!]);
+    await start();
+    const result = await settled();
+    expect(result.stage).toBe('complete');
+    expect(state.snapshot).toHaveBeenCalledTimes(2);
+    expect([...state.rows.get('A')!]).toEqual(before);
+    const receipt = state.context.run({ device: 'B' }, () =>
+      migrationScope().readIncoming(result.targetSessionId!)!,
+    );
+    expect(receipt.stage).toBe('active');
+    expect(receipt.workers).toHaveLength(2);
+    expect(receipt.workers![0].workingDir).toBe(receipt.workingDir);
+    expect(receipt.workers![1].workingDir).not.toBe(separate);
+    expect(await fs.readFile(path.join(separate, 'draft'), 'utf8')).toBe('worker files');
+    expect(state.created).toHaveBeenCalledTimes(3);
+  });
+  it('recovers a lost receive reply without a second import or source retirement', async () => {
+    state.loseReply = 'receive';
+    await start();
+    const interrupted = await settled();
+    expect(interrupted.stage).toBe('transferring');
+    const receipt = state.context.run({ device: 'B' }, () =>
+      migrationScope().readIncoming(interrupted.targetSessionId!)!,
+    );
+    expect(receipt.stage).toBe('active');
+    expect(state.rows.get('A')!.get('fork')!.status).toBe('active');
+    await requestTaskMigration({ action: 'retry', sessionId: 'fork' });
+    expect((await settled()).stage).toBe('complete');
+    expect(state.imports).toHaveBeenCalledTimes(1);
+  });
+  it('allows another independent copy after completion', async () => {
+    await start();
+    const first = await settled();
+    await start();
+    const second = await settled();
+    expect(second.stage).toBe('complete');
+    expect(second.targetSessionId).not.toBe(first.targetSessionId);
+    expect(state.rows.get('B')!.size).toBe(2);
+  });
+  it('does not scan unrelated or legacy journals when reading copy progress', async () => {
+    const root = migrationScope().root;
+    await fs.mkdir(path.join(root, 'records'), { recursive: true });
+    await fs.writeFile(path.join(root, 'records', 'unrelated.json'), '{broken');
+    expect(migrationScope().read('fork')).toBeNull();
+    await start();
+    expect((await settled()).stage).toBe('complete');
+  });
+  it('adopts the complete team after a lost import acknowledgement without duplicating workers', async () => {
+    await team();
+    state.importsFail = true;
+    await start();
+    expect((await settled()).stage).toBe('transferring');
+    await requestTaskMigration({ action: 'retry', sessionId: 'fork' });
+    expect((await settled()).stage).toBe('complete');
+    expect(state.imports).toHaveBeenCalledTimes(1);
+    expect(state.rows.get('B')!.size).toBe(3);
+  });
+
+  it('rejects the whole team when any worker has queued input and keeps the lead writable', async () => {
+    await team();
+    state.rows.get('A')!.get('separate-worker')!.payload = JSON.stringify([{ text: 'pending' }]);
+    await expect(start()).rejects.toThrow('MIGRATION_TASK_QUEUED');
+    expect(state.exported).not.toHaveBeenCalled();
+  });
+
   it.each(['receiving', 'committed', 'imported'])(
     'reclaims interrupted receive staging before retrying a %s receipt',
     async (stage) => {
@@ -506,11 +637,11 @@ describe('durable cross-machine handoff', () => {
       const remove = fs.rm.bind(fs);
       let staging = '';
       // Leave actual transfer artifacts behind as a process exit would. A completed
-      // import must not publish ready while cleanup still needs a retry.
+      // import must not confirm completion while cleanup still needs a retry.
       const cleanup = vi.spyOn(fs, 'rm').mockImplementation(async (target, options) => {
         if (
           device() === 'B' &&
-          await fs.stat(path.join(String(target), 'workspace.json')).catch(() => null)
+          (await fs.stat(path.join(String(target), 'workspace.json')).catch(() => null))
         ) {
           staging = String(target);
           throw new Error('receive cleanup interrupted');
@@ -545,196 +676,28 @@ describe('durable cross-machine handoff', () => {
         expect(await fs.readFile(path.join(receipt.workingDir, 'draft'), 'utf8')).toBe(
           'user recovery edit',
         );
-        expect(await fs.readFile(path.join(state.root, 'shared', 'draft'), 'utf8')).toBe('original');
+        expect(await fs.readFile(path.join(state.root, 'shared', 'draft'), 'utf8')).toBe(
+          'original',
+        );
       } finally {
         cleanup.mockRestore();
       }
     },
   );
 
-  it('blocks current sharing but permits migration after all sharing identities are closed', async () => {
-    state.sharingLatest = [
-      { shared_task_id: 'closed', session_id: 'fork', terminal: 1, snapshot: null },
-      { shared_task_id: 'active', session_id: 'fork', terminal: 0, snapshot: null },
-    ];
-    await expect(start()).rejects.toThrow('MIGRATION_TASK_BOUND');
-    state.sharingLatest[1].terminal = 1;
-    state.sharingLatest.push({ shared_task_id: 'unrelated', session_id: 'sibling', terminal: 0, snapshot: null });
+  it('copies a Feishu task while leaving its source identity intact', async () => {
+    state.rows.get('A')!.get('fork')!.source = 'feishu';
     await start();
-    expect((await settled()).stage).toBe('complete');
-    expect(state.dbs.get('A')!.query).toHaveBeenCalledWith(expect.stringContaining('SELECT MAX(id)'));
+    const result = await settled();
+    expect(result.stage).toBe('complete');
+    expect(state.rows.get('A')!.get('fork')!.source).toBe('feishu');
+    expect(state.rows.get('B')!.get(result.targetSessionId!)!.source).toBe('shared');
   });
-  it('keeps the source fenced and refuses activation by a different controller before retirement', async () => {
-    state.loseReply = 'receive';
+  it('does not disclose another source device receipt', async () => {
     await start();
-    const source = await settled();
-    expect(source.stage).toBe('transferring');
-    expect(() => assertTaskMigrationWritable('fork')).toThrow('MIGRATION_TASK_BUSY');
-    await state.context.run({ device: 'B', peer: 'C' }, async () => {
-      expect(migrationScope().readIncoming(source.targetSessionId!)?.stage).toBe('ready');
-      await expect(requestTaskMigration({ action: 'activate', id: source.targetSessionId!, sourceSessionId: 'fork' })).rejects.toThrow('MIGRATION_TARGET_NOT_READY');
-      expect(migrationScope().readIncoming(source.targetSessionId!)?.stage).toBe('ready');
-      expect(() => assertTaskMigrationWritable(source.targetSessionId!)).toThrow('MIGRATION_TASK_BUSY');
-    });
-    await requestTaskMigration({ action: 'retry', sessionId: 'fork' });
-    expect((await settled()).stage).toBe('complete');
-  });
-  it('retains every failed receive directory in the existing receipt after a successful retry', async () => {
-    state.restoresFail = true;
-    await start();
-    const first = await settled();
-    expect(first.stage).toBe('transferring');
-    const receipt = () => state.context.run({ device: 'B' }, () => migrationScope().readIncoming(first.targetSessionId!)!);
-    const firstDir = receipt().workingDir;
-    await fs.writeFile(path.join(firstDir, 'draft'), 'user recovery edit');
-    await requestTaskMigration({ action: 'retry', sessionId: 'fork' });
-    await settled();
-    const secondDir = receipt().workingDir;
-    expect(receipt().retainedWorkingDirs).toEqual([firstDir]);
-    state.restoresFail = false;
-    await requestTaskMigration({ action: 'retry', sessionId: 'fork' });
-    expect((await settled()).stage).toBe('complete');
-    expect(receipt().retainedWorkingDirs).toEqual([firstDir, secondDir]);
-    expect(await fs.readFile(path.join(firstDir, 'draft'), 'utf8')).toBe('user recovery edit');
-    expect(await fs.readFile(path.join(secondDir, 'draft'), 'utf8')).toBe('original');
-    expect(receipt().workingDir).not.toBe(firstDir);
-    expect(receipt().workingDir).not.toBe(secondDir);
-  });
-  it('allows missing unrelated workspaces while preserving overlap guards for missing leaves', async () => {
-    state.noSpace = true;
-    await start();
-    expect((await settled()).stage).toBe('preparing');
-    await expect(assertTaskMigrationInputAllowed(undefined, path.join(state.root, 'missing', 'project'))).resolves.toBeUndefined();
-    await expect(assertTaskMigrationInputAllowed(undefined, path.join(state.root, 'shared', 'missing'))).rejects.toThrow('MIGRATION_SHARED_DIRECTORY_BUSY');
-    await fs.rename(path.join(state.root, 'shared'), path.join(state.root, 'temporarily-detached'));
-    await expect(assertTaskMigrationInputAllowed(undefined, path.join(state.root, 'unrelated'))).resolves.toBeUndefined();
-    await expect(assertTaskMigrationInputAllowed(undefined, path.join(state.root, 'shared', 'missing'))).rejects.toThrow('MIGRATION_SHARED_DIRECTORY_BUSY');
-  });
-  it.each(['desktop', 'feishu'])('moves a %s task into an independent directory and preserves source files', async (source) => {
-    state.rows.get('A')!.get('fork')!.source = source;
-    // First use must work with the real file lock and no migration state directory.
-    await expect(fs.stat(path.join(state.root, 'A', 'task-migrations'))).rejects.toMatchObject({ code: 'ENOENT' });
-    await expect(fs.stat(path.join(state.root, 'B', 'task-migrations'))).rejects.toMatchObject({ code: 'ENOENT' });
-    await start();
-    const status = await settled();
-    expect(status.stage).toBe('complete');
-    expect(() => assertTaskMigrationWritable('fork')).toThrow('MIGRATION_TASK_MOVED');
-    expect(() => assertTaskMigrationWritable('sibling')).not.toThrow();
-    const row = state.rows.get('B')!.get(status.targetSessionId!)!;
-    expect(row.source).toBe('shared');
-    expect(row.workingDir).not.toBe(path.join(state.root, 'shared'));
-    await fs.writeFile(path.join(row.workingDir as string, 'draft'), 'destination edit');
-    expect(await fs.readFile(path.join(state.root, 'shared', 'draft'), 'utf8')).toBe('original');
-    state.context.run({ device: 'B' }, () =>
-      expect(() => assertTaskMigrationWritable(status.targetSessionId!)).not.toThrow(),
-    );
-  });
-  it('rejects insufficient destination space before uploading and remains cancellable', async () => {
-    state.noSpace = true;
-    await start();
-    const status = await settled();
-    expect(status.stage).toBe('preparing');
-    expect(status.error).toBe('MIGRATION_NO_SPACE');
-    expect(state.files.size).toBe(0);
-    expect(state.imports).not.toHaveBeenCalled();
-    await requestTaskMigration({ action: 'cancel', sessionId: 'fork' });
-    expect(await fs.readFile(path.join(state.root, 'shared', 'draft'), 'utf8')).toBe('original');
-  });
-  it.each(['receive', 'activate'])(
-    'resumes a lost %s reply without importing twice or permitting source input',
-    async (action) => {
-      state.loseReply = action;
-      await start();
-      const interrupted = await settled();
-      expect(interrupted.stage).toBe(action === 'receive' ? 'transferring' : 'moved');
-      expect(() => assertTaskMigrationWritable('fork')).toThrow();
-      await expect(requestTaskMigration({ action: 'cancel', sessionId: 'fork' })).rejects.toThrow(
-        'MIGRATION_CANNOT_CANCEL',
-      );
-      await requestTaskMigration({ action: 'retry', sessionId: 'fork' });
-      expect((await settled()).stage).toBe('complete');
-      expect(state.imports).toHaveBeenCalledTimes(1);
-    },
-  );
-  it('reclaims interrupted upload parts before resource checks, preserving snapshots and other handoffs', async () => {
-    const workerDir = await team();
-    state.restoresFail = true;
-    await start();
-    const interrupted = await settled();
-    expect(interrupted.stage).toBe('transferring');
-    const directory = path.join(state.root, 'A', 'task-migrations', 'outgoing', interrupted.targetSessionId!);
-    const leftovers = [directory, path.join(directory, '1')].map(dir => path.join(dir, 'parts-Ab12Cd'));
-    const unrelated = path.join(state.root, 'A', 'task-migrations', 'outgoing', 'another-handoff', 'parts-Ab12Cd');
-    const sourceParts = path.join(workerDir, 'parts-Ab12Cd');
-    for (const dir of [...leftovers, unrelated, sourceParts]) {
-      await fs.mkdir(dir, { recursive: true });
-      await fs.writeFile(path.join(dir, 'part'), 'retained bytes');
-    }
-    const snapshot = await fs.readFile(path.join(directory, 'session.cshare'));
-    const uploads = state.files.size;
-    const remove = fs.rm.bind(fs);
-    const failCleanup = vi.spyOn(fs, 'rm').mockImplementation(async (file, options) => {
-      if (String(file) === leftovers[0]) throw new Error('cleanup denied');
-      return remove(file, options);
-    });
-    try {
-      await requestTaskMigration({ action: 'retry', sessionId: 'fork' });
-      expect((await settled()).stage).toBe('transferring');
-      expect(state.files.size).toBe(uploads);
-      expect(await fs.readFile(path.join(leftovers[0], 'part'), 'utf8')).toBe('retained bytes');
-    } finally {
-      failCleanup.mockRestore();
-    }
-    state.noSpace = true;
-    await requestTaskMigration({ action: 'retry', sessionId: 'fork' });
-    expect((await settled()).error).toBe('MIGRATION_NO_SPACE');
-    for (const dir of leftovers) await expect(fs.stat(dir)).rejects.toMatchObject({ code: 'ENOENT' });
-    expect(await fs.readFile(path.join(directory, 'session.cshare'))).toEqual(snapshot);
-    expect(state.files.size).toBe(uploads);
-    state.noSpace = false;
-    state.restoresFail = false;
-    await requestTaskMigration({ action: 'retry', sessionId: 'fork' });
-    expect((await settled()).stage).toBe('complete');
-    for (const dir of [unrelated, sourceParts])
-      expect(await fs.readFile(path.join(dir, 'part'), 'utf8')).toBe('retained bytes');
-    expect(await fs.readFile(path.join(workerDir, 'draft'), 'utf8')).toBe('worker files');
-  });
-  it('adopts a committed import after its database reply is lost', async () => {
-    state.importsFail = true;
-    await start();
-    expect((await settled()).stage).toBe('transferring');
-    await requestTaskMigration({ action: 'retry', sessionId: 'fork' });
-    expect((await settled()).stage).toBe('complete');
-    expect(state.imports).toHaveBeenCalledTimes(1);
-  });
-  it('can move an imported task onward while retaining its earlier receipt', async () => {
-    await start();
-    const first = await settled();
-    await state.context.run({ device: 'B' }, async () => {
-      await requestTaskMigration({
-        action: 'start',
-        sessionId: first.targetSessionId!,
-        targetDeviceId: 'C',
-      });
-      expect((await settled(first.targetSessionId!)).stage).toBe('complete');
-      expect(migrationScope().readIncoming(first.targetSessionId!)?.stage).toBe('active');
-      expect(() => assertTaskMigrationWritable(first.targetSessionId!)).toThrow(
-        'MIGRATION_TASK_MOVED',
-      );
-    });
-  });
-  it('stops before snapshotting a running sibling and allows safe cancellation', async () => {
-    state.siblingRunning = true;
-    await start();
-    const status = await settled();
-    expect(status.error).toBe('MIGRATION_SHARED_DIRECTORY_BUSY');
-    expect(state.snapshot).not.toHaveBeenCalled();
-    expect(state.imports).not.toHaveBeenCalled();
-    await expect(assertTaskMigrationInputAllowed('sibling')).rejects.toThrow(
-      'MIGRATION_SHARED_DIRECTORY_BUSY',
-    );
-    await requestTaskMigration({ action: 'cancel', sessionId: 'fork' });
-    await expect(assertTaskMigrationInputAllowed('sibling')).resolves.toBeUndefined();
-    expect(() => assertTaskMigrationWritable('fork')).not.toThrow();
+    const result = await settled();
+    await expect(state.context.run({device:'B', peer:'C'}, () => requestTaskMigration({
+      action:'receipt', id:result.targetSessionId!, sourceSessionId:'fork',
+    }))).rejects.toThrow('MIGRATION_ID_CONFLICT');
   });
 });
