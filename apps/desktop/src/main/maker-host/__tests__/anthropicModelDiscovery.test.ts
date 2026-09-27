@@ -43,6 +43,8 @@ import {
   clearAnthropicDiscoveredModels,
   resetAnthropicDiscoveryForTest,
   waitForAnthropicDiscoveryIdleForTest,
+  refreshAnthropicModelsFromProbe,
+  setAnthropicModelProbe,
 } from '../model-discovery/anthropic.js';
 import {
   getActiveCatalog,
@@ -313,6 +315,20 @@ describe('mapAnthropicSdkModels', () => {
     ]);
   });
 
+  it('名称里只有上下文长度(1M)时不当作版本号,改用目录名称或按 id 推导', () => {
+    setActiveCatalog(BUNDLED_CATALOG);
+    const out = mapAnthropicSdkModels([
+      // 没有排在前面的 default 条目时,opus[1m] 是该型号的首个条目。
+      { value: 'opus[1m]', displayName: 'Opus (1M context)', description: 'Opus 5.5 with 1M context · Best' },
+      { value: 'sonnet[1m]', displayName: 'Sonnet (1M context)', description: 'Sonnet 5.6 with 1M context · New' },
+    ]);
+    expect(out.map(({ model }) => [model.id, model.name])).toEqual([
+      ['claude-opus-5-5', 'Opus 5.5'],
+      ['claude-sonnet-5-6', 'Sonnet 5.6'],
+    ]);
+    expect(out.every(({ model }) => model.discoveredMetadata?.name === undefined)).toBe(true);
+  });
+
   it('简称与说明的系列不符、版本多于两段或缺说明时放弃,不猜', () => {
     setActiveCatalog(BUNDLED_CATALOG);
     const out = mapAnthropicSdkModels([
@@ -387,6 +403,28 @@ describe('noteAnthropicSdkSupportedModels(登录态门控 + 合并纪律)', () =
     setAnthropicDiscoveredModels([]);
     vi.unstubAllGlobals();
     await fsp.rm(TEST_USER_DATA, { recursive: true, force: true });
+  });
+
+  it('主动探测按发起时的授权世代生效:探测期间换号,旧账号的迟到清单不写入', async () => {
+    setAnthropicModelProbe(async (onModels) => {
+      onModels([{ value: 'claude-opus-4-8', displayName: 'Opus 4.8' }]);
+      return true;
+    });
+    await expect(refreshAnthropicModelsFromProbe()).resolves.toBe(true);
+    expect(anthropicIds()).toEqual(['claude-opus-4-8']);
+
+    setAnthropicModelProbe(async (onModels) => {
+      // 探测在途时发生登出 / 换号(授权边界收口让世代自增)。
+      await clearAnthropicDiscoveredModels();
+      onModels([{ value: 'claude-opus-4-8', displayName: 'Account A Opus 4.8' }]);
+      return true;
+    });
+    await expect(refreshAnthropicModelsFromProbe()).resolves.toBe(false);
+    await waitForAnthropicDiscoveryIdleForTest();
+    expect(anthropicIds()).toEqual([]);
+    const cache = path.join(TEST_USER_DATA, 'model-discovery', 'anthropic-models.json');
+    await expect(fsp.access(cache)).rejects.toMatchObject({ code: 'ENOENT' });
+    setAnthropicModelProbe(null);
   });
 
   it('未登录 Claude.ai 时不注入(登出击穿 / 纯网关用户长清单,review P1 回归)', () => {

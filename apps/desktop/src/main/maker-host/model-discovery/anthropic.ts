@@ -154,21 +154,33 @@ function resolveSdkModelId(value: string, description: unknown): string | null {
   return id;
 }
 
+/** claude-fable-5-1 → { family: 'fable', version: '5.1' };不符合 `claude-<系列>-<主>[-<次>]` 时返回 null。 */
+function parseClaudeModelId(id: string): { family: string; version: string } | null {
+  const match = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?$/.exec(id);
+  if (!match) return null;
+  return {
+    family: match[1]!,
+    version: match[3] !== undefined ? `${match[2]}.${match[3]}` : match[2]!,
+  };
+}
+
 /**
- * SDK 的 displayName 对系列当前型号常只给系列名("Fable" / "Opus"),简称条目还会给
- * "Default (recommended)"。不含版本号的名称不能区分同系列型号,不作为该型号的名称。
+ * SDK displayName 能否作为该型号的名称:必须写出与 id 相同的版本号。SDK 对系列当前型号常只
+ * 给系列名("Fable")、简称条目给 "Default (recommended)" / "Opus (1M context)"——这些
+ * 不能区分同系列型号("1M" 里的数字是上下文长度,不是版本)。id 读不出版本时不采用。
  */
-function isVersionedModelName(name: string): boolean {
-  return /\d/.test(name);
+function displayNameMatchesModelId(name: string, id: string): boolean {
+  const parsed = parseClaudeModelId(id);
+  if (!parsed) return false;
+  const escaped = parsed.version.replace('.', '\\.');
+  return new RegExp(`(^|[^\\d.])${escaped}($|[^\\d.])`).test(name);
 }
 
 /** claude-fable-5-1 → "Fable 5.1";不符合 `claude-<系列>-<主>[-<次>]` 时返回 null。 */
 function labelFromClaudeModelId(id: string): string | null {
-  const match = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?$/.exec(id);
-  if (!match) return null;
-  const family = match[1]!;
-  const version = match[3] !== undefined ? `${match[2]}.${match[3]}` : match[2];
-  return `${family[0]!.toUpperCase()}${family.slice(1)} ${version}`;
+  const parsed = parseClaudeModelId(id);
+  if (!parsed) return null;
+  return `${parsed.family[0]!.toUpperCase()}${parsed.family.slice(1)} ${parsed.version}`;
 }
 
 /**
@@ -241,7 +253,7 @@ function fallbackEffortBaseline(id: string): { efforts: Effort[]; defaultEffort:
  * 目录只收显式版本 id(规则 10:禁止 opus/sonnet 裸别名进目录):SDK 简称条目经
  * resolveSdkModelId 按说明里的版本解析为具体 id,确定不了版本才跳过。这份清单是 Anthropic
  * 成员的唯一来源,目录不再补入 SDK 没返回的型号。
- * 名称:SDK 的 displayName 含版本号才采用;只给系列名时用目录名称,目录未登记则按 id 推导。
+ * 名称:SDK 的 displayName 写出与 id 相同的版本号才采用;否则用目录名称,目录未登记则按 id 推导。
  * ModelInfo 的能力字段全部 optional:字段在场时 SDK 是能力权威(supportsEffort=false =
  * 不可调);**字段缺席 = 该字段未知**,按 modelRegistry 基线 / 确定性默认合成,
  * 合并时保留该字段已精化的旧值——不能把「CLI 没填」解读成「不支持」而抹掉档位。
@@ -265,7 +277,7 @@ export function mapAnthropicSdkModels(raw: unknown): SdkMappedModel[] {
     if (!id || seen.has(id)) continue;
     seen.add(id);
     const reportedName =
-      typeof e.displayName === 'string' && isVersionedModelName(e.displayName)
+      typeof e.displayName === 'string' && displayNameMatchesModelId(e.displayName, id)
         ? e.displayName
         : undefined;
     const hasEffortInfo = e.supportsEffort !== undefined || e.supportedEffortLevels !== undefined;
@@ -536,11 +548,12 @@ export async function loadAnthropicModelsFromDiskCache(): Promise<void> {
       const { contextWindowVerified: _staleProvenance, ...rest } = model;
       // 旧版缓存会把 SDK 的系列名("Fable")当型号名落盘;按当前口径丢弃不含版本号的名称。
       const cachedName = model.discoveredMetadata?.name;
-      const staleName = cachedName !== undefined && !isVersionedModelName(cachedName);
+      const staleName =
+        cachedName !== undefined && !displayNameMatchesModelId(cachedName, model.id);
       const { name: _staleName, ...cachedMetadata } = model.discoveredMetadata ?? {};
       return {
         ...rest,
-        ...(staleName || !isVersionedModelName(model.name)
+        ...(staleName || !displayNameMatchesModelId(model.name, model.id)
           ? {
               name:
                 getCindyAnthropicModelName(model.id) ??
@@ -580,9 +593,11 @@ export async function loadAnthropicModelsFromDiskCache(): Promise<void> {
  * 未登录 Claude.ai 时不得注入(否则登出被击穿 / 纯网关用户长出 anthropic 清单)。
  * 按 id 合并:条目带能力信息则覆盖,否则保留已精化条目;缓存恢复的精确窗口不回退。
  */
-export function noteAnthropicSdkSupportedModels(raw: unknown): void {
-  if (!hasClaudeNativeLogin()) return;
-  const generation = authGeneration;
+export function noteAnthropicSdkSupportedModels(
+  raw: unknown,
+  generation: number = authGeneration,
+): void {
+  if (!hasClaudeNativeLogin() || generation !== authGeneration) return;
   const mapped = mapAnthropicSdkModels(raw);
   if (mapped.length === 0) return;
   const mappedWithWindows = mapped.map(({ model, hasEffortInfo, hasFastModeInfo }) => {
@@ -675,25 +690,45 @@ export function noteAnthropicSdkSupportedModels(raw: unknown): void {
   );
 }
 
-/** 主动清单探测(生产 = maker.refreshAgentLocalModels('claude-code')),maker 就绪后注入。 */
-let modelProbe: (() => Promise<boolean>) | null = null;
+/**
+ * 主动清单探测(生产 = maker.refreshAgentLocalModels('claude-code', { onSupportedModels })),
+ * maker 就绪后注入。结果只交给传入的回调,不经全局捕获监听器。
+ */
+type AnthropicModelProbe = (onModels: (models: unknown[]) => void) => Promise<boolean>;
+let modelProbe: AnthropicModelProbe | null = null;
+/** 同一授权世代内的在途探测;换代后不复用旧世代的探测。 */
+let probeInflight: { generation: number; promise: Promise<boolean> } | null = null;
 
-export function setAnthropicModelProbe(probe: (() => Promise<boolean>) | null): void {
+export function setAnthropicModelProbe(probe: AnthropicModelProbe | null): void {
   modelProbe = probe;
 }
 
 /**
- * 请求一次主动清单探测(启动、登录 / 认领后):清单只来自 SDK,没有这一步时新登录或
- * 没有缓存的用户要等跑过一次 Claude Code 任务才看得到模型。结果经
- * noteAnthropicSdkSupportedModels 与会话 init 捕获走同一套门控与合并。未登录或 maker
- * 未就绪时跳过;失败只记日志。
+ * 主动读取一次清单并生效(启动、登录 / 认领后、手动刷新):清单只来自 SDK,没有这一步时
+ * 新登录或没有缓存的用户要等跑过一次 Claude Code 任务才看得到模型。
+ * 结果按**发起时**的授权世代走 noteAnthropicSdkSupportedModels:探测期间登出 / 换号
+ * (clearAnthropicDiscoveredModels 让世代自增)时,旧账号的迟到结果不写入清单与缓存。
+ * 返回本次是否拿到了属于当前世代的清单;未登录或 maker 未就绪时返回 false。
  */
-export function requestAnthropicModelProbe(): void {
+export function refreshAnthropicModelsFromProbe(): Promise<boolean> {
   const probe = modelProbe;
-  if (!probe || !hasClaudeNativeLogin()) return;
-  void probe().then(
+  if (!probe || !hasClaudeNativeLogin()) return Promise.resolve(false);
+  const generation = authGeneration;
+  if (probeInflight?.generation === generation) return probeInflight.promise;
+  const promise = probe((models) => noteAnthropicSdkSupportedModels(models, generation))
+    .then((delivered) => delivered && generation === authGeneration)
+    .finally(() => {
+      if (probeInflight?.promise === promise) probeInflight = null;
+    });
+  probeInflight = { generation, promise };
+  return promise;
+}
+
+/** 后台请求一次主动探测;失败只记日志。 */
+export function requestAnthropicModelProbe(): void {
+  void refreshAnthropicModelsFromProbe().then(
     (applied) => {
-      if (!applied) log.info('anthropic model probe returned no model list');
+      if (!applied) log.info('anthropic model probe returned no current model list');
     },
     (err: unknown) => {
       log.warn('anthropic model probe failed', { error: String(err) });
@@ -725,6 +760,7 @@ export function waitForAnthropicDiscoveryIdleForTest(): Promise<void> {
 /** 仅测试:重置模块态。 */
 export function resetAnthropicDiscoveryForTest(): void {
   lastApplied = [];
+  probeInflight = null;
   explicitWindows.clear();
   explicitEffortModelIds.clear();
   explicitFastModeModelIds.clear();

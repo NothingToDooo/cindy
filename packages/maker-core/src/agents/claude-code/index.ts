@@ -67,6 +67,7 @@ import {
   type AgentDeps,
   type StartSessionOptions,
   type OneShotOptions,
+  type RefreshLocalModelsOptions,
   type SendOptions,
   type TurnPermissionPolicy,
 } from '../base-agent.js';
@@ -1008,48 +1009,51 @@ export class ClaudeCodeAgent extends BaseAgent {
     return CLAUDE_CODE_AGENT_COMMANDS;
   }
 
-  /** 同一时刻只跑一个清单探测;并发调用共享结果。 */
-  private supportedModelsProbe: Promise<boolean> | null = null;
-
   /**
    * 主动读取 Claude 订阅的模型清单:用本机 CLI 自己的登录起一个空闲 Query,只调
    * SDK `supportedModels()`,不发送任何消息、不产生模型调用,读完立即关闭。
-   * 结果经 setClaudeSupportedModelsListener 交给 host,与会话 init 捕获同一入口。
-   * 未登录订阅、未接监听器或探测失败时返回 false,不抛错。
+   * 结果交给调用方的 onSupportedModels(host 据此核对发起时的登录代际);未提供时经
+   * setClaudeSupportedModelsListener 交给 host,与会话 init 捕获同一入口。
+   * 未登录订阅、无接收方、项目设置被改写或探测任一阶段失败时返回 false,不抛错。
    */
-  override async refreshLocalModels(): Promise<boolean> {
-    if (!supportedModelsListener) return false;
-    this.supportedModelsProbe ??= this.probeSupportedModels().finally(() => {
-      this.supportedModelsProbe = null;
-    });
-    return this.supportedModelsProbe;
-  }
-
-  private async probeSupportedModels(): Promise<boolean> {
-    // oauth-bearer 形态下 auth adapter 只按本机 Claude Code 订阅登录作答。
-    const authState = await this.deps.auth.getState({ credentialMode: 'oauth-bearer' });
-    if (!authState.authenticated) return false;
-    const env = await buildClaudeEnv(this.deps.auth, this.deps.runtimeConfig, {
-      credentialMode: 'oauth-bearer',
-      nativeCliAuth: true,
-      subagentModel: null,
-    });
+  override async refreshLocalModels(options?: RefreshLocalModelsOptions): Promise<boolean> {
+    const deliver = options?.onSupportedModels ?? supportedModelsListener;
+    if (!deliver) return false;
+    const log = this.deps.logger.child('claude-code/supportedModels');
+    let probeDir: string | null = null;
+    let q: Query | null = null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const abortController = new AbortController();
     const idleInput = createAsyncQueue<never>();
-    const q = sdkQuery({
-      prompt: idleInput as unknown as Parameters<typeof sdkQuery>[0]['prompt'],
-      options: {
-        abortController,
-        // 空目录语义:不读任何项目级设置,清单只由账号与用户级设置决定。
-        cwd: os.tmpdir(),
-        pathToClaudeCodeExecutable: this.deps.binaryPath,
-        env,
-      },
-    });
-    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
+      // oauth-bearer 形态下 auth adapter 只按本机 Claude Code 订阅登录作答。
+      const authState = await this.deps.auth.getState({ credentialMode: 'oauth-bearer' });
+      if (!authState.authenticated) return false;
+      // 独立的新建空目录:不继承共享临时目录里可能存在的项目级设置;仍按订阅会话同一
+      // 规则检查,能改写上游 / 鉴权 / TLS 的设置一律拒绝。
+      probeDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-claude-models-'));
+      const override = await findWorkspaceSettingsOverride(probeDir);
+      if (override) {
+        log.warn('probe skipped', { reason: workspaceSettingsOverrideMessage(override) });
+        return false;
+      }
+      const env = await buildClaudeEnv(this.deps.auth, this.deps.runtimeConfig, {
+        credentialMode: 'oauth-bearer',
+        nativeCliAuth: true,
+        subagentModel: null,
+      });
+      q = sdkQuery({
+        prompt: idleInput as unknown as Parameters<typeof sdkQuery>[0]['prompt'],
+        options: {
+          abortController,
+          cwd: probeDir,
+          pathToClaudeCodeExecutable: this.deps.binaryPath,
+          env,
+        },
+      });
+      const query = q;
       const models = await Promise.race([
-        q.supportedModels(),
+        query.supportedModels(),
         new Promise<never>((_, reject) => {
           timer = setTimeout(
             () => reject(new Error('supportedModels probe timed out')),
@@ -1058,22 +1062,21 @@ export class ClaudeCodeAgent extends BaseAgent {
         }),
       ]);
       if (!Array.isArray(models)) return false;
-      supportedModelsListener?.(models);
+      deliver(models);
       return true;
     } catch (error) {
-      this.deps.logger
-        .child('claude-code/supportedModels')
-        .warn('probe failed', { error: String(error) });
+      log.warn('probe failed', { error: String(error) });
       return false;
     } finally {
       if (timer) clearTimeout(timer);
       idleInput.end();
       try {
-        q.close();
+        q?.close();
       } catch {
         /* 探测进程已退出 */
       }
       abortController.abort();
+      if (probeDir) await fs.rm(probeDir, { recursive: true, force: true }).catch(() => undefined);
     }
   }
 

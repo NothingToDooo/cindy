@@ -1,3 +1,7 @@
+import { promises as fs } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { AgentDeps } from '../../base-agent.js';
@@ -97,20 +101,38 @@ describe('ClaudeCodeAgent.refreshLocalModels(主动读取订阅模型清单)', (
     expect(sdkMock.query).not.toHaveBeenCalled();
   });
 
-  it('并发请求共用同一次探测', async () => {
+  it('调用方传入 onSupportedModels 时结果只交给它,不经全局监听器', async () => {
+    const listener = vi.fn();
+    setClaudeSupportedModelsListener(listener);
+    const models = [{ value: 'sonnet', displayName: 'Sonnet' }];
+    sdkMock.query.mockReturnValue(fakeQuery(async () => models));
+    const { agent } = createAgent(true);
+    const onSupportedModels = vi.fn();
+
+    await expect(agent.refreshLocalModels({ onSupportedModels })).resolves.toBe(true);
+    expect(onSupportedModels).toHaveBeenCalledWith(models);
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it('在新建的空目录里启动,结束后删除该目录', async () => {
     setClaudeSupportedModelsListener(vi.fn());
-    let release!: (value: unknown[]) => void;
-    const q = fakeQuery(() => new Promise<unknown[]>((resolve) => { release = resolve; }));
-    sdkMock.query.mockReturnValue(q);
+    sdkMock.query.mockReturnValue(fakeQuery(async () => []));
     const { agent } = createAgent(true);
 
-    const first = agent.refreshLocalModels();
-    const second = agent.refreshLocalModels();
-    await vi.waitFor(() => expect(q.supportedModels).toHaveBeenCalled());
-    release([]);
+    await agent.refreshLocalModels();
+    const [{ options }] = sdkMock.query.mock.calls[0] as [{ options: { cwd: string } }];
+    expect(path.dirname(options.cwd)).toBe(path.resolve(os.tmpdir()));
+    expect(path.basename(options.cwd)).toMatch(/^cindy-claude-models-/);
+    await expect(fs.access(options.cwd)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
 
-    await expect(Promise.all([first, second])).resolves.toEqual([true, true]);
-    expect(sdkMock.query).toHaveBeenCalledTimes(1);
+  it('启动阶段失败(读取登录态出错)返回 false 而不是抛错', async () => {
+    setClaudeSupportedModelsListener(vi.fn());
+    const { agent, getState } = createAgent(true);
+    getState.mockRejectedValueOnce(new Error('keychain unavailable'));
+
+    await expect(agent.refreshLocalModels()).resolves.toBe(false);
+    expect(sdkMock.query).not.toHaveBeenCalled();
   });
 
   it('读取失败返回 false 并仍关闭 Query', async () => {
