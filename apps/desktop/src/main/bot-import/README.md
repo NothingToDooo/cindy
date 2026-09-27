@@ -194,7 +194,9 @@ omitting it retains normal companion defaults, and a rejected request can be cor
   without requiring a matching `properties` entry. Conditional subschemas
   (`if`/`then`/`else`, `not`, `dependentSchemas` and legacy schema dependencies)
   contribute aliases at the same argument position, including dependency trigger
-  names; upstream schema validation remains unchanged. Sibling free-text placeholders are
+  names; upstream schema validation remains unchanged. `propertyNames` enum/const
+  names also use the object's key mapping, including local references and composed
+  schemas. Sibling free-text placeholders are
   not expanded even when they match an enum alias elsewhere. Business response/meta object keys are
   masked as well. MCP envelope keys (`content`, `structuredContent`, `isError`,
   `_meta`) and SDK-validated content/resource fields keep their protocol spelling;

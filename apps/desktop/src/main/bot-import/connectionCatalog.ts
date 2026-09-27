@@ -162,7 +162,9 @@ export function restoreImportedArguments(value: Record<string, unknown>, schema:
         ...['dependentRequired', 'dependentSchemas', 'dependencies'].flatMap(keyword =>
           Object.entries(object(current[keyword]) ?? {}).flatMap(([name, required]) => [name, ...names(required)])),
       ]);
-      const keys = aliases([...requiredNames, ...[...properties, ...literalObjects].flatMap(current => Object.keys(current))]);
+      const propertyNames = expand(candidates.map(current => current.propertyNames))
+        .flatMap(current => [...names(current.enum), ...names([current.const])]);
+      const keys = aliases([...requiredNames, ...propertyNames, ...[...properties, ...literalObjects].flatMap(current => Object.keys(current))]);
       return Object.fromEntries(Object.entries(node as Record<string, unknown>).map(([key, child]) => {
         const originalKey = keys.get(key) ?? key;
         const children = candidates.flatMap((current, index) => {
