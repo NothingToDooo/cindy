@@ -9,10 +9,11 @@ Preview names and descriptions mask known credentials from the entire snapshot,
 including unselected or conflicting accounts. Only the public projection changes;
 private originals, stable selection IDs and dependency links remain intact.
 Source discovery masks names from configuration, environment, connection and native
-auth metadata, including skill credential settings. Name masking shares a 4 MiB
-metadata budget and request-local file/config cache across sources; it never reads
-cron databases, memory, portraits or skill resources. Unreadable/over-budget metadata
-uses an opaque numbered source label without preventing selection. The selected
+auth metadata, including skill credential settings. Discovery and name masking share
+one 4 MiB metadata budget and request-local file/config cache across sources and
+includes; neither reads cron databases, memory, portraits or skill resources.
+Discovery config overflow reports the existing source-size error. Unreadable or
+over-budget name metadata uses an opaque numbered label for an already discovered source. The selected
 preview retains its full snapshot and normal error path. Discovery performs no writes.
 All command operations use the existing per-call approval policy. Discovery never
 persists a native tool/server grant that could authorize a later `start` operation.
@@ -174,8 +175,9 @@ omitting it retains normal companion defaults, and a rejected request can be cor
   containing credentials use public aliases and resolve to original names only
   inside the host. The connection configuration itself is not modified.
   Required property names use the same masking as schema keys, and host dispatch
-  restores schema-defined argument keys privately (including nested arrays) for
-  runtime calls and verification probes. Business response/meta object keys are
+  restores schema-defined argument keys and exact aliases from enum/const/default
+  values privately (including nested arrays) for runtime calls and verification
+  probes. Free-text secret placeholders are not expanded. Business response/meta object keys are
   masked as well. MCP envelope keys (`content`, `structuredContent`, `isError`,
   `_meta`) and SDK-validated content/resource fields keep their protocol spelling;
   content types and audience/theme enums remain valid. Their text and structured

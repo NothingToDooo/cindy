@@ -25,27 +25,37 @@ function sourcePath(home: string, value: string, relativeTo: string): string {
   return value === '~' ? home : value.startsWith('~/') ? path.join(home, value.slice(2)) : path.resolve(relativeTo, value);
 }
 
-async function config(root: string, file: string, budget = createImportBudget(), ancestors: string[] = [], readText = optionalText): Promise<Record<string, unknown>> {
+async function config(root: string, file: string, budget = createImportBudget(), ancestors: string[] = [], readText = optionalText, cache?: Map<string, Record<string, unknown>>): Promise<Record<string, unknown>> {
   if (ancestors.includes(file) || ancestors.length > 8) throw new CompanionImportError('SOURCE_CONFIG_INCLUDE_CYCLE');
-  const text = await readText(root, file, budget);
-  if (text === undefined) return {};
-  try {
-    const resolve = async (value: unknown): Promise<unknown> => {
-      if (Array.isArray(value)) return Promise.all(value.map(resolve));
-      if (!value || typeof value !== 'object') return value;
-      const record = object(value);
-      const includes = record.$include === undefined ? [] : Array.isArray(record.$include) ? record.$include : [record.$include];
-      let result: Record<string, unknown> = {};
-      for (const include of includes) {
-        if (typeof include !== 'string') throw new Error('Invalid include');
-        result = mergeConfig(result, await config(root, path.resolve(path.dirname(file), include), budget, [...ancestors, file], readText));
-      }
-      for (const [key, child] of Object.entries(record)) if (key !== '$include' && !['__proto__', 'constructor', 'prototype'].includes(key)) result = mergeConfig(result, { [key]: await resolve(child) });
-      return result;
-    };
-    return object(await resolve(/\.ya?ml$/i.test(file) ? yaml.load(text) : JSON5.parse(text)));
-  }
-  catch (error) { if (error instanceof CompanionImportError) throw error; throw new CompanionImportError('SOURCE_CONFIG_INVALID'); }
+  const key = JSON.stringify([root, file]);
+  const cached = cache?.get(key);
+  if (cached) return cached;
+  const load = async () => {
+    const text = await readText(root, file, budget);
+    if (text === undefined) return {};
+    try {
+      const resolve = async (value: unknown): Promise<unknown> => {
+        if (Array.isArray(value)) return Promise.all(value.map(resolve));
+        if (!value || typeof value !== 'object') return value;
+        const record = object(value);
+        const includes = record.$include === undefined ? [] : Array.isArray(record.$include) ? record.$include : [record.$include];
+        let result: Record<string, unknown> = {};
+        for (const include of includes) {
+          if (typeof include !== 'string') throw new Error('Invalid include');
+          result = mergeConfig(result, await config(root, path.resolve(path.dirname(file), include), budget, [...ancestors, file], readText, cache));
+        }
+        for (const [key, child] of Object.entries(record)) if (key !== '$include' && !['__proto__', 'constructor', 'prototype'].includes(key)) result = mergeConfig(result, { [key]: await resolve(child) });
+        return result;
+      };
+      return object(await resolve(/\.ya?ml$/i.test(file) ? yaml.load(text) : JSON5.parse(text)));
+    }
+    catch (error) { if (error instanceof CompanionImportError) throw error; throw new CompanionImportError('SOURCE_CONFIG_INVALID'); }
+  };
+  // Cache completed parses only: concurrent include branches must still walk
+  // their ancestry to reject cycles rather than await each other's promises.
+  const values = await load();
+  cache?.set(key, values);
+  return values;
 }
 
 function mergeConfig(base: Record<string, unknown>, next: Record<string, unknown>): Record<string, unknown> {
@@ -67,14 +77,14 @@ function agentRows(config: Record<string, unknown>): Record<string, unknown>[] {
 }
 
 /** Only installed default roots are discovered. Custom locations require a host folder grant. */
-export async function discoverImportSources(deps: SourceReaderDeps): Promise<ImportSource[]> {
+export async function discoverImportSources(deps: SourceReaderDeps, reader = createImportSourceReader(deps)): Promise<ImportSource[]> {
   const results: ImportSource[] = [];
   const hermesRoot = sourcePath(deps.home, deps.env.HERMES_HOME || path.join(deps.home, '.hermes'), deps.home);
   const roots = [{ root: hermesRoot, id: 'default' }, ...(await directories(path.join(hermesRoot, 'profiles'))).map(id => ({ root: path.join(hermesRoot, 'profiles', id), id }))];
   for (const { root, id } of roots) {
     const configFile = path.join(root, 'config.yaml');
-    if (await optionalText(root, configFile) === undefined) continue;
-    const values = await config(root, configFile);
+    if (await reader.readText(root, configFile) === undefined) continue;
+    const values = await reader.readConfig(root, configFile);
     const terminal = object(values.terminal);
     const workspace = string(terminal.cwd) || string(values.workdir) || root;
     results.push({ kind: 'hermes', agentId: id, name: string(values.name) || id, root, configFile,
@@ -83,8 +93,8 @@ export async function discoverImportSources(deps: SourceReaderDeps): Promise<Imp
   const clawRoot = sourcePath(deps.home, deps.env.OPENCLAW_STATE_DIR || path.join(deps.home, '.openclaw'), deps.home);
   const configFile = sourcePath(deps.home, deps.env.OPENCLAW_CONFIG_PATH || path.join(clawRoot, 'openclaw.json'), clawRoot);
   // An explicitly configured external config is itself a trusted discovery root, not a renderer path.
-  if (await optionalText(path.dirname(configFile), configFile) !== undefined) {
-    const values = await config(path.dirname(configFile), configFile);
+  if (await reader.readText(path.dirname(configFile), configFile) !== undefined) {
+    const values = await reader.readConfig(path.dirname(configFile), configFile);
     const defaults = object(object(values.agents).defaults);
     for (const row of agentRows(values)) {
       const id = string(row.id);
@@ -236,9 +246,9 @@ function sourceConfiguration(items: ImportItem[], source: ImportSource, values: 
 
 /** One discovery request shares a small metadata budget/cache. Never read cron,
  * memory, portraits or skill trees until the user chooses a source for preview. */
-export function createImportSourceNameReader(deps: SourceReaderDeps, budget = createImportBudget(4 * 1024 * 1024)) {
+export function createImportSourceReader(deps: SourceReaderDeps, budget = createImportBudget(4 * 1024 * 1024)) {
   const texts = new Map<string, Promise<string | undefined>>();
-  const configs = new Map<string, Promise<Record<string, unknown>>>();
+  const configs = new Map<string, Record<string, unknown>>();
   const readText: typeof optionalText = (root, file) => {
     // Include the trust root: a cached read must not bypass a narrower root fence.
     const key = JSON.stringify([root, file]);
@@ -246,13 +256,9 @@ export function createImportSourceNameReader(deps: SourceReaderDeps, budget = cr
     if (!pending) { pending = optionalText(root, file, budget); texts.set(key, pending); }
     return pending;
   };
-  return async (source: ImportSource): Promise<string> => {
-    let pending = configs.get(source.configFile);
-    if (!pending) {
-      pending = config(path.dirname(source.configFile), source.configFile, budget, [], readText);
-      configs.set(source.configFile, pending);
-    }
-    const values = await pending;
+  const readConfig = (root: string, file: string) => config(root, file, budget, [], readText, configs);
+  const readName = async (source: ImportSource): Promise<string> => {
+    const values = await readConfig(path.dirname(source.configFile), source.configFile);
     const items: ImportItem[] = [];
     // Skill credential settings live in config; no manifest/resource read is
     // needed to recognize their values, including unselected skills/API keys.
@@ -266,6 +272,7 @@ export function createImportSourceNameReader(deps: SourceReaderDeps, budget = cr
     sourceConfiguration(items, source, values);
     return redactEnvironmentValues(source.name, previewImportRedactions(items));
   };
+  return { readText: (root: string, file: string) => readText(root, file, budget), readConfig, readName };
 }
 
 /** Snapshot immutable bytes once, then give the client only a safe selection projection. */

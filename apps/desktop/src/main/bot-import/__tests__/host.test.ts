@@ -32,7 +32,7 @@ vi.mock('../../maker-ipc/botProfileFolder.js', () => ({ BOT_PROFILE_TEXT_MAX_BYT
   ensureBotWorkspaceDir: async () => { const directory = path.join(h.root, 'bots', h.botId, 'workspace'); await fs.mkdir(directory, { recursive: true }); return directory; },
 }));
 vi.mock('@cindy/mcps', () => ({ resolveLiziMcpSessionContext: () => ({ sessionId: 'chat' }) }));
-vi.mock('../sources.js', () => ({ createImportSourceNameReader: vi.fn(() => h.readName), discoverImportSources: vi.fn(async () => [h.snapshot.source]), inspectImportSource: vi.fn(async () => h.snapshot) }));
+vi.mock('../sources.js', () => ({ createImportSourceReader: vi.fn(() => ({ readName: h.readName })), discoverImportSources: vi.fn(async () => [h.snapshot.source]), inspectImportSource: vi.fn(async () => h.snapshot) }));
 vi.mock('../openclawCron.js', () => ({ readOpenClawCronDatabase: vi.fn() }));
 vi.mock('../verification.js', () => ({ verifyImportedAutomation: vi.fn(async () => ({ verified: h.verified, reason: 'AUTOMATION_DATA_READ_FAILED' })) }));
 vi.mock('../takeover.js', () => ({ changeSourceAutomationState: async (_source: unknown, _item: unknown, enabled: boolean, _readers: unknown, _owner: unknown, _resume: boolean, env: Record<string, string>) => { h.pause(enabled); h.sourceEnabled = enabled; h.sourceEnvironment = env; } }));
@@ -66,7 +66,7 @@ import { withBotProfileLocks } from '../../maker-ipc/botProfileLock.js';
 import { assertImportedAutomationReady, prepareImportedAutomation } from '../automationRuntime.js';
 import { decodeBotAvatarImage } from '../../localDb/ipc/botAvatarSelection.js';
 import { createCompanionConnectionsProvider } from '../connectionProvider.js';
-import { createImportSourceNameReader, discoverImportSources, inspectImportSource } from '../sources.js';
+import { createImportSourceReader, discoverImportSources, inspectImportSource } from '../sources.js';
 import { verifyImportedAutomation } from '../verification.js';
 
 beforeEach(async () => {
@@ -79,7 +79,7 @@ beforeEach(async () => {
   vi.mocked(decodeBotAvatarImage).mockReset();
   vi.mocked(discoverImportSources).mockReset().mockImplementation(async () => [h.snapshot.source]);
   vi.mocked(inspectImportSource).mockReset().mockImplementation(async () => h.snapshot);
-  vi.mocked(createImportSourceNameReader).mockReset().mockImplementation(() => h.readName);
+  vi.mocked(createImportSourceReader).mockReset().mockImplementation(() => ({ readName: h.readName }) as never);
   h.readName.mockReset().mockImplementation(async source => redactEnvironmentValues(source.name, previewImportRedactions(h.snapshot.items)));
   const values = h.secretValues; values.clear();
   h.store = createCompanionEnvironmentStore({ read: key => values.get(key) ?? null, write: (key, value) => {
@@ -312,8 +312,8 @@ it('rejects discovery if the account changes while building the name mask', asyn
 
 it.each(['hermes', 'openclaw'] as const)('masks %s names from real source files before publishing the discovery list', async kind => {
   const actual = await vi.importActual<typeof import('../sources.js')>('../sources.js');
-  vi.mocked(discoverImportSources).mockImplementation(deps => actual.discoverImportSources({ ...deps, env: {} }));
-  vi.mocked(createImportSourceNameReader).mockImplementation(deps => actual.createImportSourceNameReader({ ...deps, env: {} }));
+  vi.mocked(discoverImportSources).mockImplementation((deps, reader) => actual.discoverImportSources({ ...deps, env: {} }, reader));
+  vi.mocked(createImportSourceReader).mockImplementation(deps => actual.createImportSourceReader({ ...deps, env: {} }));
   vi.mocked(inspectImportSource).mockImplementation((source, deps) => actual.inspectImportSource(source, { ...deps, env: {} }));
   const root = path.join(h.root, `.${kind}`);
   const secrets = ['fixture-dotenv-secret', 'fixture-header-secret', 'fixture-auth-secret', 'fixture-skill-secret'];

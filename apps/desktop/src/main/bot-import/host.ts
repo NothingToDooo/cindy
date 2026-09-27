@@ -17,7 +17,7 @@ import { withBotProfileLocks } from '../maker-ipc/botProfileLock.js';
 import { getRoutineEngine, routineTools } from '../routines/service.js';
 import { previewImportRedactions, retainedImportRedactions, resolveImportReferences, selectedImportEnvironment, selectedImportRedactions } from './environmentSelection.js';
 import { redactEnvironmentValues } from './process.js';
-import { createImportSourceNameReader, discoverImportSources, inspectImportSource, type SourceReaderDeps } from './sources.js';
+import { createImportSourceReader, discoverImportSources, inspectImportSource, type SourceReaderDeps } from './sources.js';
 import { readOpenClawCronDatabase } from './openclawCron.js';
 import { companionEnvironmentStore, recoverCompanionEnvironmentRemovals } from './runtime.js';
 import { deserializeImportSnapshotAsync, fingerprint, serializeImportSnapshotAsync } from './files.js';
@@ -57,8 +57,8 @@ function owned<T>(entries: Map<string, Owned<T>>, id: string, controller: string
 export async function listCompanionImportSources(controller: string): Promise<CompanionImportSource[]> {
   const scope = owner();
   const deps = readers();
-  const found = await discoverImportSources(deps); scope.assert();
-  const readName = createImportSourceNameReader(deps);
+  const reader = createImportSourceReader(deps);
+  const found = await discoverImportSources(deps, reader); scope.assert();
   prune(sources);
   const result: CompanionImportSource[] = [];
   // Only credential metadata contributes to the list; full snapshots are built
@@ -66,7 +66,7 @@ export async function listCompanionImportSources(controller: string): Promise<Co
   for (const source of found) {
     let name = `${source.kind === 'hermes' ? 'Hermes' : 'OpenClaw'} · ${result.length + 1}`;
     try {
-      name = await readName(source);
+      name = await reader.readName(source);
     } catch {
       // An unreadable source remains selectable, but its unchecked name is not
       // public. Preview reports the underlying failure through its usual path.

@@ -12,7 +12,7 @@ import { createCompanionConnectionsProvider } from '../connectionProvider.js';
 import { redactEnvironmentData } from '../process.js';
 import { withImportedConnection } from '../connections.js';
 import * as connectionModule from '../connections.js';
-import { connectionRedactions, redactImportedTool } from '../connectionCatalog.js';
+import { connectionRedactions, redactImportedTool, restoreImportedArguments } from '../connectionCatalog.js';
 import { CallToolResultSchema, type Tool } from '@modelcontextprotocol/sdk/types.js';
 let root: string | undefined;
 afterEach(async () => { vi.unstubAllEnvs(); if (root) await fs.rm(root, { recursive: true, force: true }); });
@@ -50,6 +50,41 @@ it.skipIf(process.platform === 'win32')('uses original credentials in a real imp
 it('preserves structured numeric data while masking exact credentials under arbitrary names', () => {
   expect(redactEnvironmentData({ count: 1, value: '1', key: 'a+b', nested: ['x'] }, { arbitrary: 'a+b', code: '1', another: 'x' }))
     .toEqual({ count: 1, value: '[code]', key: '[arbitrary]', nested: ['[another]'] });
+});
+
+it('restores advertised enum, const and default values at the upstream call boundary', async () => {
+  const env = { STAGE: 'prod', PRIVATE: 'fixture-private-key' };
+  const connection = { name: 'stage', url: 'https://example.invalid/mcp' };
+  const tool: Tool = { name: 'read_stage', inputSchema: { type: 'object', properties: {
+    stage: { type: 'string', enum: ['prod', 'test'] },
+    nested: { type: 'array', items: { type: 'object', properties: { fixed: { const: 'prod' }, fallback: { default: 'prefix-prod' } } } },
+    free: { type: 'string' },
+  } } };
+  const callTool = vi.fn(async () => ({ content: [{ type: 'text', text: 'ok' }] }));
+  const imported = vi.spyOn(connectionModule, 'withImportedConnection').mockImplementation(async (_server, _env, _assert, run) => run({ listTools: async () => ({ tools: [tool] }), callTool } as never));
+  vi.mocked(readCompanionSessionEnvironment).mockResolvedValue({ identity: 'schema-scalars', botId: 'bot', userData: '/fixture', assertOwner() {}, environment: { version: 1, env, mcp: [connection], credentials: [] } });
+  const config = createCompanionConnectionsProvider().toClaudeSdkConfig!({} as never) as { instance: McpServer };
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'fixture', version: '1' });
+  await config.instance.connect(serverTransport); await client.connect(clientTransport);
+  try {
+    const published = (await client.listTools()).tools[1]!;
+    const properties = published.inputSchema.properties as { stage: { enum: string[] }; nested: { items: { properties: { fixed: { const: string }; fallback: { default: string } } } } };
+    const nested = properties.nested.items.properties;
+    expect(properties.stage.enum[0]).not.toBe('prod');
+    expect(nested.fixed.const).not.toBe('prod');
+    expect(nested.fallback.default).not.toBe('prefix-prod');
+    const args = { stage: properties.stage.enum[0], nested: [{ fixed: nested.fixed.const, fallback: nested.fallback.default }], free: '[PRIVATE]' };
+    const result = await client.callTool({ name: published.name, arguments: args });
+    expect(result.isError).not.toBe(true);
+    expect(callTool).toHaveBeenCalledWith({ name: 'read_stage', arguments: { stage: 'prod', nested: [{ fixed: 'prod', fallback: 'prefix-prod' }], free: '[PRIVATE]' } }, undefined, { timeout: 120000 });
+    expect(args.stage).toBe(properties.stage.enum[0]);
+  } finally { imported.mockRestore(); await client.close(); await config.instance.close(); }
+});
+
+it('refuses ambiguous scalar aliases and never expands arbitrary secret placeholders or schema descriptions', () => {
+  expect(() => restoreImportedArguments({ stage: '[STAGE]' }, { enum: ['prod', '[STAGE]'] }, { STAGE: 'prod' })).toThrow('Ambiguous imported schema');
+  expect(restoreImportedArguments({ value: '[PRIVATE]', enum: '[PRIVATE]' }, { properties: { enum: { description: 'key' } } }, { PRIVATE: 'key' })).toEqual({ value: '[PRIVATE]', enum: '[PRIVATE]' });
 });
 
 it('preserves catalog enums and normal results with short locale variables, and forwards the selected enum unchanged', async () => {

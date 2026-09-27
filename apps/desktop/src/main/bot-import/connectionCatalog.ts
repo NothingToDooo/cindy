@@ -76,23 +76,33 @@ function redactSchema(value: unknown, secrets: Record<string, string>): unknown 
   return redactEnvironmentData(value, secrets);
 }
 
-/** Restore schema-defined argument keys only, privately at the upstream call boundary. */
+/** Restore only schema-defined aliases, privately at the upstream call boundary. */
 export function restoreImportedArguments(value: Record<string, unknown>, schema: unknown, secrets: Record<string, string>): Record<string, unknown> {
   const keys = new Map<string, string>();
-  const collect = (node: unknown): void => {
+  const scalars = new Map<string, string>();
+  const literal = (value: unknown): void => {
+    if (typeof value === 'string') {
+      const alias = redactEnvironmentValues(value, secrets);
+      if (scalars.has(alias) && scalars.get(alias) !== value) throw new Error('Ambiguous imported schema');
+      // Include unchanged literals to detect collisions with an existing alias.
+      scalars.set(alias, value);
+    } else if (value && typeof value === 'object') Object.values(value).forEach(literal);
+  };
+  const collect = (node: unknown, dictionary = false): void => {
     if (!node || typeof node !== 'object') return;
     for (const [key, child] of Object.entries(node)) {
       const publicKey = redactEnvironmentValues(key, secrets);
       if (keys.has(publicKey) && keys.get(publicKey) !== key) throw new Error('Ambiguous imported schema');
       keys.set(publicKey, key);
-      collect(child);
+      if (!dictionary && (key === 'enum' || key === 'const' || key === 'default')) literal(child);
+      collect(child, !dictionary && ['properties', 'patternProperties', '$defs', 'definitions', 'dependentSchemas'].includes(key));
     }
   };
   collect(schema);
   const restore = (node: unknown): unknown => {
     if (Array.isArray(node)) return node.map(restore);
     if (node && typeof node === 'object') return Object.fromEntries(Object.entries(node).map(([key, child]) => [keys.get(key) ?? key, restore(child)]));
-    return node;
+    return typeof node === 'string' ? scalars.get(node) ?? node : node;
   };
   return restore(value) as Record<string, unknown>;
 }

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createImportSourceNameReader, discoverImportSources, inspectImportSource } from '../sources.js';
+import { createImportSourceReader, discoverImportSources, inspectImportSource } from '../sources.js';
 import { validateImportSelection } from '../transfer.js';
 import { selectedImportEnvironment } from '../environmentSelection.js';
 import { createImportBudget } from '../files.js';
@@ -239,9 +239,10 @@ it('discovers masked names from cached credential metadata without reading SQLit
     JSON.stringify({ profiles: { openai: { type: 'api_key', key: `fixture-auth-${id}` } } }));
   const reader = deps();
   reader.readCronDatabase.mockRejectedValue(new Error('locked database'));
-  const sources = await discoverImportSources(reader);
   const open = vi.spyOn(fs, 'open');
-  const readName = createImportSourceNameReader(reader);
+  const metadata = createImportSourceReader(reader);
+  const sources = await discoverImportSources(reader, metadata);
+  const readName = metadata.readName;
   for (const source of sources) {
     const name = await readName(source);
     expect(name).toContain('DEBUG true PORT 3000');
@@ -256,7 +257,7 @@ it('discovers masked names from cached credential metadata without reading SQLit
   ].sort());
   // Cache belongs to this discovery request; later requests see changed keys.
   await write('.openclaw/.env', 'KEY=fixture-replaced-token');
-  expect(await createImportSourceNameReader(reader)({ ...sources[0]!, name: 'Ada fixture-replaced-token' })).not.toContain('fixture-replaced-token');
+  expect(await createImportSourceReader(reader).readName({ ...sources[0]!, name: 'Ada fixture-replaced-token' })).not.toContain('fixture-replaced-token');
 });
 
 it('bounds cumulative discovery metadata and refuses to publish a partially checked name', async () => {
@@ -264,7 +265,38 @@ it('bounds cumulative discovery metadata and refuses to publish a partially chec
   await write('.hermes/.env', `KEY=${'x'.repeat(70)}`);
   await write('.hermes/auth.json', JSON.stringify({ providers: { openai: { type: 'api_key', key: 'y'.repeat(70) } } }));
   const reader = deps(); const [source] = await discoverImportSources(reader);
-  const readName = createImportSourceNameReader(reader, createImportBudget(128));
+  const readName = createImportSourceReader(reader, createImportBudget(128)).readName;
   await expect(readName(source!)).rejects.toThrow('SOURCE_SNAPSHOT_TOO_LARGE');
   await expect(readName(source!)).rejects.toThrow('SOURCE_SNAPSHOT_TOO_LARGE');
+});
+
+it('shares discovery config/include reads with name masking and charges all Hermes profiles to one budget', async () => {
+  for (const id of ['a', 'b', 'c']) {
+    await write(`.hermes/profiles/${id}/config.yaml`, `$include: included.yaml\nname: ${id}\n`);
+    await write(`.hermes/profiles/${id}/included.yaml`, `model: ${'x'.repeat(60)}\n`);
+    await write(`.hermes/profiles/${id}/.env`, `API_KEY=${'z'.repeat(80)}\n`);
+  }
+  const reader = deps();
+  const metadata = createImportSourceReader(reader, createImportBudget(400));
+  const opened = vi.spyOn(fs, 'open');
+  const sources = await discoverImportSources(reader, metadata);
+  expect(sources).toHaveLength(3);
+  await metadata.readName(sources[0]!);
+  await expect(metadata.readName(sources[1]!)).rejects.toThrow('SOURCE_SNAPSHOT_TOO_LARGE');
+  for (const id of ['a', 'b', 'c']) for (const name of ['config.yaml', 'included.yaml']) {
+    expect(opened.mock.calls.filter(([file]) => String(file).endsWith(`/profiles/${id}/${name}`))).toHaveLength(1);
+  }
+  expect(reader.readCronDatabase).not.toHaveBeenCalled();
+});
+
+it('enforces the default four MiB limit during discovery before masking names', async () => {
+  for (let i = 0; i < 5; i++) await write(`.hermes/profiles/p${i}/config.yaml`, `name: p${i}\n#${'x'.repeat(1024 * 1024)}`);
+  await expect(discoverImportSources(deps())).rejects.toThrow('SOURCE_SNAPSHOT_TOO_LARGE');
+});
+
+it('still rejects cycles across concurrent include branches with the shared parsed cache', async () => {
+  await write('.hermes/config.yaml', 'rows:\n - $include: a.yaml\n - $include: b.yaml');
+  await write('.hermes/a.yaml', '$include: b.yaml');
+  await write('.hermes/b.yaml', '$include: a.yaml');
+  await expect(discoverImportSources(deps())).rejects.toThrow('SOURCE_CONFIG_INCLUDE_CYCLE');
 });
