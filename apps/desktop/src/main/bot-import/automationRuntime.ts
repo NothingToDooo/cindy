@@ -12,6 +12,11 @@ import { sendImportedDelivery } from './delivery.js';
 import { importedScriptName, importedScriptInterpreter } from './scripts.js';
 import { importedContentRedactions } from './connectionCatalog.js';
 
+function repeatExhausted(binding: { original: Record<string, unknown>; completed?: number }): boolean {
+  const repeat = object(binding.original.repeat);
+  return Number(repeat.times) > 0 && (binding.completed ?? Number(repeat.completed ?? 0)) >= Number(repeat.times);
+}
+
 /** Shared management guard: UI, remote edits and manual runs cannot bypass takeover. */
 export async function assertImportedAutomationReady(root: string, botId: string, routineId: string, assertOwner: () => void) {
   const environment = await companionEnvironmentStore.read(root, botId, assertOwner);
@@ -23,7 +28,7 @@ export async function assertImportedAutomationReady(root: string, botId: string,
 
 /** Source script bytes are encrypted at rest and materialized only in a private execution directory. */
 export async function prepareImportedAutomation(root: string, routine: Routine, runId: string, signal: AbortSignal, assertOwner: () => void): Promise<{
-  runId: string; prompt: string; direct?: string; skipped?: boolean; deferred?: boolean;
+  runId: string; prompt: string; direct?: string; skipped?: boolean; deferred?: boolean; exhausted?: boolean;
 } | undefined> {
   const environment = await companionEnvironmentStore.read(root, routine.botId, assertOwner);
   const binding = environment?.automations?.[routine.id];
@@ -33,15 +38,15 @@ export async function prepareImportedAutomation(root: string, routine: Routine, 
   // Keep that queued run deferred, including after restart, without executing it.
   if (binding.handover !== 'ready') return { runId, prompt: '', deferred: true as const };
   const job = binding.original;
+  // Also repair a crash between committing the last delivery and disabling the
+  // routine. A stale prepared result must not bypass an exhausted counter.
+  if (repeatExhausted(binding)) return { runId, prompt: '', skipped: true, exhausted: true };
   const secrets = importedContentRedactions(environment, job.monitor_url ? [string(job.monitor_url)] : []);
   const redact = (text: string) => redactEnvironmentValues(text, secrets);
   // Old persisted output is private too: never bypass current masking on retry.
   if (binding.prepared?.runId === runId) return { ...binding.prepared, prompt: redact(binding.prepared.prompt),
     ...(binding.prepared.direct === undefined ? {} : { direct: redact(binding.prepared.direct) }),
     ...(binding.prepared.monitorOutput === undefined ? {} : { monitorOutput: redact(binding.prepared.monitorOutput) }) };
-  const repeat = object(job.repeat);
-  const completed = binding.completed ?? Number(repeat.completed ?? 0);
-  if (Number(repeat.times) > 0 && completed >= Number(repeat.times)) return { runId, prompt: '', skipped: true };
   const privateRoot = path.join(root, 'bots', routine.botId, 'import-executions');
   await fs.mkdir(privateRoot, { recursive: true, mode: 0o700 }); assertOwner();
   const directory = await fs.mkdtemp(path.join(privateRoot, 'run-'));
@@ -90,10 +95,11 @@ export async function prepareImportedAutomation(root: string, routine: Routine, 
   } finally { await fs.rm(directory, { recursive: true, force: true }); }
 }
 
-export async function finishImportedAutomation(root: string, routine: Routine, sessionId: string, runId: string, text: string, direct: boolean, signal: AbortSignal, assertOwner: () => void): Promise<void> {
+/** Commit delivery/counting once; return whether the host should stop future runs. */
+export async function finishImportedAutomation(root: string, routine: Routine, sessionId: string, runId: string, text: string, direct: boolean, signal: AbortSignal, assertOwner: () => void): Promise<boolean> {
   const env = await companionEnvironmentStore.read(root, routine.botId, assertOwner);
   const binding = env?.automations?.[routine.id];
-  if (!env || !binding) return;
+  if (!env || !binding) return false;
   text = redactEnvironmentValues(text, importedContentRedactions(env, binding.original.monitor_url ? [string(binding.original.monitor_url)] : []));
   if (direct) {
     assertOwner();
@@ -101,15 +107,19 @@ export async function finishImportedAutomation(root: string, routine: Routine, s
     await createMessage(sessionId, { clientId: `imported-routine:${runId}`, role: 'assistant', content: text });
     assertOwner();
   }
-  if (binding.lastRun === runId) return;
+  if (binding.lastRun === runId) return repeatExhausted(binding);
   if (text) await sendImportedDelivery(env, binding.deliveries ?? [], text, assertOwner, signal);
+  let exhausted = false;
   await companionEnvironmentStore.update(root, routine.botId, assertOwner, environment => {
     const current = environment.automations?.[routine.id];
-    if (!current || current.lastRun === runId) return;
+    if (!current) return;
+    if (current.lastRun === runId) { exhausted = repeatExhausted(current); return; }
     if (current.prepared?.runId === runId && current.prepared.monitorHash !== undefined) {
       current.monitorHash = current.prepared.monitorHash; current.monitorOutput = current.prepared.monitorOutput;
     }
     current.completed = (current.completed ?? Number(object(current.original.repeat).completed ?? 0)) + 1;
     current.lastRun = runId;
+    exhausted = repeatExhausted(current);
   });
+  return exhausted;
 }

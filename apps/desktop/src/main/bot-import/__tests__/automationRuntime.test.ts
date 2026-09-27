@@ -103,10 +103,27 @@ it.skipIf(process.platform === 'win32')('runs a copied script after the source i
   const result = await prepareImportedAutomation(root, routine, 'run-1', signal, () => {});
   expect(result?.direct).toBe('data read succeeded');
   expect(await prepareImportedAutomation(root, routine, 'run-1', signal, () => {})).toEqual(result);
-  await finishImportedAutomation(root, routine, 'main-chat', 'run-1', result!.direct!, true, signal, () => {});
+  await expect(finishImportedAutomation(root, routine, 'main-chat', 'run-1', result!.direct!, true, signal, () => {})).resolves.toBe(true);
   expect(shared.message).toHaveBeenCalledWith('main-chat', expect.objectContaining({ clientId: 'imported-routine:run-1', content: 'data read succeeded' }));
-  expect((await prepareImportedAutomation(root, routine, 'run-2', signal, () => {}))?.skipped).toBe(true);
+  expect(await prepareImportedAutomation(root, routine, 'run-2', signal, () => {})).toMatchObject({ skipped: true, exhausted: true });
+  expect(await prepareImportedAutomation(root, routine, 'run-1', signal, () => {})).toMatchObject({ exhausted: true });
+  await expect(finishImportedAutomation(root, routine, 'main-chat', 'run-1', result!.direct!, true, signal, () => {})).resolves.toBe(true);
+  expect((await shared.store.read(root, 'bot', () => {}))!.automations!.routine!.completed).toBe(1);
   expect(await fs.readdir(path.join(root, 'bots/bot/import-executions'))).toEqual([]);
+});
+
+it('counts only successful completion toward the source repeat limit', async () => {
+  const routine = { id: 'routine', botId: 'bot' } as Routine;
+  await shared.store.write(root, 'bot', { version: 1, env: {}, mcp: [], credentials: [], automations: {
+    routine: { kind: 'hermes', handover: 'ready', original: { repeat: { times: 2, completed: 1 } }, sourceRoot: root },
+  } }, () => {});
+  shared.message.mockRejectedValueOnce(new Error('fixture delivery failure'));
+  const finish = () => finishImportedAutomation(root, routine, 'chat', 'last-run', 'report', true, new AbortController().signal, () => {});
+  await expect(finish()).rejects.toThrow('fixture delivery failure');
+  expect((await shared.store.read(root, 'bot', () => {}))!.automations!.routine!.completed).toBeUndefined();
+  await expect(finish()).resolves.toBe(true);
+  await expect(finish()).resolves.toBe(true);
+  expect((await shared.store.read(root, 'bot', () => {}))!.automations!.routine!.completed).toBe(2);
 });
 
 it.each(['pending', undefined] as const)('blocks management and defers execution until the persisted %s handover completes', async handover => {

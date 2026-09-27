@@ -133,6 +133,39 @@ it('defers a queued imported run during an unacknowledged handover without dispa
   expect(mock.storage.insert).not.toHaveBeenCalled();
   expect(mock.scheduler.runNow).not.toHaveBeenCalled();
 });
+
+it.each(['direct', 'model'] as const)('disables an exhausted imported %s routine after recording its final success', async mode => {
+  const finish = vi.fn(async () => true);
+  configureRoutineHost({
+    getBot: mock.getBot, getScheduler: () => mock.scheduler, getScheduleStorage: () => mock.storage,
+    prepareImportedAutomation: async (_root, _routine, runId) => ({ runId, prompt: 'Imported', ...(mode === 'direct' ? { direct: 'Report' } : {}) }),
+    finishImportedAutomation: finish,
+  });
+  const routine = await routineTools.save('bot', { name: 'Limited', prompt: 'Report', enabled: true, triggers: [{ id: 'tick', kind: 'interval', intervalMs: 60000 }] });
+  await routineTools.runNow('bot', routine.id);
+  await vi.waitFor(async () => expect((await routineTools.list('bot'))[0]!.enabled).toBe(false));
+  expect((await routineTools.history('bot', routine.id))[0]!.status).toBe('success');
+  expect(finish).toHaveBeenCalledOnce();
+  expect(mock.scheduler.runNow).toHaveBeenCalledTimes(mode === 'direct' ? 0 : 1);
+  expect(mock.save.mock.calls.at(-1)![0].next).toEqual({});
+});
+
+it('disables a previously exhausted import without dispatching, while ordinary monitor skips stay enabled', async () => {
+  let exhausted = false;
+  configureRoutineHost({
+    getBot: mock.getBot, getScheduler: () => mock.scheduler, getScheduleStorage: () => mock.storage,
+    prepareImportedAutomation: async (_root, _routine, runId) => ({ runId, prompt: '', skipped: true, exhausted }),
+  });
+  const routine = await routineTools.save('bot', { name: 'Limited', prompt: 'Report', enabled: true, triggers: [{ id: 'tick', kind: 'interval', intervalMs: 60000 }] });
+  await routineTools.runNow('bot', routine.id);
+  await vi.waitFor(async () => expect((await routineTools.history('bot', routine.id))[0]!.status).toBe('skipped'));
+  expect((await routineTools.list('bot'))[0]!.enabled).toBe(true);
+  exhausted = true;
+  await routineTools.runNow('bot', routine.id);
+  await vi.waitFor(async () => expect((await routineTools.list('bot'))[0]!.enabled).toBe(false));
+  expect(mock.scheduler.runNow).not.toHaveBeenCalled();
+  expect(mock.storage.insert).not.toHaveBeenCalled();
+});
 it('keeps an unclassified teammate reminder audible when quiet is omitted', async () => {
   const reminder = await routineTools.save('bot', {
     name: 'Reminder', prompt: 'Remind me to rest', enabled: true,

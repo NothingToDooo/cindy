@@ -54,6 +54,8 @@ export interface RoutineEngineDeps {
     resultText?: string;
     deferred?: boolean;
     skipped?: boolean;
+    /** Host-owned execution cap reached; persist disabling with this run's result. */
+    disableRoutine?: boolean;
   }>;
   id(): string;
   now(): number;
@@ -566,13 +568,7 @@ export class RoutineEngine {
       return { routine: structuredClone(routine), run: structuredClone(run) };
     });
     if (!claimed || this.stopped) return;
-    let result: {
-      scheduleRunId?: string;
-      error?: string;
-      resultText?: string;
-      deferred?: boolean;
-      skipped?: boolean;
-    } = {};
+    let result: Awaited<ReturnType<RoutineEngineDeps['execute']>> = {};
     try {
       result = await this.deps.execute(
         claimed.routine,
@@ -612,6 +608,7 @@ export class RoutineEngine {
       const completed = { ...result };
       delete completed.deferred;
       delete completed.skipped;
+      delete completed.disableRoutine;
       Object.assign(run, completed, {
         status: aborted
           ? "cancelled"
@@ -620,6 +617,17 @@ export class RoutineEngine {
             : result.skipped ? "skipped" : "success",
         finishedAt,
       });
+      if (result.disableRoutine && !aborted && !result.error) {
+        const routine = state.routines.find(row => row.id === run.routineId && row.revision === claimed.routine.revision);
+        // A late result must not overwrite a newer user edit or cancel itself.
+        if (routine) {
+          routine.enabled = false;
+          routine.revision += 1;
+          routine.updatedAt = finishedAt;
+          for (const key of Object.keys(state.next)) if (key.startsWith(`${routine.id}:`)) delete state.next[key];
+          this.cancelQueued(state, routine.id);
+        }
+      }
     };
     this.pendingSettlements.set(id, { routineId: claimed.routine.id, apply: settle });
     await this.change(settle);

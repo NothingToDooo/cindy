@@ -2,7 +2,7 @@ import { fingerprint } from './files.js';
 import { CompanionImportError, type ImportItem } from './types.js';
 import { importedContentRedactions } from './connectionCatalog.js';
 
-const variableName = (name: string) => process.platform === 'win32' ? name.toUpperCase() : name;
+const variableName = (name: string, platform = process.platform) => platform === 'win32' ? name.toUpperCase() : name;
 
 /** Never choose an account by file order, including older/command clients bypassing checkboxes. */
 export function selectedImportEnvironment(items: ImportItem[]): Record<string, string> {
@@ -17,15 +17,20 @@ export function selectedImportEnvironment(items: ImportItem[]): Record<string, s
   return environment;
 }
 
-export function resolveImportReferences(value: unknown, env: Record<string, string>, allowMissing = false): unknown {
-  if (typeof value === 'string') return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (match, key: string) => {
-    if (Object.hasOwn(env, key)) return env[key]!;
-    if (allowMissing) return match;
-    throw new CompanionImportError('AUTOMATION_DEPENDENCY_NOT_SELECTED');
-  });
-  if (Array.isArray(value)) return value.map(child => resolveImportReferences(child, env, allowMissing));
-  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, resolveImportReferences(child, env, allowMissing)]));
-  return value;
+export function resolveImportReferences(value: unknown, env: Record<string, string>, allowMissing = false, platform = process.platform): unknown {
+  const values = new Map(Object.entries(env).map(([key, value]) => [variableName(key, platform), value]));
+  const resolve = (input: unknown): unknown => {
+    if (typeof input === 'string') return input.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (match, key: string) => {
+      const name = variableName(key, platform);
+      if (values.has(name)) return values.get(name)!;
+      if (allowMissing) return match;
+      throw new CompanionImportError('AUTOMATION_DEPENDENCY_NOT_SELECTED');
+    });
+    if (Array.isArray(input)) return input.map(resolve);
+    if (input && typeof input === 'object') return Object.fromEntries(Object.entries(input).map(([key, child]) => [key, resolve(child)]));
+    return input;
+  };
+  return resolve(value);
 }
 
 export function selectedImportRedactions(items: ImportItem[]): Record<string, string> {

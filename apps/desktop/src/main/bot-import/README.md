@@ -55,6 +55,8 @@ theme tokens. No new native Mobile dependencies or fingerprint inputs are added.
   The host also rejects conflicting selections before creating a receipt. Variable
   dependencies resolve to the selected provider, so unchecking another account does
   not block takeover. Identical duplicate values remain compatible.
+  Selected environment references use case-insensitive names on Windows and
+  case-sensitive names on macOS/Linux, including nested MCP and delivery settings.
   Deleting a companion stages a non-secret owner-scoped cleanup record before the
   database deletion, then removes credentials only after the deletion succeeds.
   If SQLite fails, the surviving profile retains its environment. If vault cleanup
@@ -119,6 +121,11 @@ theme tokens. No new native Mobile dependencies or fingerprint inputs are added.
   listing with the same 100-page and 1000-tool catalog budgets.
 - Cron/timezone, anchored intervals, one-time triggers, paused state and selected
   Hermes scripts/monitors/repeat counters feed the existing routine engine.
+  Finite-repeat routines stop after their last successful execution and delivery:
+  disabling, clearing future triggers and cancelling queued followers commit
+  with the final successful history entry. Failed result saves retry persistence
+  without rerunning; recovery of an already exhausted counter also disables the
+  routine. Ordinary unchanged-monitor skips remain eligible for the next trigger.
   Pure-script output appears in the canonical teammate chat. Explicit Telegram
   source destinations use the selected original bot credential; they do not
   change Cindy's official/personal bot implementations.
