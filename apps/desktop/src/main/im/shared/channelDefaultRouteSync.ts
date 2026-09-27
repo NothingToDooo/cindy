@@ -420,8 +420,10 @@ export function createImChannelDefaultRouteSync(deps: {
 export async function backfillLegacyImDefaultRoutes(
   source: ImDefaultSettingsChannel,
   config: ImOrchestratorConfig,
+  /** 进入时捕获的客户端: 读写全程复用, 不在 await 间隙重读全局(owner 切换后指向新账号)。 */
+  dbClient: ReturnType<typeof getDbClient> = getDbClient(),
 ): Promise<number> {
-  const rows = await getDbClient()
+  const rows = await dbClient
     .drizzle.select({
       id: sessions.id,
       source: sessions.source,
@@ -484,7 +486,7 @@ export async function backfillLegacyImDefaultRoutes(
       (!!resolvedDefault && sameImDefaultRoute(current, resolvedDefault, normalize)) ||
       sameImDefaultRoute(current, rawDefault, normalize);
     if (!matches) continue;
-    await getDbClient()
+    await dbClient
       .drizzle.update(sessions)
       .set({ imDefaultRoute: buildImDefaultRouteRecord(fingerprint, current) })
       .where(and(eq(sessions.id, row.id), isNull(sessions.imDefaultRoute)));

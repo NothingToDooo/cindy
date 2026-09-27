@@ -504,6 +504,23 @@ describe('backfillLegacyImDefaultRoutes', () => {
     expect((await rowOf('legacy-pinned-live')).imDefaultRoute).toBeNull();
   });
 
+  it('reads and writes through the client captured at entry (owner boundary)', async () => {
+    // 回填跨多个 await, 期间登出/换号会让全局 getDbClient 指向新 owner —— 必须全程
+    // 复用进入时捕获的客户端, 不能在 await 间隙重读全局(PR #5155 review P1)。
+    mocks.resolveDefaults.mockResolvedValue({ ...OLD, permissionMode: 'auto', fastMode: false, fingerprint: 'fp-old' });
+    mocks.fingerprint.mockReturnValue('fp-old');
+    await insertTask('legacy-default', OLD, { record: null });
+    const realDb = db;
+    const captured = { drizzle: realDb } as never;
+    // 全局客户端在回填中途被换/销毁(owner 切换)。
+    db = { select: () => { throw new Error('owner switched') }, update: () => { throw new Error('owner switched') } } as never;
+
+    await expect(backfillLegacyImDefaultRoutes('feishu', CONFIG, captured)).resolves.toBe(1);
+    db = realDb;
+
+    expect(parseImDefaultRouteRecord((await rowOf('legacy-default')).imDefaultRoute)).not.toBeNull();
+  });
+
   it('claims revivable archived tasks that still run the old default', async () => {
     // 归档/软删的可复活任务: findActiveSession 会原地复活且不补记录, 保存前不认领
     // 就永久错过(PR #5155 review P2)。

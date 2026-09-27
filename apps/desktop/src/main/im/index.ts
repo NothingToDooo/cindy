@@ -59,6 +59,10 @@ import { ipcMain, BrowserWindow, dialog, type IpcMainEvent } from 'electron';
 import { and, eq, like, ne, sql } from 'drizzle-orm';
 
 import { getDbClient } from '../localDb/client/current';
+import {
+  captureSessionRuntimeControlOwnerEpoch,
+  sessionRuntimeControlOwnerEpochMatches,
+} from '../maker-ipc/sessionRuntimeControl.js';
 import { sessions } from '../localDb/schema';
 import {
   im,
@@ -643,12 +647,21 @@ export async function prepareImDefaultSettingsChange(
   if (!channel) return;
   const config = getImOrchestrator(channel)?.adapter.config;
   if (!config) return;
+  // owner 边界(PR #5155 review P1): 回填跨多个 await, 期间登出/换号会让全局
+  // getDbClient 指向新 owner —— 进入时捕获 owner epoch 与 DbClient, 回填全程复用
+  // 同一客户端; 结束后校验边界未变, 变了就失败重试, 绝不把 A 发起的保存写进 B。
+  const ownerEpoch = captureSessionRuntimeControlOwnerEpoch();
+  const dbClient = getDbClient();
   try {
-    await backfillLegacyImDefaultRoutes(channel, config);
+    await backfillLegacyImDefaultRoutes(channel, config, dbClient);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     log.warn(`default route backfill failed for ${channel} (blocking settings save): ${msg}`);
     throw new Error(msg);
+  }
+  if (!sessionRuntimeControlOwnerEpochMatches(ownerEpoch)) {
+    log.warn(`default route backfill raced an owner switch for ${channel}; save aborted for retry`);
+    throw new Error('app session owner changed during backfill; retry the save');
   }
 }
 
