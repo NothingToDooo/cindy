@@ -1,4 +1,5 @@
 import { useCallback, useMemo } from "react";
+import { Platform } from "react-native";
 import { useTranslation } from "react-i18next";
 import {
   usesNativePullDownMenu,
@@ -31,7 +32,9 @@ export function useConversationSearchFilterMenu({
   onFilterAction: ((id: string) => void) | undefined;
 } {
   const { t } = useTranslation();
-  const native = usesNativePullDownMenu();
+  // 筛选是多选(项目可连续勾选):iOS UIMenu 靠 keepPresented 保持打开;Android PopupMenu
+  // 点一项就收起,连选要反复重开,所以 Android 继续用支持连选的自绘筛选面板。
+  const native = usesNativePullDownMenu() && Platform.OS !== "android";
   const actions = useMemo(
     () =>
       buildConversationSearchFilterPullDownActions({

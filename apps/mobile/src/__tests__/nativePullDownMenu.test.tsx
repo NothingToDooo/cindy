@@ -73,3 +73,79 @@ describe("native menu symbol colors", () => {
     },
   );
 });
+
+describe("Android PopupMenu action shape", () => {
+  it("flattens inline groups behind a disabled group title and keeps one submenu level", async () => {
+    const { ANDROID_MENU_GROUP_HEADER_SUFFIX, flattenAndroidMenuActions } =
+      await import("@/platform/chrome/NativePullDownMenu");
+    const flat = flattenAndroidMenuActions([
+      {
+        id: "group.sort",
+        title: "Sort",
+        displayInline: true,
+        subactions: [
+          { id: "sort.recent", title: "Recent", state: "on" },
+          { id: "sort.name", title: "Name", state: "off", subtitle: "A-Z" },
+        ],
+      },
+      {
+        id: "group.untitled",
+        title: "",
+        displayInline: true,
+        subactions: [{ id: "plain", title: "Plain" }],
+      },
+      {
+        id: "more",
+        title: "More",
+        subactions: [
+          {
+            id: "inline",
+            title: "Inline",
+            displayInline: true,
+            subactions: [{ id: "a", title: "A" }],
+          },
+          {
+            id: "nested",
+            title: "Nested",
+            subactions: [{ id: "b", title: "B" }],
+          },
+        ],
+      },
+    ]);
+    expect(flat.map((action) => action.id)).toEqual([
+      `group.sort${ANDROID_MENU_GROUP_HEADER_SUFFIX}`,
+      "sort.recent",
+      "sort.name",
+      "plain",
+      "more",
+    ]);
+    expect(flat[0]).toMatchObject({ title: "Sort", disabled: true });
+    expect(flat[1]).toMatchObject({ state: "on" });
+    expect(flat[2]).toMatchObject({ title: "Name · A-Z", subtitle: undefined });
+    expect(flat[4].subactions?.map((action) => action.id)).toEqual([
+      `inline${ANDROID_MENU_GROUP_HEADER_SUFFIX}`,
+      "a",
+      `nested${ANDROID_MENU_GROUP_HEADER_SUFFIX}`,
+      "b",
+    ]);
+    expect(flat[4].subactions?.every((action) => !action.subactions)).toBe(
+      true,
+    );
+  });
+});
+
+describe("disabled triggers", () => {
+  it("does not mount the native menu while the trigger is disabled", () => {
+    native.actions = [];
+    const html = renderToStaticMarkup(
+      createElement(NativePullDownMenu, {
+        actions: [{ id: "copy", title: "Copy" }],
+        children: createElement("span", null, "trigger"),
+        disabled: true,
+        onAction: vi.fn(),
+      }),
+    );
+    expect(html).toBe("<span>trigger</span>");
+    expect(native.actions).toEqual([]);
+  });
+});

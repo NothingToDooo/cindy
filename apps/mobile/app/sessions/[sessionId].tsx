@@ -198,8 +198,6 @@ import { BlurBackdrop } from '@/session/BlurBackdrop';
 import { SheetModal } from '@/session/SheetModal';
 import { SheetGrabber, SheetSurface } from '@/session/SheetSurface';
 import { NativePermissionSheet } from '@/session/NativePermissionSheet';
-import { MobilePermissionPickerList } from '@/session/MobilePermissionPickerList';
-import { computeContextSheetSnapHeights, type ContextSheetSnap } from '@/session/contextSheetModel';
 import { permissionAccentColor, permissionPresentation } from '@/session/permissionPresentation';
 import {
   SessionMenuSheet,
@@ -562,7 +560,6 @@ import {
   findMobileMessageSearchHits,
   nextMessageSearchIndex,
   normalizeMessageSearchIndex,
-  type MobileMessageSearchHit,
 } from '@/session/messageSearch';
 import {
   buildSearchLoadEarlierAction,
@@ -1241,14 +1238,6 @@ export default function SessionScreen() {
   const [modelSheetOpen, setModelSheetOpen] = useState(false);
   // 权限模式独立浮窗(composer 左侧图标钮点开,与模型浮窗同属 composer 激活态)。
   const [permissionSheetOpen, setPermissionSheetOpen] = useState(false);
-  const [permissionSheetSnap, setPermissionSheetSnap] = useState<ContextSheetSnap>('half');
-  const permissionSheetHeights = useMemo(
-    () => computeContextSheetSnapHeights({
-      safeAreaTopInset: insets.top,
-      screenHeight: windowDimensions.height,
-    }),
-    [insets.top, windowDimensions.height],
-  );
   // 已建会话的模型浮窗可先浏览另一 Agent；只改此浏览态不触碰会话，选模型才登记 intent。
   const [modelSheetAgentKind, setModelSheetAgentKind] = useState<MobileSessionAgentKind>('claude-code');
   const [attachments, setAttachments] = useState<RemoteSerializedAttachment[]>([]);
@@ -6628,7 +6617,6 @@ export default function SessionScreen() {
         hitSlop={COMPOSER_CONTROL_HIT_SLOP}
         onPress={() => {
           setModelSheetOpen(false);
-          setPermissionSheetSnap('half');
           setPermissionSheetOpen(true);
         }}
         style={[
@@ -8943,7 +8931,6 @@ export default function SessionScreen() {
           />
         ) : null}
         <SessionSearchSheet
-          activeHit={activeSearchHit}
           activeIndex={activeSearchIndex}
           hasOlderMessages={hasOlderMessages && !isScheduleDetail}
           hitCount={searchHits.length}
@@ -9128,38 +9115,18 @@ export default function SessionScreen() {
             visible={modelSheetOpen && canUseRemoteSessionControls}
           />
         ) : null}
-        {/* 权限模式独立浮窗(composer 权限图标钮点开;列表复用 MobilePermissionPickerList,
-            选择走 confirmFullAccessChange + maker:set-permission-mode 后关浮窗)。 */}
+        {/* 权限模式独立浮窗(composer 权限图标钮点开)。两端同一语义:点选先关浮窗,关闭完成后
+            再走 confirmFullAccessChange + maker:set-permission-mode。 */}
         {currentSession && runtimeOptions ? (
-          Platform.OS === 'ios' ? (<NativePermissionSheet visible={permissionSheetOpen && canUseRemoteSessionControls} onClose={() => setPermissionSheetOpen(false)}
- activeMode={displayPermissionMode} disabled={controlBusy || !canUseRemoteSessionControls} onSelect={selectSessionPermissionMode}
- options={runtimeOptions.permissionOptions} testID="session.permissionSheet" />) : (<SheetModal
-            backdropTestID="session.permissionSheet.backdrop"
-            onBackdropPress={() => setPermissionSheetOpen(false)}
-            onRequestClose={() => setPermissionSheetOpen(false)}
+          <NativePermissionSheet
             visible={permissionSheetOpen && canUseRemoteSessionControls}
-          >
-            <SheetSurface
-              bottomInset={insets.bottom}
-              heights={permissionSheetHeights}
-              onClose={() => setPermissionSheetOpen(false)}
-              onSnapChange={setPermissionSheetSnap}
-              snap={permissionSheetSnap}
-              testID="session.permissionSheet"
-              title={t('models.picker.permissionTitle')}
-            >
-              <MobilePermissionPickerList
-                activeMode={displayPermissionMode}
-                disabled={controlBusy || !canUseRemoteSessionControls}
-                onSelect={(mode) => {
-                  selectSessionPermissionMode(mode);
-                  setPermissionSheetOpen(false);
-                }}
-                options={runtimeOptions.permissionOptions}
-                testID="session.permissionSheet.option"
-              />
-            </SheetSurface>
-          </SheetModal>)
+            onClose={() => setPermissionSheetOpen(false)}
+            activeMode={displayPermissionMode}
+            disabled={controlBusy || !canUseRemoteSessionControls}
+            onSelect={selectSessionPermissionMode}
+            options={runtimeOptions.permissionOptions}
+            testID="session.permissionSheet"
+          />
         ) : null}
         {composerPreviewUrl && composerGalleryImages.length > 0 ? (
           // composer 托盘图片的全屏查看(沿用聊天消息同款 ImageLightbox;本地图无需远端取件)。
@@ -9785,10 +9752,9 @@ function SessionHeaderBar({
     : null;
   const actionProjection = overview ? projectMobileSessionActions(overview.actions) : null;
   // queue 入口已退役:排队消息 inline 到消息流(InlineQueueSection),不再有独立面板。
+  // 两端顶栏右侧同为「远程桌面、文件、更多」;搜索从「更多 → 任务详情」进入(ios-native-design §2、§4)。
   const headerActions = (actionProjection?.primaryActions ?? [])
-    .filter((action) => action.id !== 'settings'
-      && action.id !== 'queue'
-      && (!messageOnly || action.id === 'search' || action.id === 'files'));
+    .filter((action) => action.id === 'files');
   const actionHandlers = {
     files: onOpenFiles,
     queue: () => undefined,
@@ -9967,14 +9933,14 @@ function SessionHeaderBar({
             testID={SESSION_ACTION_TEST_IDS[action.id]}
           />
         ))}
-        {!messageOnly ? <SessionHeaderIconButton
-          accessibilityLabel={t('session.screen.openSessionMenu')}
+        <SessionHeaderIconButton
+          accessibilityLabel={t('session.menu.details')}
           active={false}
           disabled={!currentSession}
           icon={Ellipsis}
           onPress={currentSession ? onOpenSettings : undefined}
           testID="session.controlsToggle"
-        /> : null}
+        />
       </View>}
     </View>
   );
@@ -10927,7 +10893,6 @@ function SessionComposerInput({
 }
 
 function SessionSearchSheet({
-  activeHit,
   activeIndex,
   hasOlderMessages,
   hitCount,
@@ -10941,7 +10906,6 @@ function SessionSearchSheet({
   sheetMaxHeight,
   visible,
 }: {
-  activeHit: MobileMessageSearchHit | null;
   activeIndex: number;
   hasOlderMessages: boolean;
   hitCount: number;
@@ -10966,11 +10930,15 @@ function SessionSearchSheet({
     loading: loadingEarlier,
     query,
   });
+  // 两端同一套计数文案；命中内容直接在原消息处定位，不再重复展示预览（ios-native-design §5）。
+  const counter = normalizedQuery
+    ? hasHits ? `${activeIndex + 1} / ${hitCount}` : '0 / 0'
+    : t('session.screen.searchEnterKeyword');
   if (Platform.OS === 'ios') {
     return <SessionSearchNative
       visible={visible}
       query={query}
-      counter={normalizedQuery ? hasHits ? `${activeIndex + 1} / ${hitCount}` : '0 / 0' : t('session.screen.searchEnterKeyword')}
+      counter={counter}
       hasHits={hasHits}
       loadEarlier={loadEarlierAction}
       onChangeQuery={onChangeQuery}
@@ -11001,23 +10969,35 @@ function SessionSearchSheet({
           </View>
         </View>
         <View style={styles.searchPanel} testID="session.searchPanel">
-          <TextInput
-            accessibilityLabel={t('session.screen.searchPlaceholder')}
-            autoCapitalize="none"
-            autoCorrect={false}
-            autoFocus={MOBILE_VISUAL_MOCK_ENABLED && visible}
-            onChangeText={onChangeQuery}
-            placeholder={t('session.screen.searchPlaceholder')}
-            placeholderTextColor={colors.textPlaceholder}
-            style={styles.searchInput}
-            testID="session.searchInput"
-            value={query}
-          />
+          <View style={styles.searchInputRow}>
+            <TextInput
+              accessibilityLabel={t('session.screen.searchPlaceholder')}
+              autoCapitalize="none"
+              autoCorrect={false}
+              autoFocus={visible}
+              onChangeText={onChangeQuery}
+              placeholder={t('session.screen.searchPlaceholder')}
+              placeholderTextColor={colors.textPlaceholder}
+              returnKeyType="search"
+              style={styles.searchInput}
+              testID="session.searchInput"
+              value={query}
+            />
+            {query ? (
+              <Pressable
+                accessibilityLabel={t('devices.detail.search.clearA11y')}
+                accessibilityRole="button"
+                onPress={() => onChangeQuery('')}
+                style={({ pressed }) => [styles.searchClearButton, pressed && styles.searchClearButtonPressed]}
+                testID="session.searchClearButton"
+              >
+                <X color={colors.textTertiary} size={iconSize.md} strokeWidth={iconStroke.regular} />
+              </Pressable>
+            ) : null}
+          </View>
           <View style={styles.searchToolbar}>
             <Text style={styles.searchCounter} testID="session.searchCounter">
-              {normalizedQuery
-                ? hasHits ? `${activeIndex + 1}/${hitCount}` : '0/0'
-                : t('session.screen.searchEnterKeyword')}
+              {counter}
             </Text>
             <View style={styles.searchButtons}>
               <RouteActionButton
@@ -11040,13 +11020,6 @@ function SessionSearchSheet({
               </RouteActionButton>
             </View>
           </View>
-          {activeHit ? (
-            <Text style={styles.searchPreview} numberOfLines={2} testID="session.searchPreview">
-              {activeHit.label}: {activeHit.preview}
-            </Text>
-          ) : normalizedQuery ? (
-            <Text style={styles.searchPreview} testID="session.searchPreview">{t('session.screen.searchNoMatch')}</Text>
-          ) : null}
           {loadEarlierAction.visible ? (
             <RouteActionButton
               accessibilityLabel={loadEarlierAction.accessibilityLabel}
@@ -11736,16 +11709,31 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
   },
-  searchInput: {
+  searchInputRow: {
+    alignItems: 'center',
     backgroundColor: colors.surface,
     borderColor: colors.border,
     borderRadius: radius.container,
     borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    minHeight: 44,
+    paddingLeft: spacing.md,
+  },
+  searchInput: {
     color: colors.textPrimary,
+    flex: 1,
     fontSize: typeScale.body,
     minHeight: 42,
-    paddingHorizontal: spacing.md,
     paddingVertical: spacing.xs,
+  },
+  searchClearButton: {
+    alignItems: 'center',
+    height: 44,
+    justifyContent: 'center',
+    width: 44,
+  },
+  searchClearButtonPressed: {
+    opacity: 0.72,
   },
   searchToolbar: {
     alignItems: 'center',
@@ -11769,14 +11757,9 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     borderColor: colors.border,
     borderRadius: radius.pill,
     borderWidth: StyleSheet.hairlineWidth,
-    height: 34,
+    height: 44,
     justifyContent: 'center',
-    width: 34,
-  },
-  searchPreview: {
-    color: colors.textSecondary,
-    fontSize: typeScale.caption,
-    lineHeight: lineHeight.caption,
+    width: 44,
   },
   searchLoadEarlierButton: {
     alignItems: 'center',
