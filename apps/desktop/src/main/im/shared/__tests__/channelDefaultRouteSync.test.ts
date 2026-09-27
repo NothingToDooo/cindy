@@ -77,6 +77,7 @@ vi.mock('../../../localDb/client/current', () => ({
 const { sessions } = await import('../../../localDb/schema');
 const {
   backfillLegacyImDefaultRoutes,
+  backfillLegacyImDefaultRoutesAtStartup,
   createImChannelDefaultRouteSync,
   resetImSessionToChannelDefaults,
 } = await import('../channelDefaultRouteSync');
@@ -170,12 +171,18 @@ beforeEach(() => {
   const raw = new Database(':memory:');
   raw.exec(createTableSql());
   db = drizzle(raw);
-  mocks.fingerprint.mockReturnValue('fp-new');
-  mocks.rawDefault.mockReturnValue(OLD);
-  mocks.readPendingRoute.mockReturnValue(undefined);
-  // clearAllMocks 不清实现: 默认实现必须每次重设, 否则单个用例的 mockResolvedValue 会泄漏。
-  mocks.listProviders.mockResolvedValue([]);
-  mocks.resolveDefaults.mockResolvedValue({ ...NEW, permissionMode: 'auto', fastMode: false, fingerprint: 'fp-new' });
+  // clearAllMocks 不清实现、也不清 mockResolvedValueOnce 队列: 默认实现必须每次
+  // 重设, 排队后未被消费的 Once(如「无候选行就不碰目录」的用例)会泄漏进下一个
+  // 用例 —— 逐个 mockReset 清干净再重设。
+  mocks.fingerprint.mockReset().mockReturnValue('fp-new');
+  mocks.rawDefault.mockReset().mockReturnValue(OLD);
+  mocks.readPendingRoute.mockReset().mockReturnValue(undefined);
+  mocks.listProviders.mockReset().mockResolvedValue([]);
+  mocks.resolveDefaults.mockReset().mockResolvedValue({ ...NEW, permissionMode: 'auto', fastMode: false, fingerprint: 'fp-new' });
+  mocks.ownerScopeKey.mockReset().mockReturnValue('owner-1');
+  mocks.boundaryPending.mockReset().mockReturnValue(false);
+  mocks.applyRoute.mockReset();
+  mocks.cancelPending.mockReset();
   mocks.applyRoute.mockImplementation(async (id: string, route: ImDefaultRoute) => {
     await setRoute(id, route);
     return 'applied';
@@ -584,6 +591,58 @@ describe('backfillLegacyImDefaultRoutes', () => {
     mocks.listProviders.mockResolvedValueOnce(null);
 
     await expect(backfillLegacyImDefaultRoutes('feishu', CONFIG)).resolves.toBe(0);
+  });
+});
+
+describe('backfillLegacyImDefaultRoutesAtStartup', () => {
+  it('claims legacy rows for every configured channel at startup', async () => {
+    // 回填只由设置保存/重置触发的话, 从未动过设置的升级老任务永远拿不到记录 ——
+    // 后续版本改内置默认后会永久固定在旧默认(PR #5155 review P2)。
+    mocks.fingerprint.mockReturnValue('fp-old');
+    await insertTask('legacy-feishu', OLD, { record: null });
+    await insertTask('legacy-telegram', OLD, { record: null, source: 'telegram' });
+
+    await expect(
+      backfillLegacyImDefaultRoutesAtStartup([
+        { source: 'feishu', config: CONFIG },
+        { source: 'telegram', config: CONFIG },
+      ]),
+    ).resolves.toBeUndefined();
+
+    expect(parseImDefaultRouteRecord((await rowOf('legacy-feishu')).imDefaultRoute)).toEqual({
+      v: 1,
+      fp: 'fp-old',
+      route: OLD,
+    });
+    expect(parseImDefaultRouteRecord((await rowOf('legacy-telegram')).imDefaultRoute)).toEqual({
+      v: 1,
+      fp: 'fp-old',
+      route: OLD,
+    });
+  });
+
+  it('keeps sweeping the remaining channels when one startup backfill fails', async () => {
+    // 启动补齐 best-effort: 单个渠道失败只告警不抛错(下次启动重试), 不能把其余
+    // 渠道也带掉, 更不能挡连接启动(PR #5155 review P2)。
+    mocks.fingerprint.mockReturnValue('fp-old');
+    await insertTask('legacy-feishu', OLD, { record: null });
+    await insertTask('legacy-telegram', OLD, { record: null, source: 'telegram' });
+    // 第一个渠道拿不到供应商目录 → 该渠道报错; 不影响第二个渠道。
+    mocks.listProviders.mockResolvedValueOnce(null);
+
+    await expect(
+      backfillLegacyImDefaultRoutesAtStartup([
+        { source: 'feishu', config: CONFIG },
+        { source: 'telegram', config: CONFIG },
+      ]),
+    ).resolves.toBeUndefined();
+
+    expect((await rowOf('legacy-feishu')).imDefaultRoute).toBeNull();
+    expect(parseImDefaultRouteRecord((await rowOf('legacy-telegram')).imDefaultRoute)).toEqual({
+      v: 1,
+      fp: 'fp-old',
+      route: OLD,
+    });
   });
 });
 

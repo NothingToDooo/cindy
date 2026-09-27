@@ -531,6 +531,33 @@ export async function backfillLegacyImDefaultRoutes(
 }
 
 /**
+ * 启动期补齐:回填此前只由设置保存/重置触发, 升级时已有、`im_default_route` 仍
+ * 为空的老任务若用户从未动过设置就永远轮不到 —— 同步对空记录直接跳过, 后续
+ * 版本把内置默认从 A 改到 B 后, 这些未自定义的老任务会永久固定在 A
+ * (PR #5155 review P2)。在仍能识别当前基线的启动阶段补上, 不依赖用户以后
+ * 主动保存。
+ *
+ * 每次启动都跑(幂等: 无候选行即返回, 也是失败后的自愈重试); 失败只告警、
+ * 不挡连接启动。只补记录不写设置, 全程复用进入时捕获的 DbClient(owner
+ * 切换后不跨账号写)。
+ */
+export async function backfillLegacyImDefaultRoutesAtStartup(
+  entries: Array<{ source: ImDefaultSettingsChannel; config: ImOrchestratorConfig }>,
+  dbClient: ReturnType<typeof getDbClient> = getDbClient(),
+): Promise<void> {
+  for (const { source, config } of entries) {
+    try {
+      await backfillLegacyImDefaultRoutes(source, config, dbClient);
+    } catch (err) {
+      log.warn(
+        `default route startup backfill failed for ${source} (retries next boot): ` +
+          (err instanceof Error ? err.message : String(err)),
+      );
+    }
+  }
+}
+
+/**
  * 单行渠道的 `/new`: 在 send 锁内把任务重置为渠道默认(连同跟随记录), 并撤掉残留的
  * 切换意图 —— 否则重置前登记的意图会在下一条消息时把刚重置的任务又切走。
  */

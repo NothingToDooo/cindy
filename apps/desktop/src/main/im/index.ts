@@ -82,7 +82,7 @@ import { wireWechatOrchestrator } from './wechat';
 import { wireWecomOrchestrator } from './wecom';
 import { resetTelegramGroupContextCursors } from './telegram/groupWindow';
 import { getImOrchestrator, listImOrchestrators } from './shared/orchestrator';
-import { backfillLegacyImDefaultRoutes } from './shared/channelDefaultRouteSync';
+import { backfillLegacyImDefaultRoutes, backfillLegacyImDefaultRoutesAtStartup } from './shared/channelDefaultRouteSync';
 import type { ImDefaultSettingsChannel } from '../../shared/imDefaultSettings';
 import { createSerializedConnectionLifecycle } from './connectionLifecycle';
 import {
@@ -95,7 +95,7 @@ import {
 import { configureImAccountScope } from './accountScopeBridge';
 import type { ImOrchestratorConfig } from './shared/types';
 import { bindingStore, executeDetach } from './binding';
-import { IM_DEFAULT_EFFORT_OVERRIDES, IM_DEFAULT_SETTINGS } from '../../shared/imDefaultSettings';
+import { IM_DEFAULT_EFFORT_OVERRIDES, IM_DEFAULT_SETTINGS, IM_DEFAULT_SETTINGS_CHANNELS } from '../../shared/imDefaultSettings';
 import { getAuthState } from '../authManager';
 import { getUpdateStatus, isUpdateRelaunchImminent } from '../updateService';
 
@@ -665,6 +665,20 @@ export async function prepareImDefaultSettingsChange(
   }
 }
 
+/**
+ * 启动期一次性补齐各渠道历史任务的跟随记录: 枚举有 orchestrator 配置的渠道,
+ * 交给 backfillLegacyImDefaultRoutesAtStartup 逐个 best-effort 补齐。
+ */
+export async function backfillImDefaultRoutesAtStartup(): Promise<void> {
+  await backfillLegacyImDefaultRoutesAtStartup(
+    IM_DEFAULT_SETTINGS_CHANNELS.flatMap((source) => {
+      const config = getImOrchestrator(source)?.adapter.config;
+      return config ? [{ source, config }] : [];
+    }),
+    getDbClient(),
+  );
+}
+
 export function startImConnection(): void {
   if (connectionLifecycle.isStarted()) {
     log.info('startImConnection: already started, skip');
@@ -679,6 +693,11 @@ export function startImConnection(): void {
   }
 
   log.info('startImConnection: kicking off im.init()');
+  // 启动期补齐历史任务的跟随记录(见 backfillLegacyImDefaultRoutesAtStartup):
+  // 从未保存/重置过渠道设置的升级老任务等不到设置保存触发回填, 趁当前基线还能
+  // 识别先补一次, 不依赖用户以后主动保存(PR #5155 review P2)。后台 best-effort,
+  // 不挡连接; DbClient 同样要求 localDb 已 ensureReady, 时序保证同下。
+  void backfillImDefaultRoutesAtStartup();
   // 先 preload binding 表, 再 init bot WS。preload 必须在 init 之前完成 ——
   // bot 上线后第一个进来的消息会经 runAgentTurn 同步查 bindingStore.get(),
   // 此时 forward map 必须已经填好, 否则会被当成"没接管"误路由到默认 session。
