@@ -45,6 +45,7 @@ import { canSubmitOrcaWorkerForm, isPredefinedOrcaRole } from '@/session/Context
 import { normalizeMobileAgentCapabilities } from '@/session/agentCapabilities';
 import {
   defaultOrcaWorkerCreationPrefs,
+  hasLoadedOrcaWorkerCreationPrefs,
   readOrcaWorkerCreationPrefs,
   saveOrcaWorkerCreationPrefs,
   type OrcaWorkerCreationPrefs,
@@ -235,10 +236,12 @@ export function useOrcaWorkerForm(params: {
       return undefined;
     }
     let cancelled = false;
-    void readOrcaWorkerCreationPrefs(prefsScope).then((prefs) => {
+    const scope = prefsScope;
+    void readOrcaWorkerCreationPrefs(scope).then((prefs) => {
       if (cancelled) return;
       prefsRef.current = prefs;
-      prefsLoadedRef.current = true;
+      // 读取失败时仍按默认值展示,但不算「已读到」:复位时再读一次。
+      prefsLoadedRef.current = hasLoadedOrcaWorkerCreationPrefs(scope);
     });
     return () => { cancelled = true; };
   }, [prefsScope]);
@@ -336,7 +339,7 @@ export function useOrcaWorkerForm(params: {
       void readOrcaWorkerCreationPrefs(scope).then((prefs) => {
         if (prefsScopeRef.current !== scope) return;
         prefsRef.current = prefs;
-        prefsLoadedRef.current = true;
+        prefsLoadedRef.current = hasLoadedOrcaWorkerCreationPrefs(scope);
         if (epoch !== formEpochRef.current || touchedRef.current) return;
         apply(prefs);
       });
@@ -375,7 +378,8 @@ export function useOrcaWorkerForm(params: {
         : previous.agents,
     };
     prefsRef.current = next;
-    if (prefsScope) saveOrcaWorkerCreationPrefs(prefsScope, next);
+    // 记忆没读到(存储读取失败)时不写回:否则会用默认值拼出的整份记忆覆盖用户原先存的其它选择。
+    if (prefsScope && prefsLoadedRef.current) saveOrcaWorkerCreationPrefs(prefsScope, next);
   }, [prefsScope]);
 
   const patch = useCallback((next: Partial<OrcaWorkerFormValue>) => {

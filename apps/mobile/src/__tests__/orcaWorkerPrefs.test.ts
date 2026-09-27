@@ -10,6 +10,7 @@ vi.mock('@react-native-async-storage/async-storage', () => ({
 
 const {
   defaultOrcaWorkerCreationPrefs,
+  hasLoadedOrcaWorkerCreationPrefs,
   readOrcaWorkerCreationPrefs,
   resetOrcaWorkerCreationPrefsMemory,
   sanitizeOrcaWorkerCreationPrefs,
@@ -65,4 +66,18 @@ describe('Worker creation preferences', () => {
     await expect(pending).resolves.toEqual(next);
     await expect(readOrcaWorkerCreationPrefs('user-1')).resolves.toEqual(next);
   });
+
+  it('does not cache defaults when the stored preferences cannot be read', async () => {
+    const AsyncStorage = (await import('@react-native-async-storage/async-storage')).default;
+    storage.set('cindy:orcaWorkerCreationPrefs:v1:user-1', JSON.stringify({
+      ...defaultOrcaWorkerCreationPrefs(), workerPermissionMode: 'auto',
+    }));
+    vi.mocked(AsyncStorage.getItem).mockRejectedValueOnce(new Error('disk busy'));
+    await expect(readOrcaWorkerCreationPrefs('user-1')).resolves.toEqual(defaultOrcaWorkerCreationPrefs());
+    expect(hasLoadedOrcaWorkerCreationPrefs('user-1')).toBe(false);
+    // 下次打开再读,拿到的是真正存过的选择。
+    await expect(readOrcaWorkerCreationPrefs('user-1')).resolves.toMatchObject({ workerPermissionMode: 'auto' });
+    expect(hasLoadedOrcaWorkerCreationPrefs('user-1')).toBe(true);
+  });
 });
+

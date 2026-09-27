@@ -82,7 +82,11 @@ function storageKey(scope: string): string {
 export async function readOrcaWorkerCreationPrefs(scope: string): Promise<OrcaWorkerCreationPrefs> {
   const cached = memory.get(scope);
   if (cached) return cached;
-  const raw = await AsyncStorage.getItem(storageKey(scope)).catch(() => null);
+  let readFailed = false;
+  const raw = await AsyncStorage.getItem(storageKey(scope)).catch(() => {
+    readFailed = true;
+    return null;
+  });
   let prefs = defaultOrcaWorkerCreationPrefs();
   if (raw) {
     try {
@@ -94,8 +98,15 @@ export async function readOrcaWorkerCreationPrefs(scope: string): Promise<OrcaWo
   // 读取期间用户已提交并写回了新选择:以刚保存的为准,不让这次迟到的旧值覆盖。
   const saved = memory.get(scope);
   if (saved) return saved;
+  // 读取失败 ≠ 没有记忆:这次先用默认值,但不缓存,下次打开再读,不把默认值当成已读到的记忆。
+  if (readFailed) return prefs;
   memory.set(scope, prefs);
   return prefs;
+}
+
+/** 这个账号的记忆是否已确实读到(或本次会话写过);读取失败时为 false,下次打开再读。 */
+export function hasLoadedOrcaWorkerCreationPrefs(scope: string): boolean {
+  return memory.has(scope);
 }
 
 /** 创建成功(或新建任务确认协同草稿)后写回:与桌面一样只在提交时记忆。 */

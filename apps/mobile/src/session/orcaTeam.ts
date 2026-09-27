@@ -20,7 +20,7 @@ import {
 } from '@cindy/maker-shared/orca-team';
 import { formatRemoteError, isTransientRemoteError } from '@cindy/maker-shared/device-link-contract';
 import { isLocalOnlyProviderForAgent, isSubscriptionDirectRoute } from '@cindy/model-providers';
-import { chatEligibleSourcesForModel, type ProviderView } from '@cindy/model-providers/registry';
+import { chatEligibleSourcesForModel, getModel, type ProviderView } from '@cindy/model-providers/registry';
 import type { AgentKind } from '@cindy/model-providers/types';
 import { normalizeMobileAgentCapabilities } from '@/session/agentCapabilities';
 import { humanizeRemoteError } from '@/device-link/remoteStatus';
@@ -68,6 +68,10 @@ export function orcaWorkerFormFromPrefs(
  * 按被控端能力收敛模型选择(对齐桌面「加载能力后把选择收敛到可用模型和 effort」):
  * 模型不在该电脑的可用列表 → 回落「默认」(null,交给被控端解析);effort 不在档位表 →
  * 该模型默认档;模型不支持 Fast → 关 Fast。能力未知(null)时保持原样。
+ *
+ * 显式选了来源时只做可用性检查,不按拍平能力改 effort / Fast:同 id 模型在不同来源的档位与
+ * Fast 支持可能不同,拍平条目会把来源 A 的合法选择改成来源 B 的默认。这两项在提交前按
+ * 该来源自己的条目对账(narrowOrcaWorkerProvider)。
  */
 export function convergeOrcaWorkerModel(
   model: OrcaWorkerFormValue['model'],
@@ -76,6 +80,7 @@ export function convergeOrcaWorkerModel(
   if (!model || !capabilities) return model;
   const option = capabilities.availableModels.find((item) => item.id === model.id);
   if (!option) return null;
+  if (model.providerId) return model;
   const effort = model.effort && option.efforts.includes(model.effort)
     ? model.effort
     : option.defaultEffort ?? option.efforts[0] ?? null;
@@ -89,7 +94,8 @@ export function convergeOrcaWorkerModel(
 /**
  * 提交前收窄显式来源(对齐桌面 CreateWorkerPopover 的 narrowProviderSource):用户在选择器里
  * 指定的来源已不再可路由该模型(断开 / 停用 / 下架)时清掉来源,交给被控端默认路由,而不是
- * 带着失效来源被 PROVIDER_ROUTE_UNAVAILABLE 拒绝。来源目录未就绪(null)时原样提交。
+ * 带着失效来源被 PROVIDER_ROUTE_UNAVAILABLE 拒绝。来源仍有效时按该来源自己的模型条目
+ * 对账 effort / Fast(被控端按精确来源复核这两项)。来源目录未就绪(null)时原样提交。
  */
 export function narrowOrcaWorkerProvider(
   form: OrcaWorkerFormValue,
@@ -97,9 +103,21 @@ export function narrowOrcaWorkerProvider(
 ): OrcaWorkerFormValue {
   const model = form.model;
   if (!model?.providerId || !providers) return form;
-  const routable = chatEligibleSourcesForModel([...providers], model.id, form.agent)
-    .some((provider) => provider.id === model.providerId);
-  return routable ? form : { ...form, model: { ...model, providerId: null } };
+  const provider = chatEligibleSourcesForModel([...providers], model.id, form.agent)
+    .find((candidate) => candidate.id === model.providerId);
+  if (!provider) return { ...form, model: { ...model, providerId: null } };
+  const entry = getModel(provider, model.id, form.agent);
+  if (!entry) return form;
+  const efforts: readonly string[] = entry.efforts ?? [];
+  const effort = efforts.length === 0
+    ? model.effort
+    : model.effort && efforts.includes(model.effort)
+      ? model.effort
+      : entry.defaultEffort ?? efforts[0] ?? null;
+  const fast = model.fast && entry.supportsFastMode === true;
+  return effort === model.effort && fast === model.fast
+    ? form
+    : { ...form, model: { ...model, effort, fast } };
 }
 
 /**

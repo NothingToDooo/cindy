@@ -317,5 +317,20 @@ describe('mobile Orca collaboration mutations', () => {
     expect(buildOrcaEnableOptions(chosen)).toMatchObject({ model: 'gpt-5.5', fast: false });
     expect(buildOrcaEnableOptions({ ...chosen, model: null })).not.toHaveProperty('fast');
   });
+
+  it('reconciles effort and Fast against the explicitly chosen provider, not the flattened list', () => {
+    const provider = (id: string, efforts: string[], supportsFastMode: boolean) => ({
+      id, name: id, agents: ['codex'], connected: true, routing: { codex: {} },
+      models: { codex: [{ id: 'gpt-5.5', efforts, defaultEffort: efforts[0] ?? null, supportsFastMode }] },
+    }) as unknown as ProviderView;
+    const chosen = { ...form, agent: 'codex' as const, model: { id: 'gpt-5.5', providerId: 'a', effort: 'xhigh', fast: true } };
+    // 拍平能力只有 low/high 且不支持 Fast:显式来源时不改 effort / Fast。
+    const flat = { hasFastMode: true, availableModels: [{ id: 'gpt-5.5', efforts: ['low', 'high'], defaultEffort: 'low', supportsFastMode: false }] };
+    expect(convergeOrcaWorkerModel(chosen.model, flat as never)).toEqual(chosen.model);
+    // 来源 A 支持 xhigh 与 Fast → 原样;来源 A 不支持时按 A 自己的默认收敛。
+    expect(narrowOrcaWorkerProvider(chosen, [provider('a', ['high', 'xhigh'], true)])).toBe(chosen);
+    expect(narrowOrcaWorkerProvider(chosen, [provider('a', ['medium'], false)]).model)
+      .toMatchObject({ providerId: 'a', effort: 'medium', fast: false });
+  });
 });
 
