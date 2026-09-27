@@ -5,6 +5,11 @@ describe('independent migration context identities', () => {
   it.each(['switched to another agent', '{broken', 'null', '[1]', '"legacy"', ''])('preserves legacy metadata verbatim: %s', raw => {
     expect(migrationNativeContext('migration', [original]).metadata(raw)).toBe(raw);
   });
+  it.each(['cc', 'codex'] as const)('preserves malformed and non-object %s transcript lines', agent => {
+    const copy = migrationNativeContext('migration', [original]);
+    const raw = 'null\n[1]\n"legacy"\n42\ntrue\nlegacy text\n{partial';
+    expect(copy.transcript(Buffer.from(raw), agent).toString()).toBe(raw);
+  });
   it('preserves native fork turn anchors while mapping them to the copied context', () => {
     const copy = migrationNativeContext('migration', [original]);
     const anchor = { agentKind: 'codex', sdkSessionId: original, kind: 'turn', id: 'turn-1' };

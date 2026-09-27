@@ -53,7 +53,14 @@ export function migrationNativeContext(migrationId: string, nativeIds: readonly 
         .split('\n')
         .map((line) => {
           if (!line.trim()) return line;
-          const row = JSON.parse(line);
+          let row;
+          try {
+            row = JSON.parse(line);
+          } catch {
+            // Native readers tolerate interrupted/legacy lines; copying must preserve them.
+            return line;
+          }
+          if (!row || typeof row !== 'object' || Array.isArray(row)) return line;
           if (agent === 'cc' && typeof row.sessionId === 'string' && ids.has(row.sessionId)) {
             return JSON.stringify({ ...row, sessionId: id(row.sessionId) });
           }

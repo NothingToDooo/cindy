@@ -11,6 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import JSZip from 'jszip';
+import { sanitizeClaudeProjectKey } from '@cindy/maker-core';
 import { migrationNativeContext } from '../migrationNativeContext';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -614,6 +615,26 @@ describe('sessionShareImport', () => {
     }
   });
 
+  it.each(['cc', 'codex'] as const)('copies %s transcripts containing damaged historical lines', async agentKind => {
+    const zip = await JSZip.loadAsync(await buildBundle({ agentKind }));
+    const transcriptPath = agentKind === 'cc' ? `transcripts/claude/${SID}.jsonl` : `transcripts/codex/rollout-x-${SID}.jsonl`;
+    const header = agentKind === 'cc' ? { sessionId: SID } : { type: 'session_meta', payload: { id: SID } };
+    const tail = '\nnull\n[1]\nlegacy text\n{partial';
+    zip.file(transcriptPath, JSON.stringify(header) + tail);
+    const inspect = await inspectShareFile(await writeBundleFile(await zip.generateAsync({ type: 'nodebuffer' })));
+    if (inspect.encrypted) throw new Error('unexpected encrypted fixture');
+    const migrationId = '11111111-2222-4333-a444-555555555555';
+    codexMock.importResult.rolloutPath = path.join(tmpRoot, 'copied.jsonl');
+    const result = await commitShareImport({ draftId: inspect.draftId, workingDir: newWorkdir,
+      projectsRootOverride: projectsRoot, sharedMediaRootOverride: sharedMediaRoot },
+      { sessionId: migrationId, workingDir: newWorkdir });
+    expect(result.fidelity).toBe('full');
+    const nativeId = migrationNativeContext(migrationId, [SID]).id(SID);
+    const restored = agentKind === 'cc'
+      ? await fsp.readFile(path.join(projectsRoot, sanitizeClaudeProjectKey(newWorkdir), `${nativeId}.jsonl`), 'utf8')
+      : (codexMock.importCalls[0] as { rolloutBuffer: Buffer }).rolloutBuffer.toString();
+    expect(restored).toBe(JSON.stringify(agentKind === 'cc' ? { sessionId: nativeId } : { type: 'session_meta', payload: { id: nativeId } }) + tail);
+  });
   it.each(['cc', 'pi'] as const)('repairs a partial %s migration transcript on retry', async agentKind => {
     const filePath = await writeBundleFile(await buildBundle({ agentKind }));
     const migration = { sessionId: '11111111-2222-4333-a444-555555555555', workingDir: newWorkdir };
