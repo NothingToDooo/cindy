@@ -2838,6 +2838,14 @@ export default function SessionScreen() {
     () => Math.ceil(bottomOverlayContentHeight),
     [bottomOverlayContentHeight],
   );
+  // Android 输入区与顶栏一样半透明:整块挂到根浮层盖在常驻消息层上。伙伴对话保持实底。
+  const androidFrostedComposer = Platform.OS === 'android' && !companionChat;
+  // 浮层不在键盘避让容器里,按容器缩高后的实际高度摆放,输入框才会被键盘照旧顶上去。
+  const [keyboardAreaHeight, setKeyboardAreaHeight] = useState<number | null>(null);
+  const handleKeyboardAreaLayout = useCallback((event: LayoutChangeEvent) => {
+    const next = Math.round(event.nativeEvent.layout.height);
+    setKeyboardAreaHeight((current) => (current === next ? current : next));
+  }, []);
 
   const applyComposerDocument = useCallback((
     value: ComposerDocument,
@@ -9192,7 +9200,7 @@ export default function SessionScreen() {
                   // Android 的常驻消息层画在页面之上;顶栏经 SessionChromeLayer 盖在它上面,
                   // 所以消息层从顶部开始绘制,滚动时能透过半透明顶栏看到。
                   topInset={Platform.OS === 'android' ? 0 : topOverlayHeight}
-                  bottomInset={bottomOverlayHeight}
+                  bottomInset={androidFrostedComposer ? 0 : bottomOverlayHeight}
                   interactive={!sessionListDrawerOverlayMounted}>
 
                 <ChatFilePathContext.Provider value={chatFilePathContextValue}>
@@ -9325,6 +9333,18 @@ export default function SessionScreen() {
             inset={nativeShellLayout.keyboardBottomInset}
           />
         ) : null}
+        {Platform.OS === 'android' ? (
+          // 量出键盘避让容器的实际可用高度,供挂到根浮层的输入区对齐(见 SessionChromeLayer)。
+          <View onLayout={handleKeyboardAreaLayout} pointerEvents="none" style={StyleSheet.absoluteFill} />
+        ) : null}
+        <SessionChromeLayer
+          enabled={androidFrostedComposer}
+          height={keyboardAreaHeight ?? windowDimensions.height}
+          hiddenFromAccessibility={sessionListDrawerOverlayMounted}
+          left={paneLayout.detail.x}
+          viewport={detailViewport}
+          width={paneLayout.detail.width}
+        >
         {!isSharedTaskAccessRevoked && <View
           pointerEvents="box-none"
           testID="session.bottomViewport"
@@ -9348,6 +9368,7 @@ export default function SessionScreen() {
           pointerEvents="box-none"
           style={[
             styles.sessionBottomLayer,
+            androidFrostedComposer && styles.sessionBottomFrosted,
             // The outer viewport owns reservation clipping; keep the held card
             // attached to its original responder for release/cancel delivery.
             sessionOperationLayout.composerSlot === 'editable' && { overflow: 'visible' },
@@ -9364,6 +9385,12 @@ export default function SessionScreen() {
           ]}
           testID="session.bottomLayer"
         >
+          {androidFrostedComposer ? (
+            // 与顶栏同一底:半透明 surface + 模糊,消息从输入区下面滚过时能透出一点。
+            <View pointerEvents="none" style={StyleSheet.absoluteFill} testID="session.composerFrost">
+              <BlurBackdrop intensity={50} overlayColor={colors.surfaceTranslucent} />
+            </View>
+          ) : null}
           <View
             pointerEvents="box-none"
             style={[
@@ -9646,6 +9673,7 @@ export default function SessionScreen() {
           </View>
         </View>
         </View>}
+        </SessionChromeLayer>
       </ComposerKeyboardAvoidingView>
       </PaneViewportProvider>
 
@@ -9693,27 +9721,34 @@ export default function SessionScreen() {
  * 任务顶栏的挂载层。iOS 常驻消息挂在路由里,顶栏原地渲染即可。Android 的常驻消息层由根节点
  * 画在页面之上,顶栏要经 MessageHistoryOverlay 放到它上面(与任务抽屉同一通道),消息才能
  * 从半透明顶栏下面滚过;按详情区的横向位置对齐,抽屉打开时同样从读屏树里摘掉。
+ * 底部输入区同理:外框高度取键盘避让容器的实际高度,键盘弹起时输入框照旧被顶上去。
  */
 function SessionChromeLayer({
   children,
+  enabled = true,
+  height,
   hiddenFromAccessibility,
   left,
   viewport,
   width,
 }: {
   children: ReactNode;
+  /** 关掉时原地渲染(如伙伴对话的输入区保持实底,不需要盖在消息层上)。 */
+  enabled?: boolean;
+  /** 外框高度;底部输入区按键盘避让后的可用高度摆放,顶栏不传,由内容撑开。 */
+  height?: number;
   hiddenFromAccessibility: boolean;
   left: number;
   viewport: { height: number; width: number; x: number; y: number };
   width: number;
 }) {
-  if (Platform.OS !== 'android') return <>{children}</>;
+  if (Platform.OS !== 'android' || !enabled) return <>{children}</>;
   return (
     <MessageHistoryOverlay>
       <View
         importantForAccessibility={hiddenFromAccessibility ? 'no-hide-descendants' : 'auto'}
         pointerEvents="box-none"
-        style={{ left, position: 'absolute', top: 0, width }}
+        style={{ height, left, position: 'absolute', top: 0, width }}
       >
         {/* 浮层挂在根节点,要把详情区的视口重新提供给顶栏。 */}
         <PaneViewportProvider value={viewport}>{children}</PaneViewportProvider>
@@ -11610,6 +11645,9 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   sessionBottomContent: {
     alignSelf: 'center',
     width: '100%',
+  },
+  sessionBottomFrosted: {
+    backgroundColor: 'transparent',
   },
   sessionBottomFloating: {
     backgroundColor: 'transparent',
