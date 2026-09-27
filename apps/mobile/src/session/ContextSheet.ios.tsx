@@ -42,6 +42,11 @@ export function ContextSheet(props: ContextSheetProps) {
   const { t } = useTranslation();
   const pending = useRef<(() => void) | null>(null);
   const { colors } = useTheme();
+  // Reopening during the dismiss animation drops the previous row action, so a later
+  // ordinary close cannot replay a stale picker.
+  useEffect(() => {
+    if (props.visible) pending.current = null;
+  }, [props.visible]);
   return (
     <DismissAction.Provider
       value={(action) => {
