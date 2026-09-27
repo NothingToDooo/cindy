@@ -123,16 +123,53 @@ describe("trigger layout", () => {
   });
 });
 
-describe("empty menus", () => {
-  it("does not mount a menu that has nothing to choose", () => {
+describe("menus without an actionable choice", () => {
+  it("does not mount an empty menu and disables the trigger instead", () => {
     native.actions = [];
     const html = renderToStaticMarkup(
       createElement(NativePullDownMenu, {
         actions: [],
-        children: createElement("span", null, "display"),
+        children: createElement("button", null, "display"),
         onAction: vi.fn(),
       }),
     );
-    expect(html).toBe("<span>display</span>");
+    expect(html).toBe('<button disabled="">display</button>');
+    expect(native.actions).toEqual([]);
+  });
+
+  it("treats a menu whose choices are all disabled the same way, including submenus", () => {
+    native.actions = [];
+    const html = renderToStaticMarkup(
+      createElement(NativePullDownMenu, {
+        actions: [
+          { id: "a", title: "A", disabled: true },
+          {
+            id: "group",
+            title: "Group",
+            displayInline: true,
+            subactions: [{ id: "b", title: "B", disabled: true }],
+          },
+        ],
+        children: createElement("button", null, "resolution"),
+        onAction: vi.fn(),
+      }),
+    );
+    expect(html).toBe('<button disabled="">resolution</button>');
+    expect(native.actions).toEqual([]);
+  });
+
+  it("still mounts the menu when one nested choice is actionable", () => {
+    native.actions = [];
+    renderToStaticMarkup(
+      createElement(NativePullDownMenu, {
+        actions: [
+          { id: "a", title: "A", disabled: true },
+          { id: "more", title: "More", subactions: [{ id: "b", title: "B" }] },
+        ],
+        children: createElement("button", null, "more"),
+        onAction: vi.fn(),
+      }),
+    );
+    expect(native.actions.map((action) => action.id)).toEqual(["a", "more"]);
   });
 });

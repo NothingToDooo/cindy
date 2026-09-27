@@ -58,3 +58,12 @@ it('falls back to an inline option list when the build has no MenuView', async (
   await act(async () => { radios[0]!.click(); });
   expect(change).toHaveBeenCalledWith(''); expect(container.querySelectorAll('button[role="radio"]')).toHaveLength(0);
 });
+
+it('shows the control as disabled without a menu when nothing can be chosen', async () => {
+  const lists: Array<Array<{ value: string; label: string; disabled?: boolean }>> = [[], [{ value: 'b', label: 'Model B', disabled: true }]];
+  for (const list of lists) {
+    h.menu = null;
+    await act(async () => root.render(createElement(CompanionChoice, { label: 'Route', value: 'b', options: list, onChange: change, disabled: false })));
+    expect(h.menu).toBeNull(); expect(container.querySelector('button')!.disabled).toBe(true);
+  }
+});

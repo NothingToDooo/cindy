@@ -1,5 +1,5 @@
 import { MenuView, type MenuAction } from "@react-native-menu/menu";
-import { isValidElement, type ReactNode } from "react";
+import { cloneElement, isValidElement, type ReactNode } from "react";
 import {
   NativeModules,
   Platform,
@@ -81,6 +81,19 @@ function toMenuAction(
   };
 }
 
+/** 至少有一项能点:禁用项不算,子菜单要其中还有能点的项。 */
+export function hasActionablePullDownChoice(
+  actions: readonly NativePullDownAction[],
+): boolean {
+  return actions.some(
+    (action) =>
+      !action.disabled &&
+      (action.subactions?.length
+        ? hasActionablePullDownChoice(action.subactions)
+        : true),
+  );
+}
+
 /** 子控件自己标了 disabled(如忙碌中的按钮)同样视为禁用。 */
 function childDisabled(children: ReactNode): boolean {
   if (!isValidElement(children)) return false;
@@ -118,14 +131,14 @@ export function NativePullDownMenu({
   testID?: string;
 }) {
   const { colors } = useTheme();
-  // 没有可选项(如只有一块显示器)时同样不挂菜单:菜单接管整块点按,挂着就会点出空菜单。
-  if (
-    disabled ||
-    childDisabled(children) ||
-    actions.length === 0 ||
-    !usesNativePullDownMenu()
-  )
+  if (disabled || childDisabled(children) || !usesNativePullDownMenu())
     return children;
+  // 一项能点的都没有(空列表或全部禁用)时不挂菜单,触发控件也显示为禁用:
+  // 调用方在有菜单时把自己的 onPress 置空,不禁用就会留下一个点了没反应的按钮。
+  if (!hasActionablePullDownChoice(actions))
+    return isValidElement<{ disabled?: boolean }>(children)
+      ? cloneElement(children, { disabled: true })
+      : children;
   if (Platform.OS === "android") {
     return (
       <AnchoredPullDownMenu
