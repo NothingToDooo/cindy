@@ -807,12 +807,16 @@ import {
   shouldStartReadinessConsumers,
 } from './maker-host/account-provider-readiness-ensure.js';
 import {
+  previewImDefaultSettingsPatch,
   readImDefaultSettingsState,
   resetImDefaultSettings,
   resetImDefaultSettingsGlobal,
   resetImDefaultSettingsChannel,
   writeImDefaultSettingsPatch,
 } from './im/defaultSettingsStore.js';
+import { readImDefaultSettingsFingerprint } from './im/defaultSessionSettings.js';
+import { fingerprintImDefaultSettings } from './im/shared/channelDefaultRoute.js';
+import { IM_DEFAULT_SETTINGS } from '../shared/imDefaultSettings.js';
 import { assertOwnerScopeSettledForWrite } from './im/ownerScopedStorage.js';
 import { hasClaudeNativeLogin } from './maker-host/claude-native-auth.js';
 import {
@@ -4711,16 +4715,24 @@ const registerIpcHandlers = () => {
       const ownerScopeKey = activeOwnerScopeKey();
       const channel = parseImDefaultSettingsChannel(rawChannel);
       const parsedPatch = parseImDefaultSettingsPatch(patch);
+      // 仅路由默认实际变化时才要求阻塞式回填(PR #5155 review P2): 只改权限档等
+      // 不动路由指纹的保存不该被无关的供应商目录故障挡下 —— 路由默认没变就不存在
+      // 「提交后丢失回填机会」。
+      const routeDefaultChanged =
+        fingerprintImDefaultSettings(previewImDefaultSettingsPatch(parsedPatch, channel)) !==
+        readImDefaultSettingsFingerprint(channel);
       // 写新设置之前按旧默认给老任务补跟随记录(见 prepareImDefaultSettingsChange)。
       // 回填失败必须挡住本次保存: 记录补不上就提交新默认的话, 还停在旧默认上的
       // 老任务之后只能按新默认匹配, 永久失去跟随资格(PR #5155 review P2)。
-      try {
-        await prepareImDefaultSettingsChange(channel);
-      } catch (err) {
-        throwIpcError(
-          'INTERNAL',
-          `渠道默认未保存：旧任务的跟随记录补全失败，请重试（${err instanceof Error ? err.message : String(err)}）`,
-        );
+      if (routeDefaultChanged) {
+        try {
+          await prepareImDefaultSettingsChange(channel);
+        } catch (err) {
+          throwIpcError(
+            'INTERNAL',
+            `渠道默认未保存：旧任务的跟随记录补全失败，请重试（${err instanceof Error ? err.message : String(err)}）`,
+          );
+        }
       }
       try {
         assertOwnerScopeSettledForWrite(ownerScopeKey);
@@ -4740,13 +4752,18 @@ const registerIpcHandlers = () => {
     // 同 SET: 进入时快照 owner scope, 写设置前校验 scope 未变且无 boundary 在途。
     const ownerScopeKey = activeOwnerScopeKey();
     const channel = parseImDefaultSettingsChannel(rawChannel);
-    try {
-      await prepareImDefaultSettingsChange(channel);
-    } catch (err) {
-      throwIpcError(
-        'INTERNAL',
-        `渠道默认未重置：旧任务的跟随记录补全失败，请重试（${err instanceof Error ? err.message : String(err)}）`,
-      );
+    // 同 SET: 仅路由默认实际变化时才要求阻塞式回填(PR #5155 review P2)。
+    const routeDefaultChanged =
+      readImDefaultSettingsFingerprint(channel) !== fingerprintImDefaultSettings(IM_DEFAULT_SETTINGS);
+    if (routeDefaultChanged) {
+      try {
+        await prepareImDefaultSettingsChange(channel);
+      } catch (err) {
+        throwIpcError(
+          'INTERNAL',
+          `渠道默认未重置：旧任务的跟随记录补全失败，请重试（${err instanceof Error ? err.message : String(err)}）`,
+        );
+      }
     }
     try {
       assertOwnerScopeSettledForWrite(ownerScopeKey);

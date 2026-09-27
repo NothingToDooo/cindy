@@ -40,4 +40,18 @@ describe('im default settings IPC security contract', () => {
     expect(ownerGuard).toBeGreaterThan(backfill);
     expect(write).toBeGreaterThan(ownerGuard);
   });
+
+  // 仅路由默认实际变化时才要求阻塞式回填(PR #5155 review P2): 只改权限档等不动
+  // 路由指纹的保存不该被无关的供应商目录故障挡下。
+  it.each(['IM_DEFAULT_SETTINGS_SET', 'IM_DEFAULT_SETTINGS_RESET'] as const)(
+    'requires the blocking backfill only when the route default actually changes (%s)',
+    (channel) => {
+      const handler = source.indexOf(`MAKER_IPC_INVOKE.${channel},`);
+      expect(handler).toBeGreaterThanOrEqual(0);
+      const gate = source.indexOf('routeDefaultChanged', handler);
+      const backfill = source.indexOf('prepareImDefaultSettingsChange(', handler);
+      expect(gate).toBeGreaterThan(handler);
+      expect(gate).toBeLessThan(backfill);
+    },
+  );
 });
