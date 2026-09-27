@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createImportSourceReader, discoverImportSources, inspectImportSource } from '../sources.js';
 import { transferCompanion, validateImportSelection, type TransferDeps } from '../transfer.js';
-import { selectedImportEnvironment } from '../environmentSelection.js';
+import { resolveImportReferences, selectedImportEnvironment } from '../environmentSelection.js';
 import { createImportBudget } from '../files.js';
 
 let home: string;
@@ -88,6 +88,41 @@ it('retains cwd references and their selection dependency until import', async (
 });
 
 describe('installed agent imports', () => {
+  it.each(['hermes', 'openclaw'] as const)('resolves %s connection references only from the source environment', async kind => {
+    const configPath = `.${kind}/${kind === 'hermes' ? 'config.yaml' : 'openclaw.json'}`;
+    const config = {
+      mcpServers: { data: { url: 'https://example.invalid/mcp', headers: { Authorization: 'Bearer ${GITHUB_TOKEN}' } } },
+      channels: { telegram: { botToken: '${TELEGRAM_TOKEN}' } },
+    };
+    await write(configPath, JSON.stringify(config));
+    const reader = { ...deps(), env: { GITHUB_TOKEN: 'fixture-host-github-token', TELEGRAM_TOKEN: 'fixture-host-telegram-token' } };
+    const [source] = await discoverImportSources(reader);
+    const snapshot = await inspectImportSource(source!, reader);
+    const env = selectedImportEnvironment(snapshot.items);
+    expect(env).toEqual({});
+    for (const value of Object.values(reader.env)) expect(JSON.stringify(snapshot)).not.toContain(value);
+    const mcp = snapshot.items.find(item => item.mcp)!;
+    const telegram = snapshot.items.find(item => item.credential?.format === 'telegram')!;
+    for (const item of [mcp, telegram]) {
+      expect(item.view.dependsOn).toHaveLength(1);
+      expect(snapshot.items.some(provider => item.view.dependsOn!.includes(provider.view.id))).toBe(false);
+      expect(() => resolveImportReferences(item.mcp ?? item.credential!.value, env)).toThrow('AUTOMATION_DEPENDENCY_NOT_SELECTED');
+    }
+
+    // A real source value still resolves, even if Cindy has a different value.
+    await write(`.${kind}/.env`, 'GITHUB_TOKEN=fixture-source-github-token');
+    await write(configPath, JSON.stringify({ ...config, env: { vars: { TELEGRAM_TOKEN: 'fixture-source-telegram-token' } } }));
+    const configured = await inspectImportSource(source!, reader);
+    const selected = configured.items.filter(item => item.view.selected);
+    const sourceEnv = selectedImportEnvironment(selected);
+    const connection = selected.find(item => item.mcp)!;
+    const delivery = selected.find(item => item.credential?.format === 'telegram')!;
+    expect(resolveImportReferences(connection.mcp, sourceEnv)).toMatchObject({ headers: { Authorization: 'Bearer fixture-source-github-token' } });
+    expect(resolveImportReferences(delivery.credential!.value, sourceEnv)).toMatchObject({ token: 'fixture-source-telegram-token' });
+    for (const item of [connection, delivery]) expect(item.view.dependsOn!.every(id => selected.some(provider => provider.view.id === id))).toBe(true);
+    for (const value of Object.values(reader.env)) expect(JSON.stringify(configured)).not.toContain(value);
+  });
+
   it.each(['hermes', 'openclaw'] as const)('retains selected %s source OAuth privately without turning it into runtime API credentials', async kind => {
     const profile = { provider: 'anthropic', type: 'oauth', access: 'fixture-source-oauth-access', refresh: 'fixture-source-oauth-refresh' };
     await write(`.${kind}/${kind === 'hermes' ? 'config.yaml' : 'openclaw.json'}`, '{}');

@@ -108,6 +108,9 @@ omitting it retains normal companion defaults, and a rejected request can be cor
   not block takeover. Identical duplicate values remain compatible.
   Selected environment references use case-insensitive names on Windows and
   case-sensitive names on macOS/Linux, including nested MCP and delivery settings.
+  Connection references resolve only from selected source entries, never from
+  Cindy's process environment. Values absent from the source remain missing
+  dependencies; a host-only variable is not offered as an importable credential.
   Ordinary companions without a binding or vault-only checkpoint need no cleanup
   writes or vault decryption. Deleting an imported companion stages a non-secret
   owner-scoped cleanup record before the

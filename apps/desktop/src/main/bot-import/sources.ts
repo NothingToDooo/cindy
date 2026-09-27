@@ -138,18 +138,11 @@ async function connections(items: ImportItem[], source: ImportSource, values: Re
   }
   const servers = object(values.mcp_servers ?? values.mcpServers ?? object(values.mcp).servers);
   for (const [name, raw] of Object.entries(servers)) {
-    // References in the selected connection can use an explicitly set process variable.
-    // Do not copy the entire Cindy or OS process environment into the companion.
+    // References resolve only from source entries, never Cindy's process environment.
     // Keep placeholders until selection is final. Otherwise deselecting an env item
     // would still copy its expanded secret inside an independently selected MCP.
     const references = new Set<string>();
     JSON.stringify(raw).replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_match, key: string) => { references.add(key); return ''; });
-    for (const key of references) {
-      if (!Object.hasOwn(env, key) && typeof deps.env[key] === 'string') {
-        env[key] = deps.env[key]!;
-        items.push({ view: { id: entryId('env', key), category: 'connections', name: key, selected: true }, env: { [key]: env[key]! } });
-      }
-    }
     const record = object(raw);
     const enabled = record.enabled !== false && record.disabled !== true;
     const command = string(record.command), url = string(record.url);
@@ -175,12 +168,6 @@ async function connections(items: ImportItem[], source: ImportSource, values: Re
     const settings = object(raw);
     let token = string(settings.botToken) || (source.kind === 'hermes' && env.TELEGRAM_BOT_TOKEN ? '${TELEGRAM_BOT_TOKEN}' : '');
     const references = [...token.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g)].map(match => match[1]!);
-    for (const key of references) {
-      if (!Object.hasOwn(env, key) && typeof deps.env[key] === 'string') {
-        env[key] = deps.env[key]!;
-        items.push({ view: { id: entryId('env', key), category: 'connections', name: key, selected: true }, env: { [key]: env[key]! } });
-      }
-    }
     if (!token && typeof settings.tokenFile === 'string') {
       const file = sourcePath(deps.home, settings.tokenFile, source.root);
       token = (await readText(path.dirname(file), file, budget))?.trim() ?? '';
