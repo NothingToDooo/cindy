@@ -332,5 +332,16 @@ describe('mobile Orca collaboration mutations', () => {
     expect(narrowOrcaWorkerProvider(chosen, [provider('a', ['medium'], false)]).model)
       .toMatchObject({ providerId: 'a', effort: 'medium', fast: false });
   });
+
+  it('reconciles an unpinned model against the default source it will actually route to', () => {
+    const provider = (id: string, efforts: string[]) => ({
+      id, name: id, agents: ['codex'], connected: true, routing: { codex: {} },
+      models: { codex: [{ id: 'gpt-5.5', efforts, defaultEffort: efforts[0] ?? null, supportsFastMode: false }] },
+    }) as unknown as ProviderView;
+    const unpinned = { ...form, agent: 'codex' as const, model: { id: 'gpt-5.5', providerId: null, effort: 'xhigh', fast: true } };
+    const result = narrowOrcaWorkerProvider(unpinned, [provider('only', ['low', 'medium'])]);
+    // 仍不钉来源(交给被控端路由),但 effort / Fast 按该默认来源的条目收敛。
+    expect(result.model).toMatchObject({ providerId: null, effort: 'low', fast: false });
+  });
 });
 

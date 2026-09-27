@@ -20,7 +20,12 @@ import {
 } from '@cindy/maker-shared/orca-team';
 import { formatRemoteError, isTransientRemoteError } from '@cindy/maker-shared/device-link-contract';
 import { isLocalOnlyProviderForAgent, isSubscriptionDirectRoute } from '@cindy/model-providers';
-import { chatEligibleSourcesForModel, getModel, type ProviderView } from '@cindy/model-providers/registry';
+import {
+  chatEligibleSourcesForModel,
+  effectiveSourceIdForModel,
+  getModel,
+  type ProviderView,
+} from '@cindy/model-providers/registry';
 import type { AgentKind } from '@cindy/model-providers/types';
 import { normalizeMobileAgentCapabilities } from '@/session/agentCapabilities';
 import { humanizeRemoteError } from '@/device-link/remoteStatus';
@@ -94,20 +99,28 @@ export function convergeOrcaWorkerModel(
 /**
  * 提交前收窄显式来源(对齐桌面 CreateWorkerPopover 的 narrowProviderSource):用户在选择器里
  * 指定的来源已不再可路由该模型(断开 / 停用 / 下架)时清掉来源,交给被控端默认路由,而不是
- * 带着失效来源被 PROVIDER_ROUTE_UNAVAILABLE 拒绝。来源仍有效时按该来源自己的模型条目
- * 对账 effort / Fast(被控端按精确来源复核这两项)。来源目录未就绪(null)时原样提交。
+ * 带着失效来源被 PROVIDER_ROUTE_UNAVAILABLE 拒绝。
+ *
+ * 然后按「实际会路由到的来源」的模型条目对账 effort / Fast(被控端按实际来源复核这两项):
+ * 显式来源有效时用它;未指定来源时用该模型的默认来源(effectiveSourceIdForModel,与桌面
+ * routeEffortMetaFor 同口径),不按拍平能力里恰好排在前面的来源。来源目录未就绪(null)时原样提交。
  */
 export function narrowOrcaWorkerProvider(
   form: OrcaWorkerFormValue,
   providers: readonly ProviderView[] | null,
 ): OrcaWorkerFormValue {
   const model = form.model;
-  if (!model?.providerId || !providers) return form;
-  const provider = chatEligibleSourcesForModel([...providers], model.id, form.agent)
-    .find((candidate) => candidate.id === model.providerId);
-  if (!provider) return { ...form, model: { ...model, providerId: null } };
-  const entry = getModel(provider, model.id, form.agent);
-  if (!entry) return form;
+  if (!model || !providers) return form;
+  const views = [...providers];
+  const providerId = model.providerId
+    && chatEligibleSourcesForModel(views, model.id, form.agent).some((candidate) => candidate.id === model.providerId)
+    ? model.providerId
+    : null;
+  const narrowed = providerId === model.providerId ? form : { ...form, model: { ...model, providerId } };
+  const sourceId = providerId ?? effectiveSourceIdForModel(views, null, model.id, form.agent);
+  const provider = sourceId ? views.find((candidate) => candidate.id === sourceId) : undefined;
+  const entry = provider ? getModel(provider, model.id, form.agent) : undefined;
+  if (!entry) return narrowed;
   const efforts: readonly string[] = entry.efforts ?? [];
   const effort = efforts.length === 0
     ? model.effort
@@ -116,8 +129,8 @@ export function narrowOrcaWorkerProvider(
       : entry.defaultEffort ?? efforts[0] ?? null;
   const fast = model.fast && entry.supportsFastMode === true;
   return effort === model.effort && fast === model.fast
-    ? form
-    : { ...form, model: { ...model, effort, fast } };
+    ? narrowed
+    : { ...narrowed, model: { ...model, providerId, effort, fast } };
 }
 
 /**
