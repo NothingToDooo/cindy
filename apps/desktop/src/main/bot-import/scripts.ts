@@ -11,6 +11,12 @@ export function importedScriptName(sourceRoot: string, value: string, paths: typ
   return `scripts/${relative.split(paths.sep).join('/')}`;
 }
 
+/** Keep the entry's directory subtree intact: sibling modules and resources are
+ * dependencies too. Names are portable snapshot identities, not host paths. */
+export function isImportedScriptDependency(name: string, scripts: readonly string[]): boolean {
+  return scripts.some(script => name.startsWith(`${path.posix.dirname(script)}/`));
+}
+
 export async function importedScriptInterpreter(sourceRoot: string, name: string): Promise<string> {
   if (/\.(sh|bash)$/i.test(name)) return process.platform === 'win32' ? 'bash' : '/bin/bash';
   const python = path.join(sourceRoot, 'hermes-agent', '.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');

@@ -225,18 +225,34 @@ it.skipIf(process.platform === 'win32')('checks a local script without executing
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-import-local-script-test-'));
   try {
     const marker = path.join(root, 'must-not-be-created');
-    const script = `printf report\ntouch '${marker}'\n`;
-    const environment = { version: 1 as const, env: {}, mcp: [], credentials: [], files: { 'scripts/local.sh': Buffer.from(script).toString('base64') } };
+    const script = '. ./helper.sh\nreport\n';
+    const helper = `report() { cat data/input.txt; touch '${marker}'; }\n`;
+    const files: Record<string, string> = { 'scripts/local.sh': Buffer.from(script).toString('base64'), 'scripts/helper.sh': Buffer.from(helper).toString('base64'), 'scripts/data/input.txt': Buffer.from('local report data').toString('base64') };
+    const environment = { version: 1 as const, env: {}, mcp: [], credentials: [], files };
     vi.mocked(companionEnvironmentStore.read).mockResolvedValue(environment);
     const oneShot = vi.fn().mockResolvedValue(JSON.stringify({ localScript: true, reads: [] }));
     vi.mocked(getMakerIfReady).mockReturnValue({ oneShot, getSessionMeta: vi.fn().mockResolvedValue({ agentKind: 'pi', model: 'fixture-model' }) } as never);
     vi.mocked(getBotRemoteResourceSource).mockResolvedValue({ canonicalSessionId: 'fixture-session' } as never);
     const item = { view: { id: 'local', name: 'Local report', category: 'automations' as const, selected: true, dependsOn: ['script'] },
       automation: { sourceId: 'local', original: { script: 'local.sh', no_agent: true }, fingerprint: 'fixture' } };
-    const selected = [{ view: { id: 'script', name: 'local.sh', category: 'connections' as const, selected: true }, asset: { name: 'scripts/local.sh', bytes: Buffer.from(script) } }];
+    const selected = [{ view: { id: 'script', name: 'local.sh', category: 'connections' as const, selected: true }, asset: { name: 'scripts/local.sh', bytes: Buffer.from(script) } },
+      { view: { id: 'helper', name: 'helper.sh', category: 'connections' as const, selected: true }, asset: { name: 'scripts/helper.sh', bytes: Buffer.from(helper) } },
+      { view: { id: 'data', name: 'input.txt', category: 'connections' as const, selected: true }, asset: { name: 'scripts/data/input.txt', bytes: Buffer.from('local report data') } }];
+    item.view.dependsOn.push('helper', 'data');
     expect((await verifyImportedAutomation(root, 'bot', item, () => {}, selected, root)).verified).toBe(true);
+    const prompt = oneShot.mock.calls[0]![1] as string;
+    const planInput = JSON.parse(prompt.slice(prompt.lastIndexOf('\n') + 1));
+    expect(planInput.scripts.find((file: { name: string }) => file.name === 'scripts/helper.sh').source).toBe(helper);
+    expect(planInput.scriptAssets).toContain('scripts/data/input.txt');
     await expect(fs.access(marker)).rejects.toThrow();
     expect(await fs.readdir(path.join(root, 'bots/bot/import-executions'))).toEqual([]);
+    delete files['scripts/data/input.txt'];
+    expect((await verifyImportedAutomation(root, 'bot', item, () => {}, selected, root)).verified).toBe(false);
+    expect(oneShot).toHaveBeenCalledOnce();
+    files['scripts/data/input.txt'] = Buffer.from('local report data').toString('base64');
+    files['scripts/helper.sh'] = Buffer.from('x'.repeat(32001)).toString('base64');
+    expect((await verifyImportedAutomation(root, 'bot', item, () => {}, selected, root)).verified).toBe(false);
+    files['scripts/helper.sh'] = Buffer.from(helper).toString('base64');
     environment.files['scripts/local.sh'] = Buffer.from('if then broken').toString('base64');
     expect((await verifyImportedAutomation(root, 'bot', item, () => {}, selected, root)).verified).toBe(false);
     environment.files['scripts/local.sh'] = Buffer.from(script).toString('base64');

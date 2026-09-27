@@ -114,15 +114,28 @@ it('imports Hermes context without turning unrelated repository instructions int
   expect((await inspectImportSource(source!, reader)).items.find(item => item.role === 'instructions')?.text).toBe('Speak gently and briefly.');
 });
 
-it('selects nested automation scripts using the same portable asset identity as dependencies', async () => {
+it('selects entry and monitor subtrees, including sibling code, resources and their environment dependencies', async () => {
   await write('.hermes/config.yaml', 'name: Ada\n');
-  await write('.hermes/scripts/reports/daily.sh', 'printf report');
-  await write('.hermes/cron/jobs.json', JSON.stringify([{ id: 'daily', script: path.join('reports', 'daily.sh'), no_agent: true, schedule: { kind: 'interval', minutes: 5 } }]));
+  await write('.hermes/.env', 'DATA_URL=https://example.invalid\nDATA_TOKEN=fixture-token');
+  await write('.hermes/scripts/reports/daily.sh', '. ./helper.sh');
+  await write('.hermes/scripts/reports/helper.sh', 'curl -H "Authorization: Bearer $DATA_TOKEN" "$DATA_URL"');
+  await write('.hermes/scripts/reports/data/template.txt', 'Daily report');
+  await write('.hermes/scripts/monitor/check.sh', 'cat data/value.txt');
+  await write('.hermes/scripts/monitor/data/value.txt', '7');
+  await write('.hermes/scripts/reports-unused/other.sh', 'printf unrelated');
+  await write('.hermes/cron/jobs.json', JSON.stringify([{ id: 'daily', script: path.join('reports', 'daily.sh'), monitor_script: path.join('monitor', 'check.sh'), no_agent: true, schedule: { kind: 'interval', minutes: 5 } }]));
   const reader = deps(); const [source] = await discoverImportSources(reader);
   const snapshot = await inspectImportSource(source!, reader);
-  const script = snapshot.items.find(item => item.asset)!;
-  expect(script.view.selected).toBe(true);
-  expect(snapshot.items.find(item => item.automation)?.view.dependsOn).toContain(script.view.id);
+  const automation = snapshot.items.find(item => item.automation)!;
+  expect(automation.view.issues).toBeUndefined();
+  const files = snapshot.items.filter(item => item.asset);
+  expect(files.filter(item => item.view.selected).map(item => item.asset!.name).sort()).toEqual([
+    'scripts/monitor/check.sh', 'scripts/monitor/data/value.txt', 'scripts/reports/daily.sh', 'scripts/reports/data/template.txt', 'scripts/reports/helper.sh',
+  ]);
+  expect(automation.view.dependsOn?.toSorted()).toEqual(snapshot.items.filter(item => item.view.selected && (item.asset || item.env)).map(item => item.view.id).sort());
+  // A surviving sibling must not hide a missing entrypoint.
+  await fs.unlink(path.join(home, '.hermes/scripts/reports/daily.sh'));
+  expect((await inspectImportSource(source!, reader)).items.find(item => item.automation)?.view.issues).toContain('AUTOMATION_SCRIPT_MISSING');
 });
 
 it.each(['daily-report', 'Daily report'])('matches a skill reference %s against both its directory and display name', async reference => {

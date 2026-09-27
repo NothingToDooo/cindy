@@ -33,6 +33,11 @@ theme tokens. No new native Mobile dependencies or fingerprint inputs are added.
   real scripts, templates, executable bits and `SKILL.md`.
   Automation references match both the source directory slug and skill display
   name; referenced skill scripts contribute their environment dependencies.
+  Hermes entry and monitor scripts select their entire directory subtrees,
+  preserving sibling modules and resource paths in the encrypted snapshot.
+  These files remain individually deselectable; deselecting a subtree dependency
+  prevents that automation's takeover, leaving its source running. Helper code
+  contributes environment dependencies and bounded verification planning text.
   A shared 128 MiB / 4096-file read budget bounds each source snapshot, including
   config includes, documents, credentials, scripts and all referenced skill trees.
   Additional selected skill resources use the same cumulative limit before any

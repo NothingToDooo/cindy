@@ -5,6 +5,8 @@ import os from 'node:os';
 import { createServer } from 'node:http';
 import type { Routine } from '@cindy/maker-scheduler';
 import { createCompanionEnvironmentStore } from '../environment.js';
+import { discoverImportSources, inspectImportSource } from '../sources.js';
+import { validateImportSelection } from '../transfer.js';
 
 const shared = vi.hoisted(() => ({ store: null as unknown as ReturnType<typeof createCompanionEnvironmentStore>, message: vi.fn() }));
 vi.mock('../runtime.js', () => ({ companionEnvironmentStore: { read: (...args: Parameters<typeof shared.store.read>) => shared.store.read(...args), update: (...args: Parameters<typeof shared.store.update>) => shared.store.update(...args) } }));
@@ -18,6 +20,40 @@ beforeEach(async () => {
   shared.message.mockReset().mockResolvedValue({});
 });
 afterEach(async () => { vi.unstubAllEnvs(); await fs.rm(root, { recursive: true, force: true }); });
+
+it.skipIf(process.platform === 'win32')('executes the default imported script and monitor subtrees after removing the source', async () => {
+  const sourceRoot = path.join(root, '.hermes');
+  const files = {
+    'config.yaml': 'name: Ada\n',
+    'cron/jobs.json': JSON.stringify([{ id: 'report', script: 'reports/report.sh', monitor_script: 'monitor/check.sh', no_agent: true, schedule: { kind: 'interval', minutes: 5 } }]),
+    'scripts/reports/report.sh': '. ./helper.sh\nreport\n',
+    'scripts/reports/helper.sh': 'report() { cat data/report.txt; }\n',
+    'scripts/reports/data/report.txt': 'copied report resource',
+    'scripts/monitor/check.sh': '. ./helper.sh\nmonitor\n',
+    'scripts/monitor/helper.sh': 'monitor() { cat data/state.txt; }\n',
+    'scripts/monitor/data/state.txt': 'copied monitor resource',
+    'scripts/unrelated/unused.sh': 'exit 99',
+  };
+  for (const [name, text] of Object.entries(files)) { const file = path.join(sourceRoot, name); await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, text); }
+  const reader = { home: root, env: {}, readCronDatabase: vi.fn(async () => []) };
+  const [source] = await discoverImportSources(reader);
+  const snapshot = await inspectImportSource(source!, reader);
+  const selected = validateImportSelection({ requestId: 'script-subtree-fixture', previewId: 'preview', name: 'Ada', takeover: true, entryIds: snapshot.items.filter(item => item.view.selected).map(item => item.view.id) }, snapshot);
+  const task = selected.find(item => item.automation)!;
+  const assets = Object.fromEntries(selected.flatMap(item => item.asset ? [[item.asset.name, item.asset.bytes.toString('base64')]] : []));
+  expect(Object.keys(assets)).toHaveLength(6);
+  expect(assets['scripts/unrelated/unused.sh']).toBeUndefined();
+  await shared.store.write(root, 'bot', { version: 1, env: {}, mcp: [], credentials: [], files: assets, automations: {
+    routine: { kind: 'hermes', handover: 'ready', original: task.automation!.original, sourceRoot, deliveries: [] },
+  } }, () => {});
+  await fs.rm(sourceRoot, { recursive: true, force: true });
+  const routine: Routine = { id: 'routine', botId: 'bot', name: 'Report', prompt: 'Run report', enabled: true, triggers: [{ id: 'tick', kind: 'interval', intervalMs: 60000 }], revision: 1, createdAt: 1, updatedAt: 1 };
+  const result = await prepareImportedAutomation(root, routine, 'copied-run', new AbortController().signal, () => {});
+  expect(result?.direct).toBe('copied report resource');
+  expect(result?.prompt).toContain('copied monitor resource');
+  expect(await fs.readdir(path.join(root, 'bots/bot/import-executions'))).toEqual([]);
+});
+
 it('uses the original monitor URL but masks echoed path/query credentials, previous output and legacy retry caches', async () => {
   const requests: string[] = [];
   const endpoint = createServer((req, res) => {

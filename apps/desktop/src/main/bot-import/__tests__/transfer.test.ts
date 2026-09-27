@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { transferCompanion, type ImportReceipt, type TransferDeps } from '../transfer.js';
 import { CompanionImportError, type ImportSnapshot } from '../types.js';
 import type { CompanionImportSelection } from '@cindy/maker-shared/companion-import';
+import { normalizeAutomation } from '../sourceAutomations.js';
 
 const snapshot: ImportSnapshot = { source: { kind: 'hermes', agentId: 'default', name: 'Ada', root: '/fixture/hermes', workspace: '/fixture/work', configFile: '/fixture/hermes/config.yaml' }, fingerprint: 'fixture', items: [
   { view: { id: 'memory', category: 'memory', name: 'memory', selected: true }, text: 'Keep this' },
@@ -22,6 +23,24 @@ function harness() {
   };
   return { deps, receipt: () => receipt };
 }
+
+it('keeps the source running when a script sibling or resource is deselected', async () => {
+  const items = ['reports/main.py', 'reports/helper.py', 'reports/data/input.json'].map(name => ({
+    view: { id: name, name, category: 'connections' as const, selected: true }, asset: { name: `scripts/${name}`, bytes: Buffer.from('fixture') },
+  }));
+  const task = normalizeAutomation(snapshot.source, { id: 'report', script: 'reports/main.py', no_agent: true, schedule: { kind: 'interval', minutes: 5 } }, items, 'UTC');
+  const source = { ...snapshot, items: [...items, task] };
+  for (const omitted of ['reports/helper.py', 'reports/data/input.json']) {
+    const { deps } = harness();
+    const entryIds = source.items.map(item => item.view.id).filter(id => id !== omitted);
+    const result = await transferCompanion(source, { ...selection, entryIds }, deps);
+    expect(result.checks.find(check => check.entryId === task.view.id)).toMatchObject({ status: 'needs-attention', message: 'AUTOMATION_DEPENDENCY_NOT_SELECTED' });
+    expect(deps.pauseSource).not.toHaveBeenCalled();
+    expect(deps.enableRoutine).not.toHaveBeenCalled();
+    expect(deps.verifyAutomation).not.toHaveBeenCalled();
+    expect(vi.mocked(deps.saveEnvironment).mock.calls[0]![1].some(item => item.view.id === omitted)).toBe(false);
+  }
+});
 describe('companion takeover transaction', () => {
   it('copies exactly the selection and verifies before pausing source, idempotently', async () => {
     const { deps } = harness(); const order: string[] = [];
