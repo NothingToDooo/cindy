@@ -189,7 +189,7 @@ export function TaskMoveSubmenu({
         ) : (
           localProjects
         )}
-        {['desktop', 'shared'].includes(session.source ?? 'desktop') &&
+        {['desktop', 'shared', 'feishu'].includes(session.source ?? 'desktop') &&
           session.orcaRole !== 'worker' && (
             <>
               <DropdownMenuSeparator className={MENU_SEPARATOR_CLASS} />

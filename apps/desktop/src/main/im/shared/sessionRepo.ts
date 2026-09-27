@@ -24,6 +24,8 @@ import { getDbClient } from '../../localDb/client/current';
 import { normalizeDbAgentKind } from '../../../shared/agentKindConversion';
 import { sessions } from '../../localDb/schema';
 import { withSessionRouteLock } from '../../localDb/sessionRouteLock';
+import { assertTaskMigrationWritable } from '../../task-migration/journal';
+import { withTaskMigrationWrite } from '../../task-migration/writeBoundary';
 import { retireDeletedPiSubagentState } from '../../localDb/ipc/piSubagentDeletion';
 import { createLogger, maskPath } from '../../logger';
 import { setSessionProvider } from '../../maker-host/session-provider-store';
@@ -237,6 +239,8 @@ export function createImSessionRepo(
     }
     const legacyId = ns.sessionIdFor(botContextId, userId, scopeKey);
     const rows = await db.select().from(sessions).where(eq(sessions.id, legacyId)).limit(1);
+    // A migrated native route is unavailable, not a missing row to upsert or revive.
+    assertTaskMigrationWritable(legacyId);
     return rows[0] ?? null;
   }
 
@@ -275,7 +279,7 @@ export function createImSessionRepo(
     async findActiveSession(botContextId, userId, scopeKey) {
       const routeId = ns.sessionIdFor(botContextId, userId, scopeKey);
       const db = getDbClient().drizzle;
-      const result = await withSessionRouteLock(routeId, async () => {
+      const result = await withSessionRouteLock(routeId, () => withTaskMigrationWrite(routeId, async () => {
         const row = await selectChannelRow(botContextId, userId, scopeKey);
         if (!row) return null;
         const workspaceKind = readWorkspaceKind(
@@ -320,7 +324,7 @@ export function createImSessionRepo(
           workspaceKindCorrected = true;
         }
         return { row, workspaceKind, revivedFrom, workspaceKindCorrected };
-      });
+      }));
       if (!result) return null;
       const { row, workspaceKind } = result;
       if (result.revivedFrom) {
@@ -400,7 +404,7 @@ export function createImSessionRepo(
       const db = getDbClient().drizzle;
       const row = prepared ?? (await this.prepareNewSession(botContextId, userId, scopeKey));
       const now = Date.now();
-      const persisted = await withSessionRouteLock(row.id, async () => {
+      const persisted = await withSessionRouteLock(row.id, () => withTaskMigrationWrite(row.id, async () => {
         const priorRows = await db
           .select({ status: sessions.status })
           .from(sessions)
@@ -456,7 +460,7 @@ export function createImSessionRepo(
           .where(eq(sessions.id, row.id))
           .limit(1);
         return { row: persistedRows[0], isFreshInsert };
-      });
+      }));
       const persistedRow = persisted?.row;
       const result: ImSessionRow = persistedRow
         ? {
@@ -487,11 +491,13 @@ export function createImSessionRepo(
         try {
           const resolved = await ns.resolveSessionTitle(userId, scopeKey);
           if (resolved) {
-            await db
-              .update(sessions)
-              .set({ title: resolved })
-              .where(eq(sessions.id, result.id));
-            broadcastSessionPatched(result.id, { title: resolved });
+            await withTaskMigrationWrite(result.id, async () => {
+              await db
+                .update(sessions)
+                .set({ title: resolved })
+                .where(eq(sessions.id, result.id));
+              broadcastSessionPatched(result.id, { title: resolved });
+            });
           }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
@@ -604,12 +610,14 @@ function rowFromDefaults(
 
 /** Bump userSendAt so sidebar (if ever surfaced) sorts IM sessions correctly. */
 export async function touchUserSent(sessionId: string): Promise<void> {
-  const db = getDbClient().drizzle;
-  const now = Date.now();
-  await db
-    .update(sessions)
-    .set({ userSendAt: now, updatedAt: now })
-    .where(eq(sessions.id, sessionId));
+  return withTaskMigrationWrite(sessionId, async () => {
+    const db = getDbClient().drizzle;
+    const now = Date.now();
+    await db
+      .update(sessions)
+      .set({ userSendAt: now, updatedAt: now })
+      .where(eq(sessions.id, sessionId));
+  });
 }
 
 /**
@@ -622,17 +630,19 @@ export async function touchUserSent(sessionId: string): Promise<void> {
  * conversation isn't reused) and removing it from sessionStates.
  */
 export async function clearContext(sessionId: string): Promise<void> {
-  const db = getDbClient().drizzle;
-  await db
-    .update(sessions)
-    .set({
-      sdkSessionId: null,
-      clearedAt: Date.now(),
-      updatedAt: Date.now(),
-      listPreview: null,
-      listPreviewRole: null,
-    })
-    .where(eq(sessions.id, sessionId));
+  return withTaskMigrationWrite(sessionId, async () => {
+    const db = getDbClient().drizzle;
+    await db
+      .update(sessions)
+      .set({
+        sdkSessionId: null,
+        clearedAt: Date.now(),
+        updatedAt: Date.now(),
+        listPreview: null,
+        listPreviewRole: null,
+      })
+      .where(eq(sessions.id, sessionId));
+  });
 }
 
 /**
@@ -649,31 +659,33 @@ export async function resetSessionToDefaults(
   prepared?: ImSessionRow,
   channel?: ImSessionNamespace['source'],
 ): Promise<void> {
-  const defaults =
-    prepared ??
-    rowFromDefaults(sessionId, '', await resolveImSessionDefaults(config, undefined, channel));
-  const db = getDbClient().drizzle;
-  await db
-    .update(sessions)
-    .set({
-      agentKind: toDbAgentKind(defaults.agentKind),
-      model: defaults.model,
-      effort: defaults.effort,
-      providerId: defaults.providerId,
-      permissionMode: defaults.permissionMode,
-      fastMode: defaults.fastMode,
-      // Personal WeChat exposes a user-selected channel working directory.
-      // It applies only at the explicit `/new` boundary; existing context is
-      // never moved silently.
-      ...(channel === 'wechat' && defaults.workingDir ? { workingDir: defaults.workingDir } : {}),
-      sdkSessionId: null,
-      clearedAt: Date.now(),
-      updatedAt: Date.now(),
-      listPreview: null,
-      listPreviewRole: null,
-    })
-    .where(eq(sessions.id, sessionId));
-  setSessionProvider(sessionId, defaults.providerId);
+  return withTaskMigrationWrite(sessionId, async () => {
+    const defaults =
+      prepared ??
+      rowFromDefaults(sessionId, '', await resolveImSessionDefaults(config, undefined, channel));
+    const db = getDbClient().drizzle;
+    await db
+      .update(sessions)
+      .set({
+        agentKind: toDbAgentKind(defaults.agentKind),
+        model: defaults.model,
+        effort: defaults.effort,
+        providerId: defaults.providerId,
+        permissionMode: defaults.permissionMode,
+        fastMode: defaults.fastMode,
+        // Personal WeChat exposes a user-selected channel working directory.
+        // It applies only at the explicit `/new` boundary; existing context is
+        // never moved silently.
+        ...(channel === 'wechat' && defaults.workingDir ? { workingDir: defaults.workingDir } : {}),
+        sdkSessionId: null,
+        clearedAt: Date.now(),
+        updatedAt: Date.now(),
+        listPreview: null,
+        listPreviewRole: null,
+      })
+      .where(eq(sessions.id, sessionId));
+    setSessionProvider(sessionId, defaults.providerId);
+  });
 }
 
 /**
@@ -688,20 +700,22 @@ export async function switchSessionWorkingDir(
   workingDir: string,
   workspaceKind: 'project' | 'dialogue',
 ): Promise<void> {
-  const db = getDbClient().drizzle;
-  await db
-    .update(sessions)
-    .set({
-      workingDir,
-      workspaceKind,
-      sdkSessionId: null,
-      clearedAt: Date.now(),
-      updatedAt: Date.now(),
-      listPreview: null,
-      listPreviewRole: null,
-    })
-    .where(eq(sessions.id, sessionId));
-  broadcastSessionCreated(sessionId);
+  return withTaskMigrationWrite(sessionId, async () => {
+    const db = getDbClient().drizzle;
+    await db
+      .update(sessions)
+      .set({
+        workingDir,
+        workspaceKind,
+        sdkSessionId: null,
+        clearedAt: Date.now(),
+        updatedAt: Date.now(),
+        listPreview: null,
+        listPreviewRole: null,
+      })
+      .where(eq(sessions.id, sessionId));
+    broadcastSessionCreated(sessionId);
+  });
 }
 
 /** 读取 `/model` 修改前的持久化路由快照，用于失败时恢复运行态。 */
@@ -742,25 +756,29 @@ export async function updateModelEffort(
   effort: Effort,
   providerId?: string | null,
 ): Promise<void> {
-  const db = getDbClient().drizzle;
-  await db
-    .update(sessions)
-    .set({
-      model,
-      effort,
-      ...(providerId !== undefined ? { providerId } : {}),
-      updatedAt: Date.now(),
-    })
-    .where(eq(sessions.id, sessionId));
+  return withTaskMigrationWrite(sessionId, async () => {
+    const db = getDbClient().drizzle;
+    await db
+      .update(sessions)
+      .set({
+        model,
+        effort,
+        ...(providerId !== undefined ? { providerId } : {}),
+        updatedAt: Date.now(),
+      })
+      .where(eq(sessions.id, sessionId));
+  });
 }
 
 /** Update permissionMode column (for /permission picker). */
 export async function updatePermissionMode(sessionId: string, mode: PermissionMode): Promise<void> {
-  const db = getDbClient().drizzle;
-  await db
-    .update(sessions)
-    .set({ permissionMode: mode, updatedAt: Date.now() })
-    .where(eq(sessions.id, sessionId));
+  return withTaskMigrationWrite(sessionId, async () => {
+    const db = getDbClient().drizzle;
+    await db
+      .update(sessions)
+      .set({ permissionMode: mode, updatedAt: Date.now() })
+      .where(eq(sessions.id, sessionId));
+  });
 }
 
 /** 读取 /permission 切换前的持久化权限；非法历史值按 ask 处理。 */

@@ -1128,39 +1128,41 @@ export async function persistSessionTitleIfStillDraft(
   title: string,
   expectedTitle: string = DEFAULT_DRAFT_SESSION_TITLE,
 ): Promise<boolean> {
-  const ownerScope = captureOwnerScope();
-  const cleanTitle = normalizeAutoTitle(title);
-  if (!cleanTitle || cleanTitle === DEFAULT_DRAFT_SESSION_TITLE) return false;
+  return withTaskMigrationWrite(sessionId, async () => {
+    const ownerScope = captureOwnerScope();
+    const cleanTitle = normalizeAutoTitle(title);
+    if (!cleanTitle || cleanTitle === DEFAULT_DRAFT_SESSION_TITLE) return false;
 
-  const db = getDbClient().drizzle;
-  // 目标值与期望值相同 → UPDATE 无事可做,但**不能凭期望值直接报成功**:期望值
-  // 可能已经过期(用户在资格检查之后手动改了名),那时库里根本不是这个标题。
-  // 读一次真实标题再回答,避免调用方把"没写成"当成"已写入"(PR #510 review)。
-  if (cleanTitle === expectedTitle) {
-    const current = await selectSessionWithCount(db, sessionId);
-    return !!current && current.title === cleanTitle;
-  }
+    const db = getDbClient().drizzle;
+    // 目标值与期望值相同 → UPDATE 无事可做,但**不能凭期望值直接报成功**:期望值
+    // 可能已经过期(用户在资格检查之后手动改了名),那时库里根本不是这个标题。
+    // 读一次真实标题再回答,避免调用方把"没写成"当成"已写入"(PR #510 review)。
+    if (cleanTitle === expectedTitle) {
+      const current = await selectSessionWithCount(db, sessionId);
+      return !!current && current.title === cleanTitle;
+    }
 
-  const setObj = sessionPatchToRow({ title: cleanTitle }, { bumpUpdatedAt: false });
-  await db
-    .update(sessions)
-    .set(setObj)
-    .where(and(eq(sessions.id, sessionId), eq(sessions.title, expectedTitle)));
+    const setObj = sessionPatchToRow({ title: cleanTitle }, { bumpUpdatedAt: false });
+    await db
+      .update(sessions)
+      .set(setObj)
+      .where(and(eq(sessions.id, sessionId), eq(sessions.title, expectedTitle)));
 
-  const row = await selectSessionWithCount(db, sessionId);
-  if (!row || row.title !== cleanTitle) return false;
+    const row = await selectSessionWithCount(db, sessionId);
+    if (!row || row.title !== cleanTitle) return false;
 
-  const updated = sessionToCamel(row);
-  notifyAgentIslandSessionPatch(updated.id, {
-    status: updated.status,
-    title: updated.title,
-    workingDir: updated.workingDir,
-    workspaceKind: updated.workspaceKind,
+    const updated = sessionToCamel(row);
+    notifyAgentIslandSessionPatch(updated.id, {
+      status: updated.status,
+      title: updated.title,
+      workingDir: updated.workingDir,
+      workspaceKind: updated.workspaceKind,
+    });
+    if (isOwnerScopeCurrent(ownerScope)) {
+      broadcastSessionPatched(sessionId, { title: cleanTitle }, ownerScope);
+    }
+    return true;
   });
-  if (isOwnerScopeCurrent(ownerScope)) {
-    broadcastSessionPatched(sessionId, { title: cleanTitle }, ownerScope);
-  }
-  return true;
 }
 
 /**

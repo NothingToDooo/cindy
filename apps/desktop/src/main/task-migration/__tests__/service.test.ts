@@ -610,7 +610,8 @@ describe('durable cross-machine handoff', () => {
     await expect(assertTaskMigrationInputAllowed(undefined, path.join(state.root, 'unrelated'))).resolves.toBeUndefined();
     await expect(assertTaskMigrationInputAllowed(undefined, path.join(state.root, 'shared', 'missing'))).rejects.toThrow('MIGRATION_SHARED_DIRECTORY_BUSY');
   });
-  it('moves a fork into an independent directory and leaves the sibling and source files usable', async () => {
+  it.each(['desktop', 'feishu'])('moves a %s task into an independent directory and preserves source files', async (source) => {
+    state.rows.get('A')!.get('fork')!.source = source;
     // First use must work with the real file lock and no migration state directory.
     await expect(fs.stat(path.join(state.root, 'A', 'task-migrations'))).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(fs.stat(path.join(state.root, 'B', 'task-migrations'))).rejects.toMatchObject({ code: 'ENOENT' });
@@ -620,6 +621,7 @@ describe('durable cross-machine handoff', () => {
     expect(() => assertTaskMigrationWritable('fork')).toThrow('MIGRATION_TASK_MOVED');
     expect(() => assertTaskMigrationWritable('sibling')).not.toThrow();
     const row = state.rows.get('B')!.get(status.targetSessionId!)!;
+    expect(row.source).toBe('shared');
     expect(row.workingDir).not.toBe(path.join(state.root, 'shared'));
     await fs.writeFile(path.join(row.workingDir as string, 'draft'), 'destination edit');
     expect(await fs.readFile(path.join(state.root, 'shared', 'draft'), 'utf8')).toBe('original');

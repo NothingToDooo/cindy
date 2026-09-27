@@ -1,3 +1,4 @@
+import { listImOrchestrators } from './im/shared/orchestrator';
 import { listWorktreeRecycleStatus, controlWorktreeRecycle } from './worktree/recycleControls';
 import { registerFilePeerIpc } from './device-link/filePeer';
 import { registerTaskMigrationIpc } from './task-migration/service';
@@ -9617,7 +9618,11 @@ app.on('ready', async () => {
   registerDeviceLinkIpc();
   registerTaskMigrationIpc((sessionId, workingDir, assertAuthority) =>
     moveSessionProjectFromHost(isSessionInTurn, sessionId, workingDir, assertAuthority),
-    { isBusy: isSessionTaskMigrationBusy, drain: drainPersistQueue },
+    {
+      isBusy: (id) => isSessionTaskMigrationBusy(id) ||
+        listImOrchestrators().some(({ turnRunner }) => turnRunner.isSessionBusy?.(id)),
+      drain: drainPersistQueue,
+    },
   );
   registerSharedTaskIpc(isSharedTaskAvailable, () => getDeviceLinkStatus() === 'online');
   registerFilePeerIpc();

@@ -12,8 +12,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { messages, sessions } from '../../schema';
 
 const h = vi.hoisted(() => ({
+  migrating: false,
   db: null as ReturnType<typeof drizzle> | null,
   sqlite: null as InstanceType<typeof import('better-sqlite3')> | null,
+}));
+
+vi.mock('../../../task-migration/writeBoundary', () => ({
+  withTaskMigrationWrite: async (_id: string, write: () => Promise<unknown>) => {
+    if (h.migrating) throw new Error('MIGRATION_TASK_MOVED');
+    return write();
+  },
 }));
 
 vi.mock('electron', () => ({
@@ -152,7 +160,15 @@ function currentTitle(): string {
 // (main / renderer / mobile 共用同一份实现,单测跟着实现走)。
 
 describe('persistSessionTitleIfStillDraft — 条件写', () => {
-  beforeEach(() => createDb('New Maker'));
+  beforeEach(() => { h.migrating = false; createDb('New Maker'); });
+
+  it.each(['New Maker', '占位标题'])('rejects delayed title persistence after migration from %s', async (expected) => {
+    h.sqlite!.prepare('UPDATE sessions SET title = ? WHERE id = ?').run(expected, SESSION_ID);
+    h.migrating = true;
+    await expect(persistSessionTitleIfStillDraft(SESSION_ID, '生成的标题', expected)).rejects.toThrow('MIGRATION_TASK_MOVED');
+    expect(currentTitle()).toBe(expected);
+    h.migrating = false;
+  });
 
   it('标题仍是草稿占位时写入成功', async () => {
     expect(await persistSessionTitleIfStillDraft(SESSION_ID, '帮我排查登录失败')).toBe(true);

@@ -20,6 +20,17 @@ const mocks = vi.hoisted(() => {
   };
 });
 
+vi.mock('../../../task-migration/journal', () => ({
+  assertTaskMigrationWritable: vi.fn(),
+}));
+vi.mock('../../../task-migration/writeBoundary', () => ({
+  withTaskMigrationWrite: async (_id: string, write: () => Promise<unknown>) => {
+    const { assertTaskMigrationWritable } = await import('../../../task-migration/journal');
+    assertTaskMigrationWritable(_id);
+    return write();
+  },
+}));
+
 vi.mock('electron', () => ({
   BrowserWindow: {
     getAllWindows: () => [

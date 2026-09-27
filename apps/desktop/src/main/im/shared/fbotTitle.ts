@@ -17,6 +17,7 @@
  * 一致, 起不出来标题不阻塞主流程)。
  */
 
+import { withTaskMigrationWrite } from '../../task-migration/writeBoundary';
 import { desktopSessionStorage } from '../../maker-host/session-storage';
 import { generateMakerSessionTitle } from '../../maker-ipc/title';
 import { broadcastSessionPatched } from './sessionBroadcast';
@@ -55,8 +56,7 @@ export async function generateAndPersistFbotTitle(
   if (!generated) return null;
 
   const title = fbotTitle(generated, prefix);
-  await desktopSessionStorage.update(sessionId, { title });
-  broadcastSessionPatched(sessionId, { title });
+  await persistGeneratedSessionTitle(sessionId, title);
   return title;
 }
 
@@ -73,6 +73,8 @@ export async function generateImSessionTitleText(
 
 /** 落库 + 广播一个已拼装好的标题(渠道 composeGeneratedTitle 的产物)。 */
 export async function persistGeneratedSessionTitle(sessionId: string, title: string): Promise<void> {
-  await desktopSessionStorage.update(sessionId, { title });
-  broadcastSessionPatched(sessionId, { title });
+  await withTaskMigrationWrite(sessionId, async () => {
+    await desktopSessionStorage.update(sessionId, { title });
+    broadcastSessionPatched(sessionId, { title });
+  });
 }

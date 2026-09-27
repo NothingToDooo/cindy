@@ -181,7 +181,7 @@ async function assertSource(
     !row.workingDir ||
     row.remoteHostId ||
     (worker ? row.orcaRole !== 'worker' : row.orcaRole === 'worker') ||
-    !['desktop', 'shared'].includes(row.source)
+    !['desktop', 'shared', 'feishu'].includes(row.source)
   )
     throw new Error('MIGRATION_TASK_UNSUPPORTED');
   if (bindingStore.findByTarget(sessionId)) throw new Error('MIGRATION_TASK_BOUND');

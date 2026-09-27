@@ -153,7 +153,7 @@ it('does not merge a move response into a different account', async () => {
   expect(h.merge).not.toHaveBeenCalled();
 });
 
-it.each(['feishu', 'bot'] as const)(
+it.each(['bot'] as const)(
   'hides cross-computer migration for a %s task',
   async (source) => {
     await mount({ ...session, source });
@@ -163,7 +163,7 @@ it.each(['feishu', 'bot'] as const)(
   },
 );
 
-it.each(['desktop', 'shared'] as const)(
+it.each(['desktop', 'shared', 'feishu'] as const)(
   'keeps cross-computer migration for a %s task',
   async (source) => {
     await mount({ ...session, source });
