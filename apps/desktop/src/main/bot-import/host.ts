@@ -57,11 +57,24 @@ export async function listCompanionImportSources(controller: string): Promise<Co
   const scope = owner();
   const found = await discoverImportSources(readers()); scope.assert();
   prune(sources);
-  return found.map(source => {
+  const result: CompanionImportSource[] = [];
+  // Inspect sequentially and discard each snapshot: discovery must use the same
+  // complete credential boundary as preview without retaining every source tree.
+  for (const source of found) {
+    let name = `${source.kind === 'hermes' ? 'Hermes' : 'OpenClaw'} · ${result.length + 1}`;
+    try {
+      const snapshot = await inspectImportSource(source, readers());
+      name = redactEnvironmentValues(source.name, previewImportRedactions(snapshot.items));
+    } catch {
+      // An unreadable source remains selectable, but its unchecked name is not
+      // public. Preview reports the underlying failure through its usual path.
+    }
+    scope.assert();
     const id = randomUUID();
     sources.set(id, { owner: scope.scope, controller, value: source, createdAt: Date.now() });
-    return { id, kind: source.kind, name: source.name };
-  });
+    result.push({ id, kind: source.kind, name });
+  }
+  return result;
 }
 
 export async function previewCompanionImport(sourceId: string, controller: string): Promise<CompanionImportPreview> {

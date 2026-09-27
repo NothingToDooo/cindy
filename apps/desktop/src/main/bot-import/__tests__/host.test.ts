@@ -27,7 +27,7 @@ vi.mock('../../maker-ipc/botProfileFolder.js', () => ({ BOT_PROFILE_TEXT_MAX_BYT
   ensureBotWorkspaceDir: async () => { const directory = path.join(h.root, 'bots', h.botId, 'workspace'); await fs.mkdir(directory, { recursive: true }); return directory; },
 }));
 vi.mock('@cindy/mcps', () => ({ resolveLiziMcpSessionContext: () => ({ sessionId: 'chat' }) }));
-vi.mock('../sources.js', () => ({ discoverImportSources: async () => [h.snapshot.source], inspectImportSource: async () => h.snapshot }));
+vi.mock('../sources.js', () => ({ discoverImportSources: vi.fn(async () => [h.snapshot.source]), inspectImportSource: vi.fn(async () => h.snapshot) }));
 vi.mock('../openclawCron.js', () => ({ readOpenClawCronDatabase: vi.fn() }));
 vi.mock('../verification.js', () => ({ verifyImportedAutomation: async () => ({ verified: h.verified, reason: 'AUTOMATION_DATA_READ_FAILED' }) }));
 vi.mock('../takeover.js', () => ({ changeSourceAutomationState: async (_source: unknown, _item: unknown, enabled: boolean, _readers: unknown, _owner: unknown, _resume: boolean, env: Record<string, string>) => { h.pause(enabled); h.sourceEnabled = enabled; h.sourceEnvironment = env; } }));
@@ -59,12 +59,15 @@ import { withBotProfileLocks } from '../../maker-ipc/botProfileLock.js';
 import { assertImportedAutomationReady, prepareImportedAutomation } from '../automationRuntime.js';
 import { decodeBotAvatarImage } from '../../localDb/ipc/botAvatarSelection.js';
 import { createCompanionConnectionsProvider } from '../connectionProvider.js';
+import { discoverImportSources, inspectImportSource } from '../sources.js';
 
 beforeEach(async () => {
   h.root = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-import-host-test-'));
   h.created = false; h.verified = false; h.sourceEnabled = true; h.failReadyWrite = false; h.boundary = false; h.routines = []; h.pause.mockClear(); h.sourceEnvironment = {};
   h.writeProfile.mockReset().mockResolvedValue(undefined); h.importDocument.mockReset().mockResolvedValue(undefined);
   vi.mocked(decodeBotAvatarImage).mockReset();
+  vi.mocked(discoverImportSources).mockReset().mockImplementation(async () => [h.snapshot.source]);
+  vi.mocked(inspectImportSource).mockReset().mockImplementation(async () => h.snapshot);
   const values = new Map<string, string>();
   h.store = createCompanionEnvironmentStore({ read: key => values.get(key) ?? null, write: (key, value) => {
     if (h.failReadyWrite && Object.values<{ handover?: string }>(JSON.parse(value).automations ?? {}).some(binding => binding.handover === 'ready')) { h.failReadyWrite = false; return false; }
@@ -95,10 +98,10 @@ it.each(['', ' ', 'invalid-image'])('rejects avatar %j before persisting credent
   expect(h.created).toBe(true);
 });
 
-it('masks all known credentials in preview labels without choosing conflicting accounts or changing the private snapshot', async () => {
+it('masks all known credentials in discovery and preview without choosing conflicting accounts or changing the private snapshot', async () => {
   const secrets = ['fake-work-key', 'fake-personal-key', 'fake-unselected-key', 'fake-local-key', 'fake-header-key', 'fake-access-key', 'fake-refresh-key', 'fake/url+key'];
   const text = `status en us ${secrets.join(' ')} fake%2Furl%2Bkey`;
-  h.snapshot.source.name = `Ada ${secrets[0]}`;
+  h.snapshot.source.name = `Ada ${text}`;
   h.snapshot.items = [
     { view: { id: 'work', name: 'Work', category: 'connections', selected: false, exclusiveWith: ['personal'] }, env: { OPENAI_API_KEY: secrets[0]! } },
     { view: { id: 'personal', name: 'Personal', category: 'connections', selected: false, exclusiveWith: ['work'] }, env: { OPENAI_API_KEY: secrets[1]! } },
@@ -111,8 +114,9 @@ it('masks all known credentials in preview labels without choosing conflicting a
   const original = structuredClone(h.snapshot);
   const [source] = await listCompanionImportSources('mobile-controller');
   const preview = await previewCompanionImport(source!.id, 'mobile-controller');
-  for (const secret of [...secrets, 'fake%2Furl%2Bkey']) expect(JSON.stringify(preview)).not.toContain(secret);
-  expect(preview.name).toMatch(/^Ada \[[^\]]+\]$/);
+  for (const secret of [...secrets, 'fake%2Furl%2Bkey']) expect(JSON.stringify([source, preview])).not.toContain(secret);
+  expect(source?.name).toBe(preview.name);
+  expect(preview.name).toContain('Ada status en us');
   expect(preview.source.name).toBe(preview.name);
   for (const entry of preview.entries) {
     const raw = original.items.find(item => item.view.id === entry.id)!.view;
@@ -129,6 +133,52 @@ it('masks all known credentials in preview labels without choosing conflicting a
   const result = await startCompanionImport({ requestId, previewId: preview.id, name: 'Ada', entryIds: ['work'], takeover: false }, 'mobile-controller');
   await vi.waitFor(async () => expect((await getCompanionImportResult(requestId))?.status).toBe('complete'));
   expect((await h.store.read(h.root, result.botId, () => {}))?.env).toEqual({ OPENAI_API_KEY: secrets[0] });
+});
+
+it('lists an unreadable source with an opaque name without hiding healthy sources or bypassing preview errors', async () => {
+  const unreadable = { ...h.snapshot.source, name: 'Ada fixture-private-token' };
+  vi.mocked(discoverImportSources).mockResolvedValue([unreadable, h.snapshot.source]);
+  vi.mocked(inspectImportSource).mockImplementation(async source => {
+    if (source === unreadable) throw new Error('SOURCE_CREDENTIAL_INVALID');
+    return h.snapshot;
+  });
+  const listed = await listCompanionImportSources('fixture');
+  expect(listed.map(source => source.name)).toEqual(['Hermes · 1', 'Ada']);
+  await expect(previewCompanionImport(listed[0]!.id, 'fixture')).rejects.toThrow('SOURCE_CREDENTIAL_INVALID');
+  expect((await previewCompanionImport(listed[1]!.id, 'fixture')).name).toBe('Ada');
+  expect(await fs.readdir(h.root)).toEqual([]);
+});
+
+it('rejects discovery if the account changes while building the name mask', async () => {
+  vi.mocked(inspectImportSource).mockImplementation(async () => { h.boundary = true; return h.snapshot; });
+  await expect(listCompanionImportSources('fixture')).rejects.toThrow('OWNER_CHANGED');
+});
+
+it.each(['hermes', 'openclaw'] as const)('masks %s names from real source files before publishing the discovery list', async kind => {
+  const actual = await vi.importActual<typeof import('../sources.js')>('../sources.js');
+  vi.mocked(discoverImportSources).mockImplementation(deps => actual.discoverImportSources({ ...deps, env: {} }));
+  vi.mocked(inspectImportSource).mockImplementation((source, deps) => actual.inspectImportSource(source, { ...deps, env: {} }));
+  const root = path.join(h.root, `.${kind}`);
+  const secrets = ['fixture-dotenv-secret', 'fixture-header-secret', 'fixture-auth-secret', 'fixture-skill-secret'];
+  const name = `Ada ${secrets.join(' ')}`;
+  const config = { ...(kind === 'hermes' ? { name } : { agents: { list: [{ id: 'main', name }] } }),
+    mcpServers: { data: { url: 'https://example.invalid/mcp', headers: { Authorization: `Bearer ${secrets[1]}` } } },
+    skills: { entries: { report: { env: { REPORT_TOKEN: secrets[3] } } } } };
+  const authFile = kind === 'hermes' ? 'auth.json' : 'agents/main/agent/auth-profiles.json';
+  await fs.mkdir(path.dirname(path.join(root, authFile)), { recursive: true });
+  await fs.mkdir(path.join(root, 'skills/report'), { recursive: true });
+  await fs.writeFile(path.join(root, kind === 'hermes' ? 'config.yaml' : 'openclaw.json'), JSON.stringify(config));
+  await fs.writeFile(path.join(root, '.env'), `DATA_TOKEN=${secrets[0]}`);
+  await fs.writeFile(path.join(root, authFile), JSON.stringify({ [kind === 'hermes' ? 'providers' : 'profiles']: { openai: { type: 'api_key', key: secrets[2] } } }));
+  await fs.writeFile(path.join(root, 'skills/report/SKILL.md'), '# report');
+  const listed = await listCompanionImportSources('mobile-controller');
+  expect(listed).toHaveLength(1);
+  expect(listed[0]?.name).toMatch(/^Ada \[/);
+  for (const secret of secrets) expect(JSON.stringify(listed)).not.toContain(secret);
+  const preview = await previewCompanionImport(listed[0]!.id, 'mobile-controller');
+  expect(preview.name).toBe(listed[0]!.name);
+  expect(h.created).toBe(false);
+  expect(await fs.readdir(h.root)).toEqual([`.${kind}`]);
 });
 
 it.each([false, true])('redacts all known credentials from profile/memory copies while importing only selected connections (deselected: %s)', async deselected => {

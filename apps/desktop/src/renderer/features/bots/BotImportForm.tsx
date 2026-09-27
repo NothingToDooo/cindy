@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { areCompanionImportEntriesSelected, toggleCompanionImportEntries, companionImportIssueKey, companionImportCategories, type CompanionImportApi, type CompanionImportPreview, type CompanionImportResult, type CompanionImportSelection, type CompanionImportSource } from '@cindy/maker-shared/companion-import';
 import { normalizeBotName } from '../../../shared/botCreation';
-import { BotPortraitPicker, galleryPortrait } from './BotPortraitPicker';
+import { BOT_PORTRAIT_COUNT, BotPortraitPicker, galleryPortrait } from './BotPortraitPicker';
 import { useBotProfiles } from './botStore';
 
 /** Import only adds a selection step. Identity and all later settings use the normal teammate UI. */
@@ -18,6 +18,7 @@ export function BotImportForm({ api = window.electronAPI.companionImport, onBack
   const [selected, setSelected] = useState<string[]>([]);
   const [name, setName] = useState('');
   const [portrait, setPortrait] = useState<string>();
+  const [initialPortrait] = useState(() => Math.floor(Math.random() * BOT_PORTRAIT_COUNT));
   const [takeover, setTakeover] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
@@ -40,7 +41,7 @@ export function BotImportForm({ api = window.electronAPI.companionImport, onBack
   };
   const choose = (source: CompanionImportSource) => act(async () => {
     const next = await api.preview(source.id);
-    const avatar = next.avatarImageBase64 ? `data:image/png;base64,${next.avatarImageBase64}` : await galleryPortrait(0);
+    const avatar = next.avatarImageBase64 ? `data:image/png;base64,${next.avatarImageBase64}` : await galleryPortrait(initialPortrait);
     if (!alive.current) return;
     setPreview(next); setSelected(next.entries.filter(item => item.selected).map(item => item.id)); setName(next.name); setPortrait(avatar);
   });

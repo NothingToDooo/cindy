@@ -8,11 +8,17 @@ metadata, never source paths, environment values or credential contents.
 Preview names and descriptions mask known credentials from the entire snapshot,
 including unselected or conflicting accounts. Only the public projection changes;
 private originals, stable selection IDs and dependency links remain intact.
+Source discovery applies the same snapshot-wide mask before publishing names.
+It inspects sources sequentially without retaining their resource trees; if a
+source cannot be inspected, discovery uses an opaque numbered source label and
+preview retains its normal error path. Discovery performs no import writes.
 All command operations use the existing per-call approval policy. Discovery never
 persists a native tool/server grant that could authorize a later `start` operation.
 Auto still reviews the actual invocation; Full Access retains its normal behavior.
 
 The creation UI reuses the existing teammate dialog/sheet and portrait picker.
+Without source artwork, Desktop import follows normal creation: one random pick
+from the existing 17 portraits per form, with subsequent user choices preserved.
 After creation, personality, memory, skills and model management use the existing
 teammate screens; routine management follows the desktop-only product contract.
 Mobile can select automations during import and request host-owned takeover.

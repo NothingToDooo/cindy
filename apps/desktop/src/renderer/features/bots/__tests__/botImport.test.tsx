@@ -1,13 +1,48 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { CompanionImportApi } from '@cindy/maker-shared/companion-import';
 import { BotImportForm } from '../BotImportForm';
 
+const portraits = vi.hoisted(() => ({ load: vi.fn(async (index: number) => `data:image/png;base64,portrait-${index}`) }));
+
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock('../botStore', () => ({ useBotProfiles: () => [] }));
-vi.mock('../BotPortraitPicker', () => ({ galleryPortrait: async () => 'data:image/png;base64,original', BotPortraitPicker: ({ onChange, disabled }: { onChange(value: string): void; disabled: boolean }) => <button disabled={disabled} onClick={() => onChange('data:image/png;base64,chosen')}>existing-portrait-picker</button> }));
-afterEach(cleanup);
+vi.mock('../BotPortraitPicker', () => ({ BOT_PORTRAIT_COUNT: 17, galleryPortrait: portraits.load, BotPortraitPicker: ({ onChange, disabled }: { onChange(value: string): void; disabled: boolean }) => <button disabled={disabled} onClick={() => onChange('data:image/png;base64,chosen')}>existing-portrait-picker</button> }));
+beforeEach(() => portraits.load.mockClear());
+afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+
+it('draws from the existing full gallery once per form and retains the choice through editing', async () => {
+  const random = vi.spyOn(Math, 'random').mockReturnValue(0);
+  const api: CompanionImportApi = { sources: async () => [{ id: 'source', name: 'Ada', kind: 'hermes' }], preview: async () => ({ id: 'preview', name: 'Ada', source: { id: 'source', name: 'Ada', kind: 'hermes' }, entries: [] }), status: async () => undefined,
+    start: vi.fn(async input => ({ requestId: input.requestId, botId: 'bot', status: 'complete' as const, checks: [] })) };
+  const props = { api, onCreated() {}, onBack() {}, onBusy() {} };
+  const first = render(<BotImportForm {...props} />);
+  fireEvent.click(await screen.findByRole('button', { name: /Ada.*Hermes/ }));
+  await screen.findByRole('button', { name: 'existing-portrait-picker' });
+  expect(portraits.load).toHaveBeenCalledWith(0);
+  random.mockReturnValue(0.9999);
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Grace' } });
+  first.rerender(<BotImportForm {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'bots.import.submit' }));
+  await waitFor(() => expect(api.start).toHaveBeenCalledWith(expect.objectContaining({ name: 'Grace', avatarImageBase64: 'portrait-0' })));
+  expect(portraits.load).toHaveBeenCalledTimes(1);
+  first.unmount();
+  render(<BotImportForm {...props} />);
+  fireEvent.click(await screen.findByRole('button', { name: /Ada.*Hermes/ }));
+  await screen.findByRole('button', { name: 'existing-portrait-picker' });
+  expect(portraits.load).toHaveBeenLastCalledWith(16);
+});
+
+it('preserves an imported portrait instead of replacing it with a gallery default', async () => {
+  const api: CompanionImportApi = { sources: async () => [{ id: 'source', name: 'Ada', kind: 'hermes' }], preview: async () => ({ id: 'preview', name: 'Ada', avatarImageBase64: 'source-artwork', source: { id: 'source', name: 'Ada', kind: 'hermes' }, entries: [] }), status: async () => undefined,
+    start: vi.fn(async input => ({ requestId: input.requestId, botId: 'bot', status: 'complete' as const, checks: [] })) };
+  render(<BotImportForm api={api} onCreated={() => {}} onBack={() => {}} onBusy={() => {}} />);
+  fireEvent.click(await screen.findByRole('button', { name: /Ada.*Hermes/ }));
+  fireEvent.click(await screen.findByRole('button', { name: 'bots.import.submit' }));
+  await waitFor(() => expect(api.start).toHaveBeenCalledWith(expect.objectContaining({ avatarImageBase64: 'source-artwork' })));
+  expect(portraits.load).not.toHaveBeenCalled();
+});
 
 it('uses the original portrait control and sends only the items still selected', async () => {
   const api: CompanionImportApi = { sources: vi.fn<CompanionImportApi['sources']>(async () => [{ id: 'source', name: 'Ada', kind: 'hermes' }]), preview: vi.fn<CompanionImportApi['preview']>(async () => ({ id: 'preview', name: 'Ada', source: { id: 'source', name: 'Ada', kind: 'hermes' }, entries: [
