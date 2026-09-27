@@ -261,7 +261,7 @@ import {
 } from '@/session/ContextSheet';
 import { OrcaTeamPanelView, OrcaWorkerFormView } from '@/session/ContextSheetCollabView';
 import { useSessionOrcaCollab } from '@/session/useSessionOrcaCollab';
-import { subscribeOrcaStartFailure, takeOrcaStartFailure } from '@/session/orcaTeam';
+import { orcaWorkerProvidersForLead, subscribeOrcaStartFailure, takeOrcaStartFailure } from '@/session/orcaTeam';
 import { RecentPhotosStrip } from '@/session/ContextSheetMediaViews';
 import { ContextSheetGoalView, goalStatusLabel } from '@/session/ContextSheetGoalView';
 import { parseGoalLimitsRouteParam } from '@/session/goalLimitsRouteParam';
@@ -2061,7 +2061,12 @@ export default function SessionScreen() {
     deviceId || undefined,
     modelSheetOpen || collab.workerForm.modelPicker.open,
   );
-  collabProvidersRef.current = composerDeviceProviders.ready ? composerDeviceProviders.providers : null;
+  // SSH 远端 Lead 的 Worker 只能用远端可路由的来源(与桌面创建 Worker 面板同口径)。
+  const collabWorkerProviders = useMemo(
+    () => orcaWorkerProvidersForLead(composerDeviceProviders.providers, !!currentSession?.remoteHostId?.trim()),
+    [composerDeviceProviders.providers, currentSession?.remoteHostId],
+  );
+  collabProvidersRef.current = composerDeviceProviders.ready ? collabWorkerProviders : null;
   // 新建任务页在后台开启协同失败时任务照单任务继续,提示在这里(跳转后的会话页)出现。
   useEffect(() => {
     const show = () => {
@@ -9255,7 +9260,7 @@ export default function SessionScreen() {
             onSelectProviderRow={() => undefined}
             permissionOptions={[]}
             pricing={deviceModelPricing}
-            providers={composerDeviceProviders.providers}
+            providers={collabWorkerProviders}
             providersReady={composerDeviceProviders.ready}
             providersUnsupported={composerDeviceProviders.unsupported}
             selectedEffort={collab.workerForm.form.model?.effort ?? ''}

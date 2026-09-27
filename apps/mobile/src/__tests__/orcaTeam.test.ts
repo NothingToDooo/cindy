@@ -11,6 +11,7 @@ import {
   readOrcaCollabEntryStatus,
   rememberOrcaStartFailure,
   narrowOrcaWorkerProvider,
+  orcaWorkerProvidersForLead,
   subscribeOrcaStartFailure,
   takeOrcaStartFailure,
 } from '@/session/orcaTeam';
@@ -293,6 +294,22 @@ describe('mobile Orca collaboration mutations', () => {
     expect(narrowOrcaWorkerProvider(chosen, [provider('a', false), provider('b')]).model?.providerId).toBeNull();
     // 目录未就绪时不猜。
     expect(narrowOrcaWorkerProvider(chosen, null)).toBe(chosen);
+  });
+
+  it('hides routes an SSH Lead cannot run for its Workers', () => {
+    const gateway = {
+      id: 'gateway', name: 'gateway', agents: ['codex'], connected: true, routing: { codex: {} },
+      models: { codex: [{ id: 'gpt-5.5' }, { id: 'chatgpt/gpt-5.5' }] },
+    } as unknown as ProviderView;
+    const bridged = {
+      id: 'bridged', name: 'bridged', agents: ['codex'], connected: true,
+      routing: { codex: { wireProtocol: 'openai-chat' } }, models: { codex: [{ id: 'kimi' }] },
+    } as unknown as ProviderView;
+    const ssh = orcaWorkerProvidersForLead([gateway, bridged], true);
+    expect(ssh[0]!.models.codex?.map((model) => model.id)).toEqual(['gpt-5.5']);
+    expect(ssh[1]!.models.codex).toEqual([]);
+    const local = [gateway, bridged];
+    expect(orcaWorkerProvidersForLead(local, false)).toBe(local);
   });
 });
 

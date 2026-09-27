@@ -209,6 +209,8 @@ export function useOrcaWorkerForm(params: {
   const prefsLoadedRef = useRef(false);
   /** 本次复位后用户是否动过表单:动过就不再让迟到的记忆 / 能力结果覆盖用户的选择。 */
   const touchedRef = useRef(false);
+  /** 本次打开后用户是否明确选过 Agent(切 Agent / 选择器选模型 / 恢复草稿)。 */
+  const agentChosenRef = useRef(false);
   const agentsRef = useRef(agents);
   agentsRef.current = agents;
   // 两个代次各管一条不变量,互不推进:
@@ -259,6 +261,16 @@ export function useOrcaWorkerForm(params: {
       .catch(() => undefined);
   }, []);
 
+  // 换了被控电脑(新建任务页切设备):上一台的 Agent 列表作废,回到乐观全集等这台的结果,
+  // 不让复位按上一台的列表挑 Agent。
+  const rosterMakerRef = useRef(maker);
+  useEffect(() => {
+    if (rosterMakerRef.current === maker) return;
+    rosterMakerRef.current = maker;
+    agentsRef.current = ALL_AGENTS;
+    setAgents(ALL_AGENTS);
+  }, [maker]);
+
   // 读被控端实际注册的 Agent。复位时列表可能还是乐观的三个:结果回来后,当前 Agent 不在这台
   // 电脑上就切到第一个可用 Agent 并带出它的模型记忆(不论用户是否改过其它字段——角色、任务、
   // 权限原样保留),避免表单停在一个必然提交失败的 Agent 上。当前 Agent 可用时也按能力再收敛
@@ -273,16 +285,21 @@ export function useOrcaWorkerForm(params: {
         if (next.length === 0) return;
         agentsRef.current = next;
         setAgents(next);
-        if (next.includes(formRef.current.agent)) {
-          converge(formRef.current.agent);
+        // 目标 Agent:用户明确选过就尊重其选择;否则按记忆的上次 Agent(复位时可能因列表
+        // 还是乐观 / 上一台电脑的而落在别的 Agent 上)。不在这台电脑上时取第一个可用。
+        const current = formRef.current.agent;
+        const remembered = prefsRef.current.lastAgent;
+        const wanted = !agentChosenRef.current && next.includes(remembered) ? remembered : current;
+        if (wanted === current && next.includes(current)) {
+          converge(current);
           return;
         }
-        const switched = next[0]!;
-        const remembered = prefsRef.current.agents[switched];
-        setForm((current) => ({
-          ...current,
+        const switched = next.includes(wanted) ? wanted : next[0]!;
+        const agentPrefs = prefsRef.current.agents[switched];
+        setForm((value) => ({
+          ...value,
           agent: switched,
-          model: { id: remembered.model, providerId: null, effort: remembered.effort, fast: remembered.fast },
+          model: { id: agentPrefs.model, providerId: null, effort: agentPrefs.effort, fast: agentPrefs.fast },
         }));
         converge(switched);
       })
@@ -293,6 +310,7 @@ export function useOrcaWorkerForm(params: {
   /** 重新打开已确认的表单(新建任务的协同草稿):角色模式跟随保存的角色,不沿用上次未提交的编辑。 */
   const restore = useCallback((value: OrcaWorkerFormValue) => {
     formEpochRef.current += 1;
+    agentChosenRef.current = true;
     convergeGenRef.current += 1;
     touchedRef.current = true;
     setCustomRoleMode(!isPredefinedOrcaRole(value.role.trim().toLowerCase()));
@@ -303,6 +321,7 @@ export function useOrcaWorkerForm(params: {
   const reset = useCallback(() => {
     const epoch = ++formEpochRef.current;
     touchedRef.current = false;
+    agentChosenRef.current = false;
     setCustomRoleMode(false);
     const apply = (prefs: OrcaWorkerCreationPrefs) => {
       const available = agentsRef.current;
@@ -327,6 +346,7 @@ export function useOrcaWorkerForm(params: {
   /** 切 Agent:带出该 Agent 上次的模型 / 推理强度 / Fast(对齐桌面)。 */
   const changeAgent = useCallback((agent: OrcaWorkerAgentKind) => {
     touchedRef.current = true;
+    agentChosenRef.current = true;
     const remembered = prefsRef.current.agents[agent];
     setForm((current) => ({
       ...current,
@@ -378,6 +398,7 @@ export function useOrcaWorkerForm(params: {
   const select = useCallback(async (config: MobileModelConfiguration): Promise<boolean> => {
     if (!ALL_AGENTS.includes(config.agent as OrcaWorkerAgentKind)) return false;
     touchedRef.current = true;
+    agentChosenRef.current = true;
     convergeGenRef.current += 1;
     setForm((current) => ({
       ...current,

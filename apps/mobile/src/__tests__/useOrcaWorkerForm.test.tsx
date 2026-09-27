@@ -302,3 +302,29 @@ it('treats a timed-out Worker archive as unconfirmed and rechecks the team', asy
   expect(collab!.error).toMatch(/timed out|超时/);
   expect(listWorkers.mock.calls.length).toBeGreaterThan(loads);
 });
+
+it('restores the remembered Agent after a device switch instead of the previous computer fallback', async () => {
+  saveOrcaWorkerCreationPrefs('user-1', { ...defaultOrcaWorkerCreationPrefs(), lastAgent: 'claude-code' });
+  const codexOnly = { ...fakeMaker(), listAvailableAgents: vi.fn(async () => ['codex']) } as unknown as MobileMakerTransport;
+  let releaseB: () => void = () => undefined;
+  const both = {
+    ...fakeMaker(),
+    listAvailableAgents: vi.fn(() => new Promise<string[]>((resolve) => {
+      releaseB = () => resolve(['claude-code', 'codex']);
+    })),
+  } as unknown as MobileMakerTransport;
+  function DeviceProbe({ maker }: { maker: MobileMakerTransport }) {
+    latest = useOrcaWorkerForm({ maker, prefsScope: 'user-1', active: true, setSheetOpen: () => undefined });
+    return null;
+  }
+  // 电脑 A 只有 Codex:打开表单落在 Codex。
+  await act(async () => root.render(<DeviceProbe maker={codexOnly} />));
+  await act(async () => { latest!.reset(); await flush(); });
+  expect(latest!.form.agent).toBe('codex');
+  // 切到电脑 B:列表回来前复位不再沿用 A 的列表;回来后恢复记忆的 Claude。
+  await act(async () => root.render(<DeviceProbe maker={both} />));
+  await act(async () => { latest!.reset(); await flush(); });
+  expect(latest!.agents).toEqual(['claude-code', 'codex', 'pi']);
+  await act(async () => { releaseB(); await flush(); });
+  expect(latest!.form.agent).toBe('claude-code');
+});

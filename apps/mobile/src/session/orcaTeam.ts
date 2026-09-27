@@ -19,7 +19,9 @@ import {
   type OrcaWorkerPermissionMode,
 } from '@cindy/maker-shared/orca-team';
 import { formatRemoteError, isTransientRemoteError } from '@cindy/maker-shared/device-link-contract';
+import { isLocalOnlyProviderForAgent, isSubscriptionDirectRoute } from '@cindy/model-providers';
 import { chatEligibleSourcesForModel, type ProviderView } from '@cindy/model-providers/registry';
+import type { AgentKind } from '@cindy/model-providers/types';
 import { normalizeMobileAgentCapabilities } from '@/session/agentCapabilities';
 import { humanizeRemoteError } from '@/device-link/remoteStatus';
 import { i18n } from '@/i18n';
@@ -98,6 +100,27 @@ export function narrowOrcaWorkerProvider(
   const routable = chatEligibleSourcesForModel([...providers], model.id, form.agent)
     .some((provider) => provider.id === model.providerId);
   return routable ? form : { ...form, model: { ...model, providerId: null } };
+}
+
+/**
+ * Worker 可选的来源目录(对齐桌面 CreateWorkerPopover 的 excludeSubscriptionDirect /
+ * excludeChatBridgedCodex):SSH 远端 Lead 的 Worker 在远端运行,只能在本机桥接的来源
+ * (订阅直连模型、chat 桥接 / 本地 OAuth 供应商)会被被控端拒绝,选择器里不列出。
+ */
+export function orcaWorkerProvidersForLead(
+  providers: readonly ProviderView[],
+  sshRemote: boolean,
+): readonly ProviderView[] {
+  if (!sshRemote) return providers;
+  return providers.map((provider) => {
+    const models: ProviderView['models'] = {};
+    for (const agent of Object.keys(provider.models) as AgentKind[]) {
+      models[agent] = isLocalOnlyProviderForAgent(provider, agent)
+        ? []
+        : (provider.models[agent] ?? []).filter((model) => !isSubscriptionDirectRoute(model.id));
+    }
+    return { ...provider, models };
+  });
 }
 
 /** 表单 → 被控端 enable-orca / worker:create 的共同字段。 */
