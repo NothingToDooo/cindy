@@ -4698,7 +4698,11 @@ const registerIpcHandlers = () => {
   });
   ipcMain.handle(
     MAKER_IPC_INVOKE.IM_DEFAULT_SETTINGS_SET,
-    async (_e, patch: unknown, rawChannel: unknown) => {
+    async (event, patch: unknown, rawChannel: unknown) => {
+      // 本 handler 已升级为可批量改任务记录、并在下一条 IM 消息时切任务路由的操作,
+      // 必须先验证调用方是可信主渲染器 —— 不能让被导航到外部页面的 preload 窗口
+      // 改写渠道默认(PR #5155 review P1, 同 SUBAGENT_MODEL_SETTINGS_SET)。
+      assertTrustedAppRendererEvent(event);
       const channel = parseImDefaultSettingsChannel(rawChannel);
       const parsedPatch = parseImDefaultSettingsPatch(patch);
       // 写新设置之前按旧默认给老任务补跟随记录(见 prepareImDefaultSettingsChange)。
@@ -4716,7 +4720,9 @@ const registerIpcHandlers = () => {
       return imDefaultSettingsWire(channel);
     },
   );
-  ipcMain.handle(MAKER_IPC_INVOKE.IM_DEFAULT_SETTINGS_RESET, async (_e, rawChannel: unknown) => {
+  ipcMain.handle(MAKER_IPC_INVOKE.IM_DEFAULT_SETTINGS_RESET, async (event, rawChannel: unknown) => {
+    // 同 SET: 回填会批量改任务记录, 必须先验证调用方(PR #5155 review P1)。
+    assertTrustedAppRendererEvent(event);
     const channel = parseImDefaultSettingsChannel(rawChannel);
     try {
       await prepareImDefaultSettingsChange(channel);

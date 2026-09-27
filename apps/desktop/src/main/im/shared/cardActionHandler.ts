@@ -428,6 +428,10 @@ export function createCardActionHandler(
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         log.warn(`model:pick manual override marker failed: ${msg}`);
+        // applyRuntimeSetModelChange 可能已向 PendingCredentialSwitch 登记了延迟目标,
+        // 失败回滚必须一并撤销, 否则 turn 收口仍会应用一个卡片已报失败的选择
+        // (PR #5155 review P2)。
+        clearPendingCredentialSwitchForSession(sessionId);
         await restorePersistentRoute('manual override marker');
         await rollbackRuntimeChange('manual override marker');
         return msg;

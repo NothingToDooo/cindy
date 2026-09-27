@@ -876,6 +876,9 @@ describe('model:pick 持久化失败', () => {
       'medium',
       'openrouter',
     );
+    // 延迟凭证切换登记也要一并撤销, 否则 turn 收口仍会应用已报失败的选择
+    // (PR #5155 review P2)。
+    expect(mocks.clearPendingCredentialSwitchForSession).toHaveBeenCalledWith('sess-target');
     expect(mocks.cancelPendingAgentSwitchForSession).not.toHaveBeenCalled();
     expect(im.updateInteractiveCard).toHaveBeenCalledWith(
       'model-card',

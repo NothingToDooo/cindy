@@ -15,7 +15,6 @@ const mocks = vi.hoisted(() => ({
   resolveDefaults: vi.fn(),
   rawDefault: vi.fn(),
   listProviders: vi.fn(async (): Promise<unknown[] | null> => []),
-  connectedProviders: vi.fn((): unknown[] => []),
   applyRoute: vi.fn(),
   readPendingRoute: vi.fn(() => undefined as unknown),
   cancelPending: vi.fn(),
@@ -43,7 +42,6 @@ vi.mock('@cindy/model-providers', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@cindy/model-providers')>()),
   // 隐式来源一律落到 'xd' —— 足够验证「隐式 == 钉住的 xd」归一化。
   effectiveSourceIdForModel: vi.fn(() => 'xd'),
-  connectedProvidersForAgent: mocks.connectedProviders,
 }));
 vi.mock('../../defaultSessionSettings', () => ({
   getImDefaultEffortFor: vi.fn(() => 'high'),
@@ -490,20 +488,19 @@ describe('backfillLegacyImDefaultRoutes', () => {
     });
   });
 
-  it('claims historical landings pinned from an implicit default whose source later died', async () => {
-    // 隐式默认(null)建任务时被系统钉成当时的有效来源 A; A 断开后默认解析改到 B,
-    // 归一化按今天的目录把 null 解析成 B —— 历史行的显式 A 两条候选都对不上
-    // (PR #5155 review P2)。用户显式钉的**可用**来源不受影响。
+  it('leaves explicitly pinned historical landings alone even when the source later died', async () => {
+    // 隐式默认(null)建任务时可能被系统钉成当时的有效来源 A, 也可能本来就是用户
+    // 手动钉的 —— 断开的来源证明不了出身, 无法区分时保守不认领, 不拿脏数据误切
+    // 用户单独改过的任务(PR #5155 review P2 后续裁决)。
     mocks.fingerprint.mockReturnValue('fp-old');
     mocks.rawDefault.mockReturnValue(OLD);
     mocks.resolveDefaults.mockResolvedValue({ ...OLD, permissionMode: 'auto', fastMode: false, fingerprint: 'fp-old' });
-    mocks.connectedProviders.mockReturnValue([{ id: 'live-source' }] as never);
     await insertTask('legacy-pinned-dead', { ...OLD, providerId: 'dead-source' }, { record: null });
     await insertTask('legacy-pinned-live', { ...OLD, providerId: 'live-source' }, { record: null });
 
-    await expect(backfillLegacyImDefaultRoutes('feishu', CONFIG)).resolves.toBe(1);
+    await expect(backfillLegacyImDefaultRoutes('feishu', CONFIG)).resolves.toBe(0);
 
-    expect((await rowOf('legacy-pinned-dead')).imDefaultRoute).not.toBeNull();
+    expect((await rowOf('legacy-pinned-dead')).imDefaultRoute).toBeNull();
     expect((await rowOf('legacy-pinned-live')).imDefaultRoute).toBeNull();
   });
 

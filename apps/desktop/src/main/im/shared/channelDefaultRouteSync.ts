@@ -8,11 +8,7 @@
  */
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import type { AgentKind } from '@cindy/maker-core';
-import {
-  connectedProvidersForAgent,
-  effectiveSourceIdForModel,
-  type ProviderView,
-} from '@cindy/model-providers';
+import { effectiveSourceIdForModel, type ProviderView } from '@cindy/model-providers';
 
 import type { ImDefaultSettingsChannel } from '../../../shared/imDefaultSettings.js';
 import { getDbClient } from '../../localDb/client/current';
@@ -411,11 +407,12 @@ export function createImChannelDefaultRouteSync(deps: {
  * 保存时就已按模型 reconcile 过, 与历史落点一致。
  *
  * 另外两类历史兼容落点(PR #5155 review P2):
- * - 隐式默认(null)建任务时会被系统钉成当时的有效来源, 该来源后来断开后两条
- *   候选都对不上 —— 按「钉住的来源如今已不可用」认领(用户显式钉的可用来源不受
- *   影响);
  * - 归档/软删的可复活任务: 用户从 IM 再发消息会原地复活, 复活不补记录, 保存前
  *   不认领就永久错过 —— 回填一并覆盖。
+ * - 隐式默认(null)建任务时被系统钉成当时的有效来源, 该来源后来断开后两条候选
+ *   都对不上 —— **不认领**: 「来源已断开」无法证明当年是系统钉住还是用户手动
+ *   钉的, 无法区分时保守不动(同 thread 后续裁决); 本功能之后建的任务在创建时
+ *   就写记录(route 含钉住的来源), 不依赖这层历史猜测。
  *
  * 无法可靠识别时(供应商目录拿不到)必须抛错而不是返回 0: 调用方把 0 当成「补完了」
  * 就会提交新默认, 下一次只能按新默认匹配, 还停在旧默认上的老任务永久失去跟随资格。
@@ -478,28 +475,14 @@ export async function backfillLegacyImDefaultRoutes(
     );
   }
   const normalize = providerNormalizer(providers);
-  /**
-   * 隐式默认(null)的历史落点: 建任务时被系统钉成当时的有效来源(如 A), A 断开
-   * 后默认解析改到 B —— 归一化按今天的目录把 null 解析成 B, 历史行的显式 A 两条
-   * 候选都对不上(PR #5155 review P2)。当年被钉住、如今来源已不可用的历史落点按
-   * 原始默认认领; 用户显式钉的**可用**来源不受影响, 手动覆盖照旧保护。
-   */
-  const isHistoricalImplicitLanding = (current: ImDefaultRoute): boolean =>
-    rawDefault.providerId === null &&
-    current.providerId !== null &&
-    current.agentKind === rawDefault.agentKind &&
-    current.model === rawDefault.model &&
-    current.effort === rawDefault.effort &&
-    !connectedProvidersForAgent(providers, current.agentKind).some(
-      (provider) => provider.id === current.providerId,
-    );
   let count = 0;
   for (const row of legacyRows) {
     const current = currentRouteOf(row);
+    // 匹配只认整条路由相等: 隐式默认的历史钉住与用户手动钉住无法区分(断开的来源
+    // 证明不了出身), 无法区分时保守不认领(PR #5155 review P2 后续裁决)。
     const matches =
       (!!resolvedDefault && sameImDefaultRoute(current, resolvedDefault, normalize)) ||
-      sameImDefaultRoute(current, rawDefault, normalize) ||
-      isHistoricalImplicitLanding(current);
+      sameImDefaultRoute(current, rawDefault, normalize);
     if (!matches) continue;
     await getDbClient()
       .drizzle.update(sessions)
