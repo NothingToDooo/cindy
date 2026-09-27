@@ -1,4 +1,4 @@
-import { promises as fs } from 'node:fs';
+import fsSync, { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -793,6 +793,14 @@ it.each(['readback', 'binding'] as const)('cleans an unbound first checkpoint af
   const selection = { requestId: 'fixture-first-write-failure', previewId: preview.id, name: 'Ada', entryIds: [], takeover: false };
   const botId = `import_${fingerprint(selection.requestId).slice(0, 24)}`;
   const values = h.secretValues;
+  const bindingFile = path.join(h.root, 'bots', botId, 'environment.json');
+  const rename = fsSync.renameSync;
+  // Windows can recover replacing a directory through the atomic writer's
+  // EPERM backup path. Inject a definite I/O failure at the actual rename instead.
+  const bindingFailure = failure === 'binding' ? vi.spyOn(fsSync, 'renameSync').mockImplementation((from, to) => {
+    if (to === bindingFile) throw Object.assign(new Error('fixture binding write failed'), { code: 'EIO' });
+    return rename(from, to);
+  }) : undefined;
   let failed = false;
   h.store = createCompanionEnvironmentStore({
     read: key => { if (failure === 'readback' && failed) throw new Error('fixture readback failed'); return values.get(key) ?? null; },
@@ -801,10 +809,6 @@ it.each(['readback', 'binding'] as const)('cleans an unbound first checkpoint af
       const index = await fs.readFile(path.join(h.root, 'companion-imports', `${selection.requestId}.json`), 'utf8');
       expect(JSON.parse(index)).toMatchObject({ result: { botId }, copied: [] });
       values.set(key, value); failed = true;
-      if (failure === 'binding') {
-        // A filesystem failure at the following manifest write.
-        await fs.mkdir(path.join(h.root, 'bots', botId, 'environment.json'));
-      }
       return true;
     },
     remove: key => { values.delete(key); return true; },
@@ -812,7 +816,8 @@ it.each(['readback', 'binding'] as const)('cleans an unbound first checkpoint af
   const result = await startCompanionImport(selection, 'fixture');
   expect(result.status).toBe('needs-attention');
   expect(h.created).toBe(false); expect(values.size).toBe(1);
-  if (failure === 'binding') await fs.rm(path.join(h.root, 'bots', botId, 'environment.json'), { recursive: true });
+  await expect(fs.access(bindingFile)).rejects.toThrow();
+  bindingFailure?.mockRestore();
   // A new vault instance and the startup receipt scan must find and remove it,
   // including when the first cleanup attempt also fails.
   const remove = vi.fn((key: string) => { values.delete(key); return true; }).mockReturnValueOnce(false);
