@@ -68,7 +68,11 @@ describe('mobile session header desktop-first surface', () => {
     expect(source).not.toContain('colors.chatHeaderSurface');
     expect(source).toContain('safeArea: { flex: 1, backgroundColor: colors.surface }');
     const chromeStyle = source.slice(source.indexOf('  sessionChrome: {'), source.indexOf('  sessionChromeContent: {'));
-    expect(chromeStyle).toContain("backgroundColor: Platform.OS === 'ios' ? 'transparent' : colors.surface");
+    // Android 顶栏与首页顶栏同一底:半透明 surface + 模糊,并经根浮层盖在常驻消息层之上。
+    expect(chromeStyle).toContain("backgroundColor: 'transparent'");
+    expect(source).toContain('<BlurBackdrop intensity={50} overlayColor={colors.surfaceTranslucent} />');
+    expect(source).toContain('<SessionChromeLayer');
+    expect(source).toContain("topInset={Platform.OS === 'android' ? 0 : topOverlayHeight}");
     expect(source).toContain('<View ref={topOverlayRef} onLayout={handleTopOverlayLayout} pointerEvents="box-none" style={styles.sessionChrome} testID="session.chrome">');
     expect(source).toContain('<View style={[styles.sessionChromeContent, { paddingTop: horizontalSystemHeader ? nativeHeaderHeight : insets.top + (paneLayout.persistent ? spacing.lg : 0) }, companionChat && { backgroundColor: colors.surface }]}>');
     expect(chromeStyle).toContain("position: 'absolute'");

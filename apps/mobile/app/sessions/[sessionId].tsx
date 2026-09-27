@@ -8846,7 +8846,19 @@ export default function SessionScreen() {
         {Platform.OS === 'ios' ? (
           <SessionHeaderNativeBlur height={Math.max(topOverlayHeight, insets.top + 44) + spacing.xxl} />
         ) : null}
+        <SessionChromeLayer
+          hiddenFromAccessibility={sessionListDrawerOverlayMounted}
+          left={paneLayout.detail.x}
+          viewport={detailViewport}
+          width={paneLayout.detail.width}
+        >
         <View ref={topOverlayRef} onLayout={handleTopOverlayLayout} pointerEvents="box-none" style={styles.sessionChrome} testID="session.chrome">
+          {/* Android 顶栏与首页顶栏同一底:半透明 surface + 模糊,消息从下面滚过时能透出一点。 */}
+          {Platform.OS !== 'ios' && !companionChat ? (
+            <View pointerEvents="none" style={StyleSheet.absoluteFill} testID="session.chromeFrost">
+              <BlurBackdrop intensity={50} overlayColor={colors.surfaceTranslucent} />
+            </View>
+          ) : null}
           <View style={[styles.sessionChromeContent, { paddingTop: horizontalSystemHeader ? nativeHeaderHeight : insets.top + (paneLayout.persistent ? spacing.lg : 0) }, companionChat && { backgroundColor: colors.surface }]}>
             {headerNode}
 
@@ -8872,6 +8884,7 @@ export default function SessionScreen() {
             ) : null}
           </View>
         </View>
+        </SessionChromeLayer>
         {sharedTaskExit.dialog}
         {currentSession ? (
           <SessionMenuSheet
@@ -9176,7 +9189,9 @@ export default function SessionScreen() {
                   key={auth.accountGeneration}
                   activeKey={JSON.stringify([deviceId, sessionId])}
                   ready={topOverlayHeight > 0 && (historyView.snapshot.ready || messageListItems.length > 0 || (!loading && !syncingWhileEmpty))}
-                  topInset={topOverlayHeight}
+                  // Android 的常驻消息层画在页面之上;顶栏经 SessionChromeLayer 盖在它上面,
+                  // 所以消息层从顶部开始绘制,滚动时能透过半透明顶栏看到。
+                  topInset={Platform.OS === 'android' ? 0 : topOverlayHeight}
                   bottomInset={bottomOverlayHeight}
                   interactive={!sessionListDrawerOverlayMounted}>
 
@@ -9671,6 +9686,39 @@ export default function SessionScreen() {
         ) : null}
       </MessageHistoryOverlay>
     </View>
+  );
+}
+
+/**
+ * 任务顶栏的挂载层。iOS 常驻消息挂在路由里,顶栏原地渲染即可。Android 的常驻消息层由根节点
+ * 画在页面之上,顶栏要经 MessageHistoryOverlay 放到它上面(与任务抽屉同一通道),消息才能
+ * 从半透明顶栏下面滚过;按详情区的横向位置对齐,抽屉打开时同样从读屏树里摘掉。
+ */
+function SessionChromeLayer({
+  children,
+  hiddenFromAccessibility,
+  left,
+  viewport,
+  width,
+}: {
+  children: ReactNode;
+  hiddenFromAccessibility: boolean;
+  left: number;
+  viewport: { height: number; width: number; x: number; y: number };
+  width: number;
+}) {
+  if (Platform.OS !== 'android') return <>{children}</>;
+  return (
+    <MessageHistoryOverlay>
+      <View
+        importantForAccessibility={hiddenFromAccessibility ? 'no-hide-descendants' : 'auto'}
+        pointerEvents="box-none"
+        style={{ left, position: 'absolute', top: 0, width }}
+      >
+        {/* 浮层挂在根节点,要把详情区的视口重新提供给顶栏。 */}
+        <PaneViewportProvider value={viewport}>{children}</PaneViewportProvider>
+      </View>
+    </MessageHistoryOverlay>
   );
 }
 
@@ -11541,7 +11589,7 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     right: 0,
     top: 0,
     zIndex: 10,
-    backgroundColor: Platform.OS === 'ios' ? 'transparent' : colors.surface,
+    backgroundColor: 'transparent',
   },
   sessionChromeContent: {
     width: '100%',
