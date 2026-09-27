@@ -21,6 +21,8 @@ import {
   llamaCppModelPreset,
   LLAMACPP_MANAGED_ORIGIN,
   LLAMACPP_MANAGED_PORT,
+  validLlamaCppRepo,
+  validLlamaCppFile,
   type LlamaCppDownloadInput,
   type LlamaCppModel,
   type LlamaCppSnapshot,
@@ -119,7 +121,14 @@ export function createLlamaCppService(
         const record = JSON.parse(
           await readFile(path.join(modelsRoot, dir.name, 'model.json'), 'utf8'),
         ) as LlamaCppModel;
-        if (record.id === dir.name && managedModelId(record.repo, record.file) === dir.name)
+        if (
+          record?.id === dir.name &&
+          validLlamaCppRepo(record.repo) &&
+          validLlamaCppFile(record.file) &&
+          Number.isSafeInteger(record.size) &&
+          record.size > 0 &&
+          managedModelId(record.repo, record.file) === dir.name
+        )
           result.push(record);
       } catch (error) {
         // Missing/corrupt records are not models; I/O failures are not evidence

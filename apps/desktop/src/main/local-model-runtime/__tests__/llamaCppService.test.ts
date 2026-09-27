@@ -312,6 +312,46 @@ describe('managed llama.cpp model lifecycle', () => {
       expect((await service.snapshot()).models).toEqual(expected);
     },
   );
+  it.each([
+    null,
+    {},
+    [],
+    { id: 5 },
+    { id: 'wrong' },
+    { repo: null },
+    { repo: '' },
+    { repo: '../repo' },
+    { file: 7 },
+    { file: '' },
+    { file: '../model.gguf' },
+    { size: '4' },
+    { size: 0 },
+    { size: -1 },
+    { size: 1.5 },
+    { size: Number.MAX_SAFE_INTEGER + 1 },
+  ])('skips structurally damaged records while retaining healthy models: %j', async (damage) => {
+    const service = createLlamaCppService(root);
+    await service.download({ repo: 'owner/good', file: 'model.gguf' });
+    const good = (await service.snapshot()).models;
+    const bad = {
+      id: managedModelId('owner/bad', 'model.gguf'),
+      repo: 'owner/bad',
+      file: 'model.gguf',
+      size: 4,
+    };
+    const folder = path.join(root, 'llamacpp-runtime', 'models', bad.id);
+    await mkdir(folder);
+    const record =
+      damage === null || Array.isArray(damage) || Object.keys(damage).length === 0
+        ? damage
+        : { ...bad, ...damage };
+    await writeFile(path.join(folder, 'model.json'), JSON.stringify(record));
+    expect((await service.snapshot()).models).toEqual(good);
+    await writeFile(path.join(folder, 'model.json'), JSON.stringify(bad));
+    expect((await service.snapshot()).models.map((model) => model.id).sort()).toEqual(
+      [good[0]!.id, bad.id].sort(),
+    );
+  });
   it.each(['darwin', 'win32'])(
     'filters all casing variants from the spawned environment on %s',
     async (platform) => {
