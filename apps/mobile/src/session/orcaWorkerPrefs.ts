@@ -115,6 +115,50 @@ export function saveOrcaWorkerCreationPrefs(scope: string, prefs: OrcaWorkerCrea
   void AsyncStorage.setItem(storageKey(scope), JSON.stringify(prefs)).catch(() => undefined);
 }
 
+/** 一次提交里需要记住的部分(Agent、该 Agent 的模型 / 推理强度 / Fast、权限;初始任务不记)。 */
+export interface OrcaWorkerSubmittedChoice {
+  agent: OrcaWorkerAgentKind;
+  permissionMode: OrcaWorkerPermissionMode;
+  model: { id: string; effort: string | null; fast: boolean } | null;
+}
+
+/** 把一次提交合并进已有记忆(纯函数)。 */
+export function mergeOrcaWorkerChoice(
+  previous: OrcaWorkerCreationPrefs,
+  submitted: OrcaWorkerSubmittedChoice,
+): OrcaWorkerCreationPrefs {
+  return {
+    ...previous,
+    lastAgent: submitted.agent,
+    workerPermissionMode: submitted.permissionMode,
+    agents: submitted.model
+      ? {
+        ...previous.agents,
+        [submitted.agent]: {
+          model: submitted.model.id,
+          effort: submitted.model.effort ?? previous.agents[submitted.agent].effort,
+          fast: submitted.model.fast,
+        },
+      }
+      : previous.agents,
+  };
+}
+
+/**
+ * 记住一次提交:先读到这个账号的记忆(已在内存就直接用),再合并写回。读—合并—写在一处完成,
+ * 不依赖调用方的预读是否已经完成。存储读取失败时不写回,避免用默认值拼出的整份记忆覆盖
+ * 用户原先存的其它选择。
+ */
+export async function rememberOrcaWorkerChoice(
+  scope: string,
+  submitted: OrcaWorkerSubmittedChoice,
+): Promise<OrcaWorkerCreationPrefs> {
+  const previous = await readOrcaWorkerCreationPrefs(scope);
+  const next = mergeOrcaWorkerChoice(previous, submitted);
+  if (hasLoadedOrcaWorkerCreationPrefs(scope)) saveOrcaWorkerCreationPrefs(scope, next);
+  return next;
+}
+
 /** 测试用:清空内存缓存。 */
 export function resetOrcaWorkerCreationPrefsMemory(): void {
   memory.clear();

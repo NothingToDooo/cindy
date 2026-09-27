@@ -12,6 +12,7 @@ const {
   defaultOrcaWorkerCreationPrefs,
   hasLoadedOrcaWorkerCreationPrefs,
   readOrcaWorkerCreationPrefs,
+  rememberOrcaWorkerChoice,
   resetOrcaWorkerCreationPrefsMemory,
   sanitizeOrcaWorkerCreationPrefs,
   saveOrcaWorkerCreationPrefs,
@@ -78,6 +79,24 @@ describe('Worker creation preferences', () => {
     // 下次打开再读,拿到的是真正存过的选择。
     await expect(readOrcaWorkerCreationPrefs('user-1')).resolves.toMatchObject({ workerPermissionMode: 'auto' });
     expect(hasLoadedOrcaWorkerCreationPrefs('user-1')).toBe(true);
+  });
+
+  it('persists a choice submitted before the stored preferences finished loading', async () => {
+    storage.set('cindy:orcaWorkerCreationPrefs:v1:user-1', JSON.stringify({
+      ...defaultOrcaWorkerCreationPrefs(), lastAgent: 'pi',
+    }));
+    // 预读还在路上时就提交了一次选择。
+    const preload = readOrcaWorkerCreationPrefs('user-1');
+    const remembered = rememberOrcaWorkerChoice('user-1', {
+      agent: 'codex', permissionMode: 'auto', model: { id: 'codex/gpt-5.5', effort: 'low', fast: false },
+    });
+    await preload;
+    await expect(remembered).resolves.toMatchObject({ lastAgent: 'codex', workerPermissionMode: 'auto' });
+    await Promise.resolve();
+    resetOrcaWorkerCreationPrefsMemory();
+    await expect(readOrcaWorkerCreationPrefs('user-1')).resolves.toMatchObject({
+      lastAgent: 'codex', workerPermissionMode: 'auto',
+    });
   });
 });
 

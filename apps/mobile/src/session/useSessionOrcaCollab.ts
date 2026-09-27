@@ -46,8 +46,9 @@ import { normalizeMobileAgentCapabilities } from '@/session/agentCapabilities';
 import {
   defaultOrcaWorkerCreationPrefs,
   hasLoadedOrcaWorkerCreationPrefs,
+  mergeOrcaWorkerChoice,
   readOrcaWorkerCreationPrefs,
-  saveOrcaWorkerCreationPrefs,
+  rememberOrcaWorkerChoice,
   type OrcaWorkerCreationPrefs,
 } from '@/session/orcaWorkerPrefs';
 import { remoteSessionStore } from '@/session/remoteSessionStore';
@@ -359,27 +360,16 @@ export function useOrcaWorkerForm(params: {
     converge(agent);
   }, [converge]);
 
-  /** 提交成功后写回记忆(与桌面一样只在提交时记)。 */
+  /** 提交成功后写回记忆(与桌面一样只在提交时记);读—合并—写由 rememberOrcaWorkerChoice 一处完成。 */
   const remember = useCallback((submitted: OrcaWorkerFormValue) => {
-    const previous = prefsRef.current;
-    const next: OrcaWorkerCreationPrefs = {
-      ...previous,
-      lastAgent: submitted.agent,
-      workerPermissionMode: submitted.permissionMode,
-      agents: submitted.model
-        ? {
-          ...previous.agents,
-          [submitted.agent]: {
-            model: submitted.model.id,
-            effort: submitted.model.effort ?? previous.agents[submitted.agent].effort,
-            fast: submitted.model.fast,
-          },
-        }
-        : previous.agents,
-    };
-    prefsRef.current = next;
-    // 记忆没读到(存储读取失败)时不写回:否则会用默认值拼出的整份记忆覆盖用户原先存的其它选择。
-    if (prefsScope && prefsLoadedRef.current) saveOrcaWorkerCreationPrefs(prefsScope, next);
+    prefsRef.current = mergeOrcaWorkerChoice(prefsRef.current, submitted);
+    if (!prefsScope) return;
+    const scope = prefsScope;
+    void rememberOrcaWorkerChoice(scope, submitted).then((next) => {
+      if (prefsScopeRef.current !== scope) return;
+      prefsRef.current = next;
+      prefsLoadedRef.current = hasLoadedOrcaWorkerCreationPrefs(scope);
+    });
   }, [prefsScope]);
 
   const patch = useCallback((next: Partial<OrcaWorkerFormValue>) => {
