@@ -169,3 +169,20 @@ it('reopens a confirmed draft with the role mode that matches its saved role', a
   await act(async () => { latest!.restore({ ...saved, role: 'Security Auditor' }); await flush(); });
   expect(latest!.customRoleMode).toBe(true);
 });
+
+it('drops a memory read that lands after switching to another account', async () => {
+  saveOrcaWorkerCreationPrefs('user-1', { ...defaultOrcaWorkerCreationPrefs(), lastAgent: 'pi', workerPermissionMode: 'auto' });
+  resetOrcaWorkerCreationPrefsMemory();
+  const maker = fakeMaker();
+  function ScopedProbe({ scope }: { scope: string }) {
+    latest = useOrcaWorkerForm({ maker, prefsScope: scope, active: false, setSheetOpen: () => undefined });
+    return null;
+  }
+  // 账号 A 的记忆还在读取中就打开表单,随后切到账号 B。
+  act(() => root.render(<ScopedProbe scope="user-1" />));
+  act(() => { latest!.reset(); });
+  act(() => root.render(<ScopedProbe scope="user-2" />));
+  await act(async () => { await flush(); });
+  expect(latest!.form.agent).toBe('codex');
+  expect(latest!.form.permissionMode).toBe('bypassPermissions');
+});

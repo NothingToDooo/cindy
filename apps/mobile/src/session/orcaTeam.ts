@@ -216,6 +216,8 @@ const TIMEOUT_RECOVERY_ATTEMPTS = 4;
 const TIMEOUT_RECOVERY_DELAY_MS = 3000;
 /** 回查的总时限:探针自身可能各走满隧道超时,只限次数不限时会把恢复窗口拖到分钟级。 */
 const TIMEOUT_RECOVERY_DEADLINE_MS = 30_000;
+/** 连续撞已占用 label 的上限(每次都是一次远端往返;正常一两次就能找到空位)。 */
+const MAX_LABEL_ATTEMPTS = 20;
 
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -279,7 +281,7 @@ export async function enableOrcaTeam(
 }
 
 /**
- * 追加 Worker:label 按现有团队派生,撞 DUPLICATE_LABEL(并发创建)时重拉一次后重试。
+ * 追加 Worker:label 按现有团队派生,撞 DUPLICATE_LABEL(并发创建 / 已归档 Worker 占用)时跳过该 label 继续派生。
  * 隧道超时不是权威失败:按本次请求的确切 label 回查被控端,查到即成功;查不到抛
  * ORCA_CREATE_UNCONFIRMED,提示用户先看 Worker 列表,不让「超时→重试」建出第二个。
  */
@@ -291,8 +293,7 @@ export async function createOrcaWorker(
 ): Promise<{ workerSessionId: string | null }> {
   await assertWorkerPermissionSupported(maker, form.agent);
   const role = form.role.trim() || 'developer';
-  const submit = async (labels: readonly string[]) => {
-    const label = createWorkerLabel(role, labels);
+  const submit = async (label: string) => {
     try {
       const result = await maker.orca.createWorker({
         leadSessionId,
@@ -314,15 +315,21 @@ export async function createOrcaWorker(
       throw new Error('[ORCA_CREATE_UNCONFIRMED] worker creation timed out and could not be confirmed');
     }
   };
-  const labelsOf = (workers: readonly OrcaTeamWorker[]) =>
-    workers.map((worker) => worker.label).filter((label): label is string => !!label);
-  try {
-    return { workerSessionId: await submit(labelsOf(existingWorkers)) };
-  } catch (error) {
-    if (!isOrcaDuplicateLabelError(error)) throw error;
-    const fresh = parseOrcaTeamWorkers(await maker.orca.listWorkers(leadSessionId));
-    return { workerSessionId: await submit(labelsOf(fresh)) };
+  // 与桌面 useOrcaWorkerSelection 同口径:已归档 Worker 不在列表里,但 label 在团队生命周期内
+  // 永久占用;被拒的 label 记下来继续派生下一个,不重复撞同一个。
+  const allocated = existingWorkers
+    .map((worker) => worker.label)
+    .filter((label): label is string => !!label);
+  for (let attempt = 0; attempt < MAX_LABEL_ATTEMPTS; attempt += 1) {
+    const label = createWorkerLabel(role, allocated);
+    try {
+      return { workerSessionId: await submit(label) };
+    } catch (error) {
+      if (!isOrcaDuplicateLabelError(error)) throw error;
+      allocated.push(label);
+    }
   }
+  throw new Error('[DUPLICATE_LABEL] no unique worker label available');
 }
 
 // ─── 新建任务开启协同失败的跨页提示 ──────────────────────────────────────────

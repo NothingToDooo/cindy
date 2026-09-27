@@ -34,7 +34,7 @@ import {
   orcaWorkerStatusLabel,
   type OrcaWorkerFormValue,
 } from '@/session/orcaTeam';
-import { iconSize, iconStroke, radius, typeScale, useTheme } from '@/theme';
+import { iconSize, iconStroke, lineHeight, radius, typeScale, useTheme } from '@/theme';
 
 const CUSTOM_ROLE = '__custom__';
 
@@ -143,7 +143,7 @@ export function OrcaWorkerFormView({
           onPress={onPickModel}
           testID="collab.modelRow"
           trailing={(
-            <Text numberOfLines={1} style={{ color: colors.textTertiary, fontSize: typeScale.footnote, maxWidth: 180 }}>
+            <Text numberOfLines={1} style={{ color: colors.textTertiary, fontSize: typeScale.footnote, lineHeight: lineHeight.caption, maxWidth: 180 }}>
               {modelLabel}
             </Text>
           )}
@@ -250,7 +250,7 @@ export function OrcaTeamPanelView({
             onPress={() => onWorkerPress(worker)}
             testID={`collab.worker.${worker.workerId}`}
             trailing={(
-              <Text style={{ color: worker.status === 'error' ? colors.statusError : colors.textTertiary, fontSize: typeScale.footnote }}>
+              <Text style={{ color: worker.status === 'error' ? colors.statusError : colors.textTertiary, fontSize: typeScale.footnote, lineHeight: lineHeight.caption }}>
                 {orcaWorkerStatusLabel(worker.status)}
               </Text>
             )}

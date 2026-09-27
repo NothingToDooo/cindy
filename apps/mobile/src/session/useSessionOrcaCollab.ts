@@ -192,8 +192,13 @@ export function useOrcaWorkerForm(params: {
   agentsRef.current = agents;
   const generationRef = useRef(0);
 
+  const prefsScopeRef = useRef(prefsScope);
+  prefsScopeRef.current = prefsScope;
+
   // 挂载 / 换账号时预读记忆,复位时即可同步恢复,不在用户操作期间异步覆盖表单。
+  // 换账号时推进代次:上一个账号还在路上的读取 / 能力收敛一律作废,不写进新账号的表单。
   useEffect(() => {
+    generationRef.current += 1;
     prefsLoadedRef.current = false;
     prefsRef.current = defaultOrcaWorkerCreationPrefs();
     if (!prefsScope) {
@@ -275,7 +280,9 @@ export function useOrcaWorkerForm(params: {
     apply(prefsRef.current);
     // 预读尚未完成(极少见:刚登录就打开表单):读完后仅在用户还没动过这张表单时补一次。
     if (!prefsLoadedRef.current && prefsScope) {
-      void readOrcaWorkerCreationPrefs(prefsScope).then((prefs) => {
+      const scope = prefsScope;
+      void readOrcaWorkerCreationPrefs(scope).then((prefs) => {
+        if (prefsScopeRef.current !== scope) return;
         prefsRef.current = prefs;
         prefsLoadedRef.current = true;
         if (generation !== generationRef.current || touchedRef.current) return;

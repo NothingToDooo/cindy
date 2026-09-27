@@ -196,19 +196,16 @@ describe('mobile Orca collaboration mutations', () => {
     expect(maker.orca.listWorkers).not.toHaveBeenCalled();
   });
 
-  it('re-derives the label from a fresh Worker list after a duplicate-label race', async () => {
+  it('skips labels still held by archived Workers instead of re-deriving the same one', async () => {
+    // 已归档的 reviewer / reviewer-2 不在列表里,但 label 仍被占用。
     const createWorker = vi.fn()
       .mockRejectedValueOnce(new Error('[DUPLICATE_LABEL] taken'))
+      .mockRejectedValueOnce(new Error('[DUPLICATE_LABEL] taken'))
       .mockResolvedValueOnce({ ok: true, workerSessionId: 'worker-3' });
-    const maker = fakeMaker({
-      orca: {
-        createWorker,
-        listWorkers: vi.fn(async () => [{ id: 'w-1', sessionId: 's-1', role: 'reviewer', label: 'reviewer' }]),
-      },
-    });
+    const maker = fakeMaker({ orca: { createWorker, listWorkers: vi.fn(async () => []) } });
     await expect(createOrcaWorker(maker, 'lead-1', form, [])).resolves.toEqual({ workerSessionId: 'worker-3' });
-    expect(createWorker.mock.calls.map((call) => call[0].label)).toEqual(['reviewer', 'reviewer-2']);
-    expect(createWorker.mock.calls[1][0]).toMatchObject({ initialTask: 'check tests', agent: 'codex' });
+    expect(createWorker.mock.calls.map((call) => call[0].label)).toEqual(['reviewer', 'reviewer-2', 'reviewer-3']);
+    expect(createWorker.mock.calls[2][0]).toMatchObject({ initialTask: 'check tests', agent: 'codex' });
   });
 
   it('refuses to create Workers on computers that would ignore the chosen permission', async () => {

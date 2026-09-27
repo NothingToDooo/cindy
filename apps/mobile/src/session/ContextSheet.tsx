@@ -410,10 +410,12 @@ function makeContextSheetStyles(colors: ThemeColors) {
     rowDetail: {
       color: colors.textTertiary,
       fontSize: typeScale.footnote,
+      lineHeight: lineHeight.caption,
     },
     note: {
       color: colors.textTertiary,
       fontSize: typeScale.footnote,
+      lineHeight: lineHeight.caption,
       paddingVertical: spacing.sm,
     },
     noteError: {
@@ -442,6 +444,7 @@ function makeContextSheetStyles(colors: ThemeColors) {
     choicePillText: {
       color: colors.textPrimary,
       fontSize: typeScale.footnote,
+      lineHeight: lineHeight.caption,
       fontWeight: fontWeight.medium,
     },
     choicePillTextSelected: {

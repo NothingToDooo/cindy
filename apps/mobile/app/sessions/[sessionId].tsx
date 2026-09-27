@@ -9094,7 +9094,7 @@ export default function SessionScreen() {
                     testID="session.contextSheetCollabRow"
                     trailing={collab.isLead ? (
                       <>
-                        <Text style={{ color: colors.textTertiary, fontSize: typeScale.footnote }}>
+                        <Text style={{ color: colors.textTertiary, fontSize: typeScale.footnote, lineHeight: lineHeight.caption }}>
                           {t('session.collab.enabled')}
                         </Text>
                         <ChevronRight color={colors.textTertiary} size={iconSize.md} strokeWidth={iconStroke.regular} />
