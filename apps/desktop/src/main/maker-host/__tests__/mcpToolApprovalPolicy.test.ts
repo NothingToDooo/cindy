@@ -94,7 +94,17 @@ describe('desktop MCP approval policy', () => {
     }
     expect(getDesktopMcpToolApprovalPolicy({ serverName: 'companion_connections', toolParams: { command: 'python scripts/report.py' } })).toBe('prompt-each-time');
     expect(getDesktopClaudeReadOnlyAllowedTools()).not.toContain('mcp__companion_connections__run_command');
-    expect(getDesktopMcpToolApprovalPolicy({ serverName: 'companion_connections', toolName: 'c_example_read_data' })).toBe('prompt');
+  });
+
+  it('does not share imported connection approvals across tools or connections', () => {
+    for (const toolName of ['c_example_read_data', 'c_example_delete_data', 'c_other_send_message', undefined]) {
+      expect(getDesktopMcpToolApprovalPolicy({
+        serverName: 'companion_connections', toolName, toolParams: { id: 'item-1' },
+      })).toBe('prompt-each-time');
+    }
+    expect(getDesktopClaudeReadOnlyAllowedTools().some((tool) => tool.startsWith('mcp__companion_connections__'))).toBe(false);
+    // The restriction belongs to the multiplexed import bridge, not every MCP.
+    expect(getDesktopMcpToolApprovalPolicy({ serverName: 'third_party', toolName: 'read_data' })).toBe('prompt');
   });
 
   it('keeps known safe contacts calls trusted', () => {

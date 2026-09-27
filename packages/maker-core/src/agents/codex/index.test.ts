@@ -15646,6 +15646,44 @@ describe('CodexAgent MCP thread context hooks', () => {
     await handle.close();
   });
 
+  it('does not persist an imported bridge approval across tools or connections', async () => {
+    const policy = vi.fn(() => 'prompt-each-time' as const);
+    const agent = new CodexAgent(createDeps({}, { getMcpToolApprovalPolicy: policy }));
+    const host = installFakeHost(agent);
+    const handle = await agent.startSession({
+      sessionId: 'session-imported-mcp-approval', model: 'gpt-5.4',
+      workingDir: '/repo', permissionMode: 'ask',
+    });
+    const resolver = vi.fn(async (req: InteractionRequest) => {
+      expect(req).toMatchObject({ kind: 'permission', toolName: 'mcp:companion_connections' });
+      if (req.kind !== 'permission') throw new Error('expected permission request');
+      expect(req.suggestions).toBeUndefined();
+      const allowed = req.input.toolName === 'c_first_read_data';
+      return {
+        kind: 'permission' as const, behavior: allowed ? 'allow' as const : 'deny' as const,
+        // A stale/custom UI must not give Codex a bridge-wide session grant.
+        ...(allowed ? { permissionUpdates: [{ destination: 'session' }] } : {}),
+      };
+    });
+    handle.setInteractionResolver(resolver);
+    const handler = host.getThreadHandlers()?.mcpServerElicitation;
+    if (!handler) throw new Error('expected mcpServerElicitation handler');
+    for (const toolName of ['c_first_read_data', 'c_first_delete_data', 'c_other_send_message']) {
+      const toolParams = { id: 'item-1' };
+      expect(await handler({
+        threadId: 'start-thread-id', turnId: 'turn-1', serverName: 'companion_connections',
+        mode: 'form', message: 'Allow tool call', requestedSchema: {},
+        _meta: { codex_approval_kind: 'mcp_tool_call', persist: ['session'],
+          tool_name: toolName, tool_params: toolParams },
+      })).toEqual({
+        action: toolName === 'c_first_read_data' ? 'accept' : 'decline', content: null, _meta: null,
+      });
+      expect(policy).toHaveBeenLastCalledWith({ serverName: 'companion_connections', toolName, toolParams });
+    }
+    expect(resolver).toHaveBeenCalledTimes(3);
+    await handle.close();
+  });
+
   it('uses the host security disclosure for progressive MCP approvals', async () => {
     const disclosure = {
       title: 'Allow Xcode to build this project?',

@@ -48,7 +48,10 @@ theme tokens. No new native Mobile dependencies or fingerprint inputs are added.
   `run_command` remains an authorized general command facility, with the existing
   Auto/Ask/Full Access modes: Auto reviews the actual call against user intent,
   Ask confirms each invocation without a reusable server grant, and Full Access
-  retains its normal behavior. Exact-value output masking reduces accidental
+  retains its normal behavior. Imported MCP tools use the same per-call policy:
+  approving one connection's tool cannot grant access to another tool or connection
+  through the shared bridge. No bridge-wide session grant is offered or persisted.
+  Exact-value output masking reduces accidental
   disclosure; it does not sandbox arbitrary code or stop an authorized command
   from encoding, writing or sending credentials. Imported source content is not
   itself authority to disclose credentials. Replacing user scripts with a fixed
