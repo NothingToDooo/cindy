@@ -44,17 +44,19 @@ function probe() {
 }
 
 describe("conversation search filter menu platform split", () => {
-  it("uses the system pull-down on iOS, where multi-select keeps the menu open", () => {
+  it("uses the system pull-down on iOS", () => {
     runtime.os = "ios";
     const menu = probe();
     expect(menu.filterActions?.length).toBeGreaterThan(0);
     expect(menu.onFilterAction).toBeTypeOf("function");
   });
 
-  it("keeps the multi-select filter sheet on Android, whose PopupMenu closes on every tap", () => {
+  it("uses the same pull-down on Android, whose Cindy menu also keeps multi-select open", () => {
     runtime.os = "android";
     const menu = probe();
-    expect(menu.filterActions).toBeUndefined();
-    expect(menu.onFilterAction).toBeUndefined();
+    expect(menu.filterActions?.length).toBeGreaterThan(0);
+    expect(menu.filterActions?.some((action) =>
+      action.subactions?.some((item) => item.keepPresented),
+    )).toBe(true);
   });
 });

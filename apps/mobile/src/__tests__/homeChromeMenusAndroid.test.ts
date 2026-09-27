@@ -10,12 +10,10 @@ vi.mock("react-native", () => ({
 }));
 vi.mock("@react-native-menu/menu", () => ({ MenuView: () => null }));
 vi.mock("@/theme", () => ({ useTheme: () => ({ colors: {} }) }));
+vi.mock("@/platform/chrome/AnchoredPullDownMenu", () => ({ AnchoredPullDownMenu: () => null }));
 
-import {
-  ANDROID_MENU_GROUP_HEADER_SUFFIX,
-  flattenAndroidMenuActions,
-  usesNativePullDownMenu,
-} from "@/platform/chrome/NativePullDownMenu";
+import { usesNativePullDownMenu } from "@/platform/chrome/NativePullDownMenu";
+import { buildPullDownMenuSections } from "@/platform/chrome/pullDownMenuModel";
 import {
   buildHomeDisplayPullDownActions,
   buildHomeScopePullDownActions,
@@ -62,7 +60,7 @@ const displayInput = {
 };
 
 describe("Android home chrome menus follow the iOS pull-down", () => {
-  it("opens the system pull-down on Android when MenuView is compiled in", () => {
+  it("always opens the anchored pull-down on Android", () => {
     expect(usesNativePullDownMenu()).toBe(true);
   });
 
@@ -76,7 +74,9 @@ describe("Android home chrome menus follow the iOS pull-down", () => {
       "All tasks",
       [{ id: "teammates", title: "Teammates" }],
     );
-    const android = flattenAndroidMenuActions(actions);
+    const sections = buildPullDownMenuSections(actions);
+    expect(sections).toHaveLength(1);
+    const android = sections[0].rows;
     expect(android).toEqual(actions);
     expect(android.map((action) => [action.id, action.title, action.state])).toEqual([
       ["all", "All tasks", "off"],
@@ -90,17 +90,15 @@ describe("Android home chrome menus follow the iOS pull-down", () => {
     }
   });
 
-  it("flattens the display groups in iOS order with the same checks", () => {
+  it("renders the display groups as titled sections in iOS order with the same checks", () => {
     const actions = buildHomeDisplayPullDownActions(displayInput);
     const iosLeaves = actions.flatMap((group) => group.subactions ?? []);
-    const flat = flattenAndroidMenuActions(actions);
-    // 每个带标题的内联分组前多一行禁用的组名，对应 iOS UIMenu 的分组标题。
-    const headers = flat.filter((action) => action.id.endsWith(ANDROID_MENU_GROUP_HEADER_SUFFIX));
-    expect(headers.map((action) => action.title)).toEqual(
-      actions.filter((group) => group.title.trim()).map((group) => group.title),
+    const sections = buildPullDownMenuSections(actions);
+    // 每个带标题的内联分组对应一段带标题的分组,和 iOS UIMenu 一样。
+    expect(sections.map((section) => section.title)).toEqual(
+      actions.map((group) => group.title.trim() || undefined),
     );
-    expect(headers.every((action) => action.disabled)).toBe(true);
-    const android = flat.filter((action) => !action.id.endsWith(ANDROID_MENU_GROUP_HEADER_SUFFIX));
+    const android = sections.flatMap((section) => section.rows);
     expect(android).toEqual(iosLeaves);
     expect(android.map((action) => [action.id, action.state])).toEqual([
       ["groupByProject", "on"],
