@@ -82,8 +82,10 @@ export function useOrcaTeam(params: {
   maker: MobileMakerTransport;
   deviceId: string | null;
   leadSessionId: string | null;
+  /** 隧道重连代次:断线期间可能漏掉 worker-changed 推送,重连后整表重拉一次。 */
+  connectionEpoch?: number;
 }): OrcaTeamSnapshot & { refresh(): Promise<void> } {
-  const { maker, deviceId, leadSessionId } = params;
+  const { maker, deviceId, leadSessionId, connectionEpoch } = params;
   const [snapshot, setSnapshot] = useState<OrcaTeamSnapshot>(EMPTY_TEAM);
   const generationRef = useRef(0);
   const makerRef = useRef(maker);
@@ -124,6 +126,13 @@ export function useOrcaTeam(params: {
     return () => { generationRef.current += 1; };
   }, [deviceId, refresh]);
 
+  const seenEpochRef = useRef(connectionEpoch);
+  useEffect(() => {
+    if (seenEpochRef.current === connectionEpoch) return;
+    seenEpochRef.current = connectionEpoch;
+    void refresh();
+  }, [connectionEpoch, refresh]);
+
   useEffect(() => {
     if (!deviceId || !leadSessionId) return undefined;
     return subscribeRemoteOrcaWorkerChanged((pushDeviceId, pushLeadSessionId) => {
@@ -138,20 +147,24 @@ export function useOrcaTeam(params: {
 export function useOrcaWorkerLeadSessionId(params: {
   maker: MobileMakerTransport;
   workerSessionId: string | null;
+  /** 隧道重连代次:首次查询赶上断线 / 瞬时失败时,重连后再查一次。 */
+  connectionEpoch?: number;
 }): string | null {
-  const { maker, workerSessionId } = params;
+  const { maker, workerSessionId, connectionEpoch } = params;
   const [leadSessionId, setLeadSessionId] = useState<string | null>(null);
   const makerRef = useRef(maker);
   makerRef.current = maker;
   useEffect(() => {
     setLeadSessionId(null);
+  }, [workerSessionId]);
+  useEffect(() => {
     if (!workerSessionId) return undefined;
     let cancelled = false;
     makerRef.current.orca.getTeamByWorkerSession(workerSessionId)
       .then((team) => { if (!cancelled) setLeadSessionId(readOrcaTeamLeadSessionId(team)); })
       .catch(() => undefined);
     return () => { cancelled = true; };
-  }, [workerSessionId]);
+  }, [workerSessionId, connectionEpoch]);
   return leadSessionId;
 }
 
@@ -386,6 +399,8 @@ export function useSessionOrcaCollab(params: {
   session: RemoteSession | null;
   /** Worker 创建偏好的记忆范围(登录账号);null = 不记忆。 */
   prefsScope: string | null;
+  /** 隧道重连代次(会话页的 connectionEpoch):重连后补拉团队与 Worker 所属 Lead。 */
+  connectionEpoch?: number;
   /** 共享任务访客 / 宿主托管任务不提供协同编排(不拉团队、不挂入口)。 */
   enabled: boolean;
   /** + 面板当前是否展示协同视图。 */
@@ -395,13 +410,17 @@ export function useSessionOrcaCollab(params: {
   setSheetOpen(open: boolean): void;
   openSession(sessionId: string): void;
 }) {
-  const { maker, deviceId, sessionId, session, prefsScope, enabled, sheetView, sheetOpen, setSheetView, setSheetOpen, openSession } = params;
+  const { maker, deviceId, sessionId, session, prefsScope, connectionEpoch, enabled, sheetView, sheetOpen, setSheetView, setSheetOpen, openSession } = params;
   const role = enabled ? session?.orcaRole ?? null : null;
   const isLead = role === 'lead';
   const isWorker = role === 'worker';
   const eligible = enabled && (isLead || isOrcaCollabEligible(session));
-  const team = useOrcaTeam({ maker, deviceId, leadSessionId: isLead ? sessionId : null });
-  const workerLeadSessionId = useOrcaWorkerLeadSessionId({ maker, workerSessionId: isWorker ? sessionId : null });
+  const team = useOrcaTeam({ maker, deviceId, leadSessionId: isLead ? sessionId : null, connectionEpoch });
+  const workerLeadSessionId = useOrcaWorkerLeadSessionId({
+    maker,
+    workerSessionId: isWorker ? sessionId : null,
+    connectionEpoch,
+  });
   const workerForm = useOrcaWorkerForm({
     maker,
     prefsScope,

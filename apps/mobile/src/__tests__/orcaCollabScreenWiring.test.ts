@@ -27,6 +27,8 @@ describe('mobile Orca collaboration wiring', () => {
     const source = read('app/sessions/[sessionId].tsx');
     expect(source).toContain('testID="session.collabBar"');
     expect(source).toContain('collab.openLead();');
+    // 断线期间首次查询失败时,重连后补查 Worker 所属 Lead 与团队。
+    expect(source).toContain("prefsScope: auth.user?.id ?? null,\n    connectionEpoch,");
     expect(source).toContain('takeOrcaStartFailure(sessionId)');
     expect(source).toContain('return subscribeOrcaStartFailure((failedSessionId) => {');
   });

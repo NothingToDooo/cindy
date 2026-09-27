@@ -2045,6 +2045,7 @@ export default function SessionScreen() {
     sessionId,
     session: currentSession,
     prefsScope: auth.user?.id ?? null,
+    connectionEpoch,
     enabled: !isSharedTaskPeer(deviceId) && !sessionManagedByHost,
     sheetView: contextSheetView === 'collab' || contextSheetView === 'collab-create' ? contextSheetView : null,
     sheetOpen: contextSheetOpen,

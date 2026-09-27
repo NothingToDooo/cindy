@@ -83,3 +83,36 @@ it('surfaces load failures without dropping the last known list', async () => {
   expect(latest?.workers.map((worker) => worker.workerId)).toEqual(['w-1']);
   expect(latest?.error).toBeTruthy();
 });
+
+it('looks up the Worker Lead again after reconnecting when the first lookup failed', async () => {
+  const { useOrcaWorkerLeadSessionId } = await import('@/session/useSessionOrcaCollab');
+  const getTeamByWorkerSession = vi.fn()
+    .mockRejectedValueOnce(new Error('[DEVICE_OFFLINE] offline'))
+    .mockResolvedValueOnce({ leadSessionId: 'lead-9' });
+  const maker = { orca: { getTeamByWorkerSession } } as unknown as MobileMakerTransport;
+  let lead: string | null = null;
+  function WorkerProbe({ epoch }: { epoch: number }) {
+    lead = useOrcaWorkerLeadSessionId({ maker, workerSessionId: 'worker-1', connectionEpoch: epoch });
+    return null;
+  }
+  await act(async () => root.render(<WorkerProbe epoch={1} />));
+  expect(lead).toBeNull();
+  await act(async () => root.render(<WorkerProbe epoch={2} />));
+  expect(lead).toBe('lead-9');
+  expect(getTeamByWorkerSession).toHaveBeenCalledTimes(2);
+});
+
+it('reloads the team after reconnecting, since pushes may have been missed', async () => {
+  const listWorkers = vi.fn(async () => []);
+  const maker = fakeMaker(listWorkers);
+  function EpochProbe({ epoch }: { epoch: number }) {
+    latest = useOrcaTeam({ maker, deviceId: 'dev-1', leadSessionId: 'lead-1', connectionEpoch: epoch });
+    return null;
+  }
+  await act(async () => root.render(<EpochProbe epoch={1} />));
+  expect(listWorkers).toHaveBeenCalledTimes(1);
+  await act(async () => root.render(<EpochProbe epoch={1} />));
+  expect(listWorkers).toHaveBeenCalledTimes(1);
+  await act(async () => root.render(<EpochProbe epoch={2} />));
+  expect(listWorkers).toHaveBeenCalledTimes(2);
+});
