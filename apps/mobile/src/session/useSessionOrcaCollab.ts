@@ -12,6 +12,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert } from 'react-native';
 import type { ProviderView } from '@cindy/model-providers/registry';
 import type { AgentKind } from '@cindy/model-providers/types';
+import type { MobileModelOption } from '@/session/agentCapabilities';
 import { confirmFullAccessChange } from '@/session/fullAccessConfirmation';
 import {
   buildOrcaEnableOptions,
@@ -60,6 +61,7 @@ import type { RemoteSession } from '@/session/types';
 export type CollabSheetView = 'collab' | 'collab-create';
 
 const ALL_AGENTS: readonly OrcaWorkerAgentKind[] = ['claude-code', 'codex', 'pi'];
+const EMPTY_MODEL_OPTIONS: readonly MobileModelOption[] = [];
 
 // ─── 团队状态 ────────────────────────────────────────────────────────────────
 
@@ -203,6 +205,7 @@ export function useOrcaWorkerForm(params: {
   const [customRoleMode, setCustomRoleMode] = useState(false);
   const [agents, setAgents] = useState<readonly OrcaWorkerAgentKind[]>(ALL_AGENTS);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [modelsByAgent, setModelsByAgent] = useState<Partial<Record<OrcaWorkerAgentKind, readonly MobileModelOption[]>>>({});
   const makerRef = useRef(maker);
   makerRef.current = maker;
   const formRef = useRef(form);
@@ -256,8 +259,10 @@ export function useOrcaWorkerForm(params: {
     const generation = ++convergeGenRef.current;
     makerRef.current.getCapabilities(agent)
       .then((raw) => {
-        if (generation !== convergeGenRef.current) return;
         const capabilities = normalizeMobileAgentCapabilities(raw);
+        // 能力按 Agent 缓存,供老被控端(没有来源目录)时模型选择器的扁平回退列表使用。
+        if (capabilities) setModelsByAgent((current) => ({ ...current, [agent]: capabilities.availableModels }));
+        if (generation !== convergeGenRef.current) return;
         setForm((current) => (current.agent === agent
           ? { ...current, model: convergeOrcaWorkerModel(current.model, capabilities) }
           : current));
@@ -409,6 +414,22 @@ export function useOrcaWorkerForm(params: {
 
   const pickerAgents = useMemo<AgentKind[]>(() => [...agents], [agents]);
 
+  /**
+   * 老被控端没有 `maker:provider:list` 时,模型选择器走扁平列表:用当前 Agent 的能力模型,
+   * 选中后按「不指定来源」写回表单(提交前再按实际来源对账 effort / Fast)。
+   */
+  const flatModelOptions = modelsByAgent[form.agent] ?? EMPTY_MODEL_OPTIONS;
+  const selectFlatModel = useCallback((option: MobileModelOption) => {
+    setModelPickerOpen(false);
+    void select({
+      agent: formRef.current.agent,
+      modelId: option.id,
+      providerId: '',
+      effort: option.defaultEffort ?? '',
+      fast: false,
+    });
+  }, [select]);
+
   return {
     form,
     restore,
@@ -422,7 +443,7 @@ export function useOrcaWorkerForm(params: {
     valid: canSubmitOrcaWorkerForm(form, customRoleMode),
     reset,
     remember,
-    modelPicker: { open: modelPickerOpen, openPicker, close, closed, select },
+    modelPicker: { open: modelPickerOpen, openPicker, close, closed, select, flatModelOptions, selectFlatModel },
   };
 }
 
@@ -707,6 +728,16 @@ export function useSessionOrcaCollab(params: {
                 // 归档后这个 Worker 任务不再可用,回到 Lead。
                 openSession(leadId);
               } catch (err) {
+                if (isOrcaAmbiguousTimeout(err)) {
+                  // 超时不是权威失败:只读回查一次,Worker 已不在团队里就说明归档已生效,照样回到 Lead。
+                  const archived = await makerRef.current.orca.listWorkers(leadId)
+                    .then((raw) => !parseOrcaTeamWorkers(raw).some((item) => item.workerId === worker.workerId))
+                    .catch(() => false);
+                  if (archived) {
+                    openSession(leadId);
+                    return;
+                  }
+                }
                 Alert.alert(describeOrcaError(
                   isOrcaAmbiguousTimeout(err) ? new Error('[ORCA_ACTION_UNCONFIRMED] timed out') : err,
                   'session.collab.errors.archiveFailed',

@@ -374,3 +374,43 @@ it('lets a Worker task focus itself and archive itself back to the Lead', async 
   expect(archiveWorker).toHaveBeenCalledWith('lead-1', 'w-1');
   expect(openSession).toHaveBeenCalledWith('lead-1');
 });
+
+it('offers the Agent capability models as a flat fallback for computers without the provider catalog', async () => {
+  await act(async () => root.render(<Probe maker={fakeMaker()} />));
+  await act(async () => { latest!.reset(); await flush(); });
+  const options = latest!.modelPicker.flatModelOptions;
+  expect(options.map((option) => option.id)).toEqual(['codex/gpt-5.5', 'claude-opus-4-7']);
+  await act(async () => { latest!.modelPicker.selectFlatModel(options[1]!); await flush(); });
+  expect(latest!.form.model).toMatchObject({ id: 'claude-opus-4-7', providerId: null });
+});
+
+it('returns to the Lead when a timed-out self-archive is confirmed by a recheck', async () => {
+  const { Alert } = await import('react-native');
+  const { useSessionOrcaCollab } = await import('@/session/useSessionOrcaCollab');
+  let collab: ReturnType<typeof useSessionOrcaCollab> | null = null;
+  let archived = false;
+  const maker = {
+    ...fakeMaker(),
+    orca: {
+      listWorkers: vi.fn(async () => (archived ? [] : [{ id: 'w-1', sessionId: 'worker-1', role: 'tester' }])),
+      getCollaborationSettings: vi.fn(async () => ({})),
+      getTeamByWorkerSession: vi.fn(async () => ({ leadSessionId: 'lead-1' })),
+      archiveWorker: vi.fn(async () => { archived = true; throw new Error('[INVOKE_TIMEOUT] timed out'); }),
+    },
+  } as unknown as MobileMakerTransport;
+  const openSession = vi.fn();
+  function Host() {
+    collab = useSessionOrcaCollab({
+      maker, deviceId: 'dev-1', sessionId: 'worker-1', prefsScope: 'user-1', enabled: true,
+      session: { id: 'worker-1', orcaRole: 'worker', workspaceKind: 'project', workingDir: '/repo', agentKind: 'pi' } as never,
+      sheetView: null, sheetOpen: false, setSheetView: () => undefined, setSheetOpen: () => undefined, openSession,
+    });
+    return null;
+  }
+  await act(async () => { root.render(<Host />); await flush(); });
+  await act(async () => { await flush(); });
+  act(() => collab!.confirmArchiveSelf());
+  const confirm = vi.mocked(Alert.alert).mock.calls.at(-1)![2]!.find((button) => button.style === 'destructive')!;
+  await act(async () => { confirm.onPress?.(); await flush(); await flush(); });
+  expect(openSession).toHaveBeenCalledWith('lead-1');
+});

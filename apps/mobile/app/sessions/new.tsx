@@ -6568,14 +6568,14 @@ export default function NewRemoteSessionScreen() {
           emptyHint={deviceProviders.error && !deviceProviders.unsupported
             ? humanizeRemoteError(deviceProviders.error)
             : undefined}
-          flatOptions={[]}
+          flatOptions={collabForm.modelPicker.flatModelOptions}
           hidePermissionTrigger
           keyboardAvoidingBehavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           loading={deviceProviders.loading}
           modelVisibilityOverrides={deviceProviders.modelVisibilityOverrides}
           onClose={collabForm.modelPicker.close}
           onClosed={collabForm.modelPicker.closed}
-          onSelectFlatModel={() => undefined}
+          onSelectFlatModel={collabForm.modelPicker.selectFlatModel}
           onSelectPermissionMode={() => undefined}
           onSelectProviderRow={() => undefined}
           permissionOptions={[]}
