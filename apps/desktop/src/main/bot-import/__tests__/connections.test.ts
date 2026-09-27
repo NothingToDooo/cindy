@@ -95,11 +95,15 @@ readline.createInterface({input:process.stdin}).on('line', line => {
     expect(JSON.stringify(snapshot.items.map(item => item.view))).not.toContain(expected);
     await createCompanionEnvironmentStore(secretIo).write(directory, 'bot', { version: 1, env: { KEY: 'fixture-cwd-key' }, mcp: [server], credentials: [] }, () => {});
     const restored = (await createCompanionEnvironmentStore(secretIo).read(directory, 'bot', () => {}))!;
-    await withImportedConnection(restored.mcp[0]!, restored.env, () => {}, async client => {
-      expect((await listImportedTools(client))[0]?.name).toBe('read_data');
-      const result = await client.callTool({ name: 'read_data', arguments: {} });
-      expect(JSON.parse((result.content as Array<{ text: string }>)[0]!.text)).toEqual({ cwd: await fs.realpath(expected), data: path.basename(expected), authenticated: true });
-    });
+    const observed = await withImportedConnection(restored.mcp[0]!, restored.env, () => {}, async client => ({
+      tools: await listImportedTools(client),
+      result: await client.callTool({ name: 'read_data', arguments: {} }),
+    }));
+    // Keep assertions outside the connection's foreign-error mask. Windows cwd
+    // may retain an 8.3 path; compare both physical directories through realpath.
+    expect(observed.tools[0]?.name).toBe('read_data');
+    const payload = JSON.parse((observed.result.content as Array<{ text: string }>)[0]!.text);
+    expect({ ...payload, cwd: await fs.realpath(payload.cwd) }).toEqual({ cwd: await fs.realpath(expected), data: path.basename(expected), authenticated: true });
   }
 });
 
