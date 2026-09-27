@@ -5441,12 +5441,14 @@ export default function NewRemoteSessionScreen() {
       // 目标未设置经 goalError 路由参数在会话页呈现,用户可在会话内重试设置目标。
       // 协同草稿:goal.set 之前开启,首轮目标 Lead 才有协同工具。失败不阻断目标,
       // 任务照单任务继续,原因带到会话页提示。
+      let collabEnabled = false;
       if (collabDraft) {
         try {
           await enableOrcaTeam(maker, result.sessionId, buildOrcaEnableOptions(
             narrowOrcaWorkerProvider(collabDraft, deviceProviders.ready ? deviceProviders.providers : null),
             buildDraftWorkerInitialTask(collabDraft.initialTask, input.objective),
           ));
+          collabEnabled = true;
         } catch (collabErr) {
           rememberOrcaStartFailure(result.sessionId, describeOrcaError(collabErr, null));
         }
@@ -5485,6 +5487,9 @@ export default function NewRemoteSessionScreen() {
         });
         session = { ...session, title: titled.title };
       }
+      // 协同已开启:本地兜底(getSession 失败时由创建结果合成)不带 orcaRole,写入前补上 Lead
+      // 身份,不让兜底行盖掉已收到的 Lead 标记(与普通新建管线同口径)。
+      if (collabEnabled && session.orcaRole !== 'lead') session = { ...session, orcaRole: 'lead' };
       if (!isCurrentOwner() || !ensureDeviceAlive()) return;
       remoteSessionStore.upsertDeviceSession(selectedDeviceId, selectedDeviceName, session);
       if (session.title && !isDefaultDraftSessionTitle(session.title)) {

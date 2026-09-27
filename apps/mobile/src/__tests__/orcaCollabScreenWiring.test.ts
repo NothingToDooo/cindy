@@ -69,6 +69,8 @@ describe('mobile Orca collaboration wiring', () => {
     expect(source.indexOf('await enableOrcaTeam(maker, result.sessionId'))
       .toBeLessThan(source.indexOf('await maker.goal.set({ sessionId: result.sessionId'));
     expect(source).toContain('setCollabDraft(null);');
+    // 目标路径:getSession 失败走兜底时也保留 Lead 身份。
+    expect(source).toContain("if (collabEnabled && session.orcaRole !== 'lead') session = { ...session, orcaRole: 'lead' };");
     expect(source).toContain('prefsScope: outboxOwner.accountKey || null,');
     // create-failed「返回编辑」带回协同草稿;目标比对防止恢复时被「换目标即清」误清。
     expect(source).toContain('if (collabDraftTargetRef.current !== collabTargetKey) setCollabDraft(null);');
