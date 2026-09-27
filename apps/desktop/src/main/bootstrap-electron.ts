@@ -813,6 +813,7 @@ import {
   resetImDefaultSettingsChannel,
   writeImDefaultSettingsPatch,
 } from './im/defaultSettingsStore.js';
+import { assertOwnerScopeSettledForWrite } from './im/ownerScopedStorage.js';
 import { hasClaudeNativeLogin } from './maker-host/claude-native-auth.js';
 import {
   connectClaudeNativeLogin,
@@ -4703,6 +4704,11 @@ const registerIpcHandlers = () => {
       // 必须先验证调用方是可信主渲染器 —— 不能让被导航到外部页面的 preload 窗口
       // 改写渠道默认(PR #5155 review P1, 同 SUBAGENT_MODEL_SETTINGS_SET)。
       assertTrustedAppRendererEvent(event);
+      // owner 边界(PR #5155 review P1): 回填跨多个 await, 期间登出/切号会让落库与
+      // 设置写入漂到别的 owner —— 进入时快照 owner scope; 回填自身已在
+      // prepareImDefaultSettingsChange 内固定 DbClient 并复核 epoch, 这里在写设置
+      // 前的同一同步块内再校验 scope 未变且无 boundary 在途, 不满足失败重试。
+      const ownerScopeKey = activeOwnerScopeKey();
       const channel = parseImDefaultSettingsChannel(rawChannel);
       const parsedPatch = parseImDefaultSettingsPatch(patch);
       // 写新设置之前按旧默认给老任务补跟随记录(见 prepareImDefaultSettingsChange)。
@@ -4716,6 +4722,14 @@ const registerIpcHandlers = () => {
           `渠道默认未保存：旧任务的跟随记录补全失败，请重试（${err instanceof Error ? err.message : String(err)}）`,
         );
       }
+      try {
+        assertOwnerScopeSettledForWrite(ownerScopeKey);
+      } catch (err) {
+        throwIpcError(
+          'INTERNAL',
+          `渠道默认未保存：账号切换中，请重试（${err instanceof Error ? err.message : String(err)}）`,
+        );
+      }
       writeImDefaultSettingsPatch(parsedPatch, channel);
       return imDefaultSettingsWire(channel);
     },
@@ -4723,6 +4737,8 @@ const registerIpcHandlers = () => {
   ipcMain.handle(MAKER_IPC_INVOKE.IM_DEFAULT_SETTINGS_RESET, async (event, rawChannel: unknown) => {
     // 同 SET: 回填会批量改任务记录, 必须先验证调用方(PR #5155 review P1)。
     assertTrustedAppRendererEvent(event);
+    // 同 SET: 进入时快照 owner scope, 写设置前校验 scope 未变且无 boundary 在途。
+    const ownerScopeKey = activeOwnerScopeKey();
     const channel = parseImDefaultSettingsChannel(rawChannel);
     try {
       await prepareImDefaultSettingsChange(channel);
@@ -4730,6 +4746,14 @@ const registerIpcHandlers = () => {
       throwIpcError(
         'INTERNAL',
         `渠道默认未重置：旧任务的跟随记录补全失败，请重试（${err instanceof Error ? err.message : String(err)}）`,
+      );
+    }
+    try {
+      assertOwnerScopeSettledForWrite(ownerScopeKey);
+    } catch (err) {
+      throwIpcError(
+        'INTERNAL',
+        `渠道默认未重置：账号切换中，请重试（${err instanceof Error ? err.message : String(err)}）`,
       );
     }
     if (channel) {
