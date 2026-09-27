@@ -54,6 +54,8 @@ export interface LlamaCppSnapshot {
   running: boolean;
   /** Only the instance owning the child can expose stop/restart controls. */
   canManageRuntime?: boolean;
+  /** Configuration is writable only while unowned or owned by this instance. */
+  canConfigure?: boolean;
   canPauseDownload?: boolean;
   version?: string;
   models: LlamaCppModel[];

@@ -136,11 +136,35 @@ export function createLlamaCppService(
       supported: !!llamaCppPlatform(process.platform, process.arch),
       running: ready && (!!child || borrowed),
       canManageRuntime: ready && !!child,
+      canConfigure: !(await hasExternalOwner()),
       canPauseDownload: true,
       version: runtime?.version,
       models: await models(),
       ...(operation ? { operation: { ...operation } } : {}),
     };
+  }
+  async function hasExternalOwner(): Promise<boolean> {
+    if (child) return false;
+    try {
+      const owner = JSON.parse(await readFile(path.join(root, 'server-owner.json'), 'utf8'));
+      return (await probeReviewOwnerLiveness(owner.identity)) !== 'ended';
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code !== 'ENOENT';
+    }
+  }
+  async function mutateConfiguration<T>(signal: AbortSignal, fn: () => Promise<T>): Promise<T> {
+    await mkdir(root, { recursive: true });
+    return withCrossProcessLock(
+      path.join(root, 'server-start.lock'),
+      { label: 'llamacpp operation', waitMs: 0 },
+      async (lock) => {
+        if (!lock.held) throw new Error('BUSY');
+        if (await hasExternalOwner()) throw new Error('RUNTIME_OWNED_ELSEWHERE');
+        signal.throwIfAborted();
+        return fn();
+      },
+      signal,
+    );
   }
   async function exclusive<T>(
     kind: NonNullable<LlamaCppSnapshot['operation']>['kind'],
@@ -156,16 +180,7 @@ export function createLlamaCppService(
     });
     try {
       if (kind === 'start') return await fn(current.signal);
-      await mkdir(root, { recursive: true });
-      return await withCrossProcessLock(
-        path.join(root, 'server-start.lock'),
-        { label: 'llamacpp operation', waitMs: 0 },
-        async (lock) => {
-          if (!lock.held) throw new Error('BUSY');
-          return fn(current.signal);
-        },
-        current.signal,
-      );
+      return await mutateConfiguration(current.signal, () => fn(current.signal));
     } finally {
       controller = undefined;
       operation = undefined;
@@ -571,6 +586,8 @@ export function createLlamaCppService(
     }
   }
   return {
+    configure: <T>(fn: () => Promise<T>) =>
+      exclusive('start', (signal) => mutateConfiguration(signal, fn)),
     remove: (deleteConnection: () => Promise<void>) =>
       stopRequested(async () => {
         await mkdir(root, { recursive: true });

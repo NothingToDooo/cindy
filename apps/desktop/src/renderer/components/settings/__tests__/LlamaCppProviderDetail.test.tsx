@@ -40,6 +40,25 @@ function api(installed = false) {
   return maker;
 }
 describe('llama.cpp uses the Ollama detail flow', () => {
+  it('explains and blocks configuration in a borrowing instance', async () => {
+    const maker = api(true);
+    maker.llamaCppStatus.mockResolvedValue({
+      installed: true,
+      supported: true,
+      running: true,
+      canConfigure: false,
+      models: [],
+      catalog,
+    });
+    render(<LlamaCppProviderDetail onChanged={() => {}} />);
+    await screen.findByText('settings.providers.llamacpp.ownedElsewhere');
+    const download = screen.getByRole('button', {
+      name: 'settings.providers.local.downloadAdd',
+    });
+    expect((download as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(download);
+    expect(maker.llamaCppDownload).not.toHaveBeenCalled();
+  });
   it.each([true, false, undefined])(
     'only exposes owner controls with explicit capability %s',
     async (canManageRuntime) => {

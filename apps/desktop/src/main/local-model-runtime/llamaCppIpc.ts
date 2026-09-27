@@ -31,6 +31,7 @@ export function registerLlamaCppHandlers(
         const message = error instanceof Error ? error.message : '';
         const known = [
           'BUSY',
+          'RUNTIME_OWNED_ELSEWHERE',
           'DISK_SPACE',
           'UNSUPPORTED',
           'INVALID_MODEL',

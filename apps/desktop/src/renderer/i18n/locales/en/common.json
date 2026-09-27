@@ -1838,6 +1838,7 @@
     },
     "providers": {
       "llamacpp": {
+        "ownedElsewhere": "The model service is running in another Cindy instance. Download models or change context there, or stop its service first.",
         "primaryPick": "Primary pick · try this first",
         "recommendReason": "Start with {{name}}, the shared catalog’s capability pick selected for this computer.",
         "recommendCaveat": "This GGUF build still needs local speed and peak-memory testing; download size is not runtime memory use.",

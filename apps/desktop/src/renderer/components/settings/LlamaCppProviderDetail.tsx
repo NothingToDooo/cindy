@@ -80,9 +80,11 @@ export function LlamaCppProviderDetail({ onChanged }: { onChanged: () => void })
         setError(true);
         toast.error(
           t(
-            parsed?.code === 'INVALID_PARAMS'
-              ? 'settings.providers.llamacpp.invalid'
-              : 'settings.providers.llamacpp.failed',
+            parsed?.message === 'RUNTIME_OWNED_ELSEWHERE'
+              ? 'settings.providers.llamacpp.ownedElsewhere'
+              : parsed?.code === 'INVALID_PARAMS'
+                ? 'settings.providers.llamacpp.invalid'
+                : 'settings.providers.llamacpp.failed',
           ),
         );
       }
@@ -141,7 +143,7 @@ export function LlamaCppProviderDetail({ onChanged }: { onChanged: () => void })
           progress: { label: t('settings.providers.llamacpp.failed'), error: true },
         }
       : undefined;
-  const locked = !!busy || !!operation;
+  const locked = !!busy || !!operation || state?.canConfigure === false;
   const catalog = state?.catalog ?? [];
   const customDownload =
     currentDownload &&
@@ -156,6 +158,11 @@ export function LlamaCppProviderDetail({ onChanged }: { onChanged: () => void })
       className="flex flex-col gap-6 border-t px-5 py-5"
       style={{ borderColor: 'var(--settings-theme-card-border)' }}
     >
+      {state?.canConfigure === false && (
+        <p className="text-12 text-[var(--text-secondary)]">
+          {t('settings.providers.llamacpp.ownedElsewhere')}
+        </p>
+      )}
       {error && !failed && (
         <p role="alert" className="text-12" style={{ color: 'var(--error-flat)' }}>
           {t('settings.providers.llamacpp.failed')}
@@ -168,7 +175,7 @@ export function LlamaCppProviderDetail({ onChanged }: { onChanged: () => void })
               ? 'settings.providers.llamacpp.unsupported'
               : 'settings.providers.llamacpp.installDescription',
           )}
-          canInstall={state?.supported === true}
+          canInstall={state?.supported === true && !locked}
           installing={installing}
           progress={
             installing

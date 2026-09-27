@@ -239,12 +239,15 @@ export function ModelAdvancedDrawer({
     ) ?? primaryCandidates?.[0] ?? null;
   const primaryModel = row && primaryAgent ? (row.byAgent[primaryAgent] ?? null) : null;
   const [millionContextModelId, setMillionContextModelId] = useState<string | null>(null);
+  const [localConfigurationBlocked, setLocalConfigurationBlocked] = useState(false);
   useEffect(() => {
     let active = true;
     setMillionContextModelId(null);
+    setLocalConfigurationBlocked(false);
     if (open && provider.id === MANAGED_LLAMACPP_PROVIDER_ID && primaryModel) {
       const modelId = primaryModel.id;
       void window.electronAPI.maker.llamaCppStatus().then((snapshot) => {
+        if (active) setLocalConfigurationBlocked(snapshot.canConfigure === false);
         if (active && snapshot.models.some((model) => model.id === modelId && supportsLlamaCppMillionContext(model))) {
           setMillionContextModelId(modelId);
         }
@@ -332,15 +335,16 @@ export function ModelAdvancedDrawer({
     ctxDirtyRef.current && ctxDraft.trim() !== '' &&
     (!Number.isSafeInteger(parsedK) || parsedK < minimumContextK || parsedTokens > (supportsMillionContext ? 1_000_000 : 100_000_000));
   const commitCtxDraft = useCallback(() => {
-    if (!ctxDirtyRef.current || ctxInvalid || ctx.loading) return;
+    if (!ctxDirtyRef.current || ctxInvalid || ctx.loading || localConfigurationBlocked) return;
     ctxDirtyRef.current = false;
     void ctx.setLimit(ctxDraft.trim() === '' ? null : parsedTokens);
-  }, [ctx, ctxDraft, ctxInvalid, parsedTokens]);
+  }, [ctx, ctxDraft, ctxInvalid, parsedTokens, localConfigurationBlocked]);
   const resetCtx = useCallback(() => {
+    if (localConfigurationBlocked) return;
     ctxDirtyRef.current = false;
     setCtxDraft(defaultWindow > 0 ? editableContextK(defaultWindow) : '');
     void ctx.reset();
-  }, [ctx, defaultWindow]);
+  }, [ctx, defaultWindow, localConfigurationBlocked]);
 
   if (!row || !primaryAgent || !primaryModel) {
     return (
@@ -720,12 +724,13 @@ export function ModelAdvancedDrawer({
                     >
                       {contextTarget && (
                         <>
+                          {localConfigurationBlocked && <p className="text-12 text-[var(--text-secondary)]">{t('settings.providers.llamacpp.ownedElsewhere')}</p>}
                           {supportsMillionContext && (
                             <div className="mt-2 flex gap-2">
                               {[{ label: '256K', tokens: 262144 }, { label: '1M', tokens: 1_000_000 }].map((preset) => (
                                 <Button key={preset.tokens} variant={effectiveLimit === preset.tokens ? 'primary' : 'secondary'} compact
                                   aria-pressed={effectiveLimit === preset.tokens}
-                                  disabled={paymentRequired || ctx.loading}
+                                  disabled={paymentRequired || ctx.loading || localConfigurationBlocked}
                                   onClick={() => {
                                     ctxDirtyRef.current = false;
                                     setCtxDraft(editableContextK(preset.tokens));
@@ -759,7 +764,7 @@ export function ModelAdvancedDrawer({
                                 }}
                                 aria-invalid={ctxInvalid || undefined}
                                 inputMode="numeric"
-                                disabled={paymentRequired || ctx.loading}
+                                disabled={paymentRequired || ctx.loading || localConfigurationBlocked}
                                 aria-label={t(
                                   'settings.providers.models.advanced.contextLimitAria',
                                 )}
@@ -779,7 +784,7 @@ export function ModelAdvancedDrawer({
                               <button
                                 type="button"
                                 onClick={resetCtx}
-                                disabled={paymentRequired || ctx.loading}
+                                disabled={paymentRequired || ctx.loading || localConfigurationBlocked}
                                 className="shrink-0 text-11 text-[var(--text-tertiary)] transition-colors hover:text-[var(--text-primary)]"
                               >
                                 {t('settings.providers.models.advanced.restoreDefault')}

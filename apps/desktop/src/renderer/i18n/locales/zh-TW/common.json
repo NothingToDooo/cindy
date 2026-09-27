@@ -1838,6 +1838,7 @@
     },
     "providers": {
       "llamacpp": {
+        "ownedElsewhere": "模型服務正在另一個 Cindy 執行個體中執行。請在那裡下載模型或修改上下文，或先停止該執行個體的服務。",
         "primaryPick": "主推 · 先試這個",
         "recommendReason": "優先試用 {{name}}，這是為這台電腦選出的能力主推型號。",
         "recommendCaveat": "此 GGUF 包裝的本機速度和峰值記憶體仍待實測，下載大小不等於執行時記憶體用量。",

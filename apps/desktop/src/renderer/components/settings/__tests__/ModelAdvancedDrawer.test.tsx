@@ -100,10 +100,10 @@ beforeEach(() => {
 });
 
 describe('model advanced editor', () => {
-  it('offers the verified local 256K and 1M options through the existing context preference', async () => {
+  it.each([true, false])('gates local context configuration with capability %s', async (canConfigure) => {
     const previous = window.electronAPI;
     Object.defineProperty(window, 'electronAPI', { configurable: true, value: { maker: {
-      llamaCppStatus: vi.fn(async () => ({ models: [{ id: 'flash', repo: 'bartowski/Qwen3.8-Flash-Next-GGUF' }] })),
+      llamaCppStatus: vi.fn(async () => ({ canConfigure, models: [{ id: 'flash', repo: 'bartowski/Qwen3.8-Flash-Next-GGUF' }] })),
     } } });
     try {
       const source = { ...buildUserProvider({ id: 'cindy-local-llamacpp', name: 'llama.cpp', runtimes: {
@@ -111,7 +111,15 @@ describe('model advanced editor', () => {
       } }), connected: true } as ProviderView;
       const primary = source.models.pi![0]!;
       render(<ModelAdvancedDrawer provider={source} row={{ id: primary.id, name: primary.name, avail: ['pi'], byAgent: { pi: primary } }} open onOpenChange={vi.fn()} pricePresentationOf={() => null} onDisable={vi.fn()} disabled={false} paymentRequired={false} />);
-      fireEvent.click(await screen.findByRole('button', { name: '1M' }));
+      const million = await screen.findByRole('button', { name: '1M' });
+      if (!canConfigure) {
+        expect((million as HTMLButtonElement).disabled).toBe(true);
+        expect(screen.getByText('settings.providers.llamacpp.ownedElsewhere')).toBeTruthy();
+        fireEvent.click(million);
+        expect(mocks.setLimit).not.toHaveBeenCalled();
+        return;
+      }
+      fireEvent.click(million);
       expect(mocks.setLimit).toHaveBeenLastCalledWith(1_000_000);
       fireEvent.click(screen.getByRole('button', { name: '256K' }));
       expect(mocks.setLimit).toHaveBeenLastCalledWith(262144);

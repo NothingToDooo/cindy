@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   stat: vi.fn(),
   writeFile: vi.fn(),
   ownerProof: vi.fn(),
+  probeOwner: vi.fn(),
 }));
 vi.mock('../../scheduler-host/proc-util.js', () => ({ killProcessTree: mocks.killTree }));
 vi.mock('node:fs/promises', async (original) => ({
@@ -26,7 +27,7 @@ vi.mock('node:fs/promises', async (original) => ({
 }));
 vi.mock('../../reviewer/reviewOwnerLiveness.js', () => ({
   startReviewOwnerLiveness: mocks.ownerProof,
-  probeReviewOwnerLiveness: async () => 'alive',
+  probeReviewOwnerLiveness: mocks.probeOwner,
 }));
 vi.mock('../../maker-host/model-context-limit-store.js', () => ({
   readModelContextLimits: () => ({}),
@@ -61,6 +62,7 @@ beforeEach(async () => {
   mocks.readFile.mockImplementation(fs.readFile);
   mocks.stat.mockImplementation(fs.stat);
   mocks.writeFile.mockImplementation(fs.writeFile);
+  mocks.probeOwner.mockResolvedValue('alive');
   mocks.ownerProof.mockImplementation(async () => ({
     identity: { version: 1, port: 12345, token: 'test-owner' },
     close: vi.fn().mockResolvedValue(undefined),
@@ -83,6 +85,36 @@ afterEach(async () => {
 });
 
 describe('managed llama.cpp model lifecycle', () => {
+  it.each(['missing', 'ended', 'unknown', 'corrupt'])(
+    'checks configuration ownership before any mutation: %s',
+    async (state) => {
+      const runtime = path.join(root, 'llamacpp-runtime');
+      await mkdir(runtime);
+      if (state !== 'missing')
+        await writeFile(
+          path.join(runtime, 'server-owner.json'),
+          state === 'corrupt'
+            ? '{'
+            : JSON.stringify({ identity: { version: 1, port: 12345, token: 'test' } }),
+        );
+      mocks.probeOwner.mockResolvedValue(state);
+      const service = createLlamaCppService(root);
+      const write = vi.fn().mockResolvedValue(undefined);
+      const allowed = state === 'missing' || state === 'ended';
+      expect((await service.snapshot()).canConfigure).toBe(allowed);
+      if (allowed) {
+        await service.configure(write);
+        expect(write).toHaveBeenCalledOnce();
+      } else {
+        await expect(service.configure(write)).rejects.toThrow('RUNTIME_OWNED_ELSEWHERE');
+        await expect(service.download({ repo: 'owner/model', file: 'model.gguf' })).rejects.toThrow(
+          'RUNTIME_OWNED_ELSEWHERE',
+        );
+        expect(write).not.toHaveBeenCalled();
+        expect(mocks.resolve).not.toHaveBeenCalled();
+      }
+    },
+  );
   it.each(['EACCES', 'ENOSPC', 'cancel-proof', 'exit-proof', 'cancel-write', 'exit-write'])(
     'closes unpublished owner proof without retrying after %s',
     async (failure) => {
@@ -470,6 +502,18 @@ describe('managed llama.cpp model lifecycle', () => {
     expect((await borrower.snapshot()).running).toBe(true);
     expect((await owner.snapshot()).canManageRuntime).toBe(true);
     expect((await borrower.snapshot()).canManageRuntime).toBe(false);
+    expect((await borrower.snapshot()).canConfigure).toBe(false);
+    expect((await owner.snapshot()).canConfigure).toBe(true);
+    const writeContext = vi.fn().mockResolvedValue(undefined);
+    await expect(borrower.configure(writeContext)).rejects.toThrow('RUNTIME_OWNED_ELSEWHERE');
+    await expect(borrower.install()).rejects.toThrow('RUNTIME_OWNED_ELSEWHERE');
+    await expect(borrower.download({ repo: 'owner/new', file: 'model.gguf' })).rejects.toThrow(
+      'RUNTIME_OWNED_ELSEWHERE',
+    );
+    expect(writeContext).not.toHaveBeenCalled();
+    expect(mocks.download).not.toHaveBeenCalled();
+    await owner.configure(writeContext);
+    expect(writeContext).toHaveBeenCalledOnce();
     await expect(borrower.start(true)).rejects.toThrow('BUSY');
     const remove = vi.fn();
     await expect(borrower.remove(remove)).rejects.toThrow('BUSY');

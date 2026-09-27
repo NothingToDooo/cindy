@@ -5998,21 +5998,26 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       }
     },
     writeModelContextLimit: async (targets, limit) => {
-      if (targets.some((target) => target.providerId === MANAGED_LLAMACPP_PROVIDER_ID)) {
-        const owner = getActiveAppSession();
-        const active = () => {
-          const now = getActiveAppSession();
-          return now?.dataOwnerId === owner?.dataOwnerId && now?.generation === owner?.generation;
-        };
-        await ensureManagedLlamaCppProvider(
-          (await getManagedLlamaCppService(app.getPath('userData')).snapshot()).models, active,
-        );
-        await refreshCustomProvidersIntoCatalog();
-        if (!active()) throw new Error('OWNER_CHANGED');
-      }
-      await writeModelContextLimitsWithRefresh(targets, limit,
+      const write = () => writeModelContextLimitsWithRefresh(targets, limit,
         () => refreshContextSettings(targets),
         () => refreshContextSettings());
+      if (targets.some((target) => target.providerId === MANAGED_LLAMACPP_PROVIDER_ID)) {
+        const service = getManagedLlamaCppService(app.getPath('userData'));
+        return service.configure(async () => {
+          const owner = getActiveAppSession();
+          const active = () => {
+            const now = getActiveAppSession();
+            return now?.dataOwnerId === owner?.dataOwnerId && now?.generation === owner?.generation;
+          };
+          await ensureManagedLlamaCppProvider(
+            (await service.snapshot()).models, active,
+          );
+          await refreshCustomProvidersIntoCatalog();
+          if (!active()) throw new Error('OWNER_CHANGED');
+          await write();
+        });
+      }
+      await write();
     },
     // 通用 OAuth（目录 auth.oauth 描述符驱动）：login 成功后 best-effort 拉动态模型发现
     // (additions-only merge 进 active-catalog) 并广播 PROVIDER_CHANGED 让 UI 刷新连接态。

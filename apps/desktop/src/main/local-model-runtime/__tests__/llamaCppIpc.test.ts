@@ -28,6 +28,7 @@ function harness() {
     pause: vi.fn(),
     resume: vi.fn(),
     dispose: vi.fn(),
+    configure: vi.fn(),
   };
   const deps = {
     service,
