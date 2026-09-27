@@ -236,3 +236,36 @@ it('rereads Agents and model capabilities on an open form after reconnecting', a
   // 记住的模型在这台电脑上已下线 → 重连后收敛为「默认」。
   expect(latest!.form.model).toBeNull();
 });
+
+it('still restores remembered choices when the Agent list lands before the memory read', async () => {
+  const AsyncStorage = (await import('@react-native-async-storage/async-storage')).default;
+  saveOrcaWorkerCreationPrefs('user-1', { ...defaultOrcaWorkerCreationPrefs(), workerPermissionMode: 'auto' });
+  resetOrcaWorkerCreationPrefsMemory();
+  const releases: Array<() => void> = [];
+  vi.mocked(AsyncStorage.getItem).mockImplementation((key: string) => new Promise((resolve) => {
+    releases.push(() => resolve(storage.get(key) ?? null));
+  }));
+  const base = fakeMaker();
+  let releaseAgents: () => void = () => undefined;
+  const maker = {
+    ...base,
+    listAvailableAgents: vi.fn(() => new Promise<string[]>((resolve) => {
+      releaseAgents = () => resolve(['claude-code', 'codex', 'pi']);
+    })),
+  } as unknown as MobileMakerTransport;
+  try {
+    function ActiveProbe() {
+      latest = useOrcaWorkerForm({ maker, prefsScope: 'user-1', active: true, setSheetOpen: () => undefined });
+      return null;
+    }
+    await act(async () => root.render(<ActiveProbe />));
+    act(() => { latest!.reset(); });
+    // Agent 列表(非用户事件)先回来,记忆读取随后才完成。
+    await act(async () => { releaseAgents(); await flush(); });
+    expect(latest!.form.permissionMode).toBe('bypassPermissions');
+    await act(async () => { for (const release of releases) release(); await flush(); });
+    expect(latest!.form.permissionMode).toBe('auto');
+  } finally {
+    vi.mocked(AsyncStorage.getItem).mockImplementation(async (key: string) => storage.get(key) ?? null);
+  }
+});

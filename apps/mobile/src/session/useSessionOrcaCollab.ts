@@ -205,7 +205,12 @@ export function useOrcaWorkerForm(params: {
   const touchedRef = useRef(false);
   const agentsRef = useRef(agents);
   agentsRef.current = agents;
-  const generationRef = useRef(0);
+  // 两个代次各管一条不变量,互不推进:
+  //  - formEpochRef:当前这次「打开表单」(复位 / 恢复草稿 / 换账号各开一次)。迟到的记忆
+  //    只在同一次打开、且用户还没动过表单时补用;Agent 列表、能力这类非用户事件不推进它。
+  //  - convergeGenRef:只让最近一次模型收敛请求的结果生效;用户手选模型也作废在途收敛。
+  const formEpochRef = useRef(0);
+  const convergeGenRef = useRef(0);
 
   const prefsScopeRef = useRef(prefsScope);
   prefsScopeRef.current = prefsScope;
@@ -213,7 +218,8 @@ export function useOrcaWorkerForm(params: {
   // 挂载 / 换账号时预读记忆,复位时即可同步恢复,不在用户操作期间异步覆盖表单。
   // 换账号时推进代次:上一个账号还在路上的读取 / 能力收敛一律作废,不写进新账号的表单。
   useEffect(() => {
-    generationRef.current += 1;
+    formEpochRef.current += 1;
+    convergeGenRef.current += 1;
     prefsLoadedRef.current = false;
     prefsRef.current = defaultOrcaWorkerCreationPrefs();
     if (!prefsScope) {
@@ -232,12 +238,13 @@ export function useOrcaWorkerForm(params: {
 
   /**
    * 按被控端能力收敛模型选择;能力读不到时保留原选择(提交时由被控端裁决)。
-   * 只改模型字段,且结果迟到时(期间用户又改了模型 / Agent)按代次丢弃。
+   * 只改模型字段,且只有最近一次请求的结果生效(期间又收敛 / 用户又改了模型则丢弃)。
    */
-  const converge = useCallback((agent: OrcaWorkerAgentKind, generation: number) => {
+  const converge = useCallback((agent: OrcaWorkerAgentKind) => {
+    const generation = ++convergeGenRef.current;
     makerRef.current.getCapabilities(agent)
       .then((raw) => {
-        if (generation !== generationRef.current) return;
+        if (generation !== convergeGenRef.current) return;
         const capabilities = normalizeMobileAgentCapabilities(raw);
         setForm((current) => (current.agent === agent
           ? { ...current, model: convergeOrcaWorkerModel(current.model, capabilities) }
@@ -261,10 +268,9 @@ export function useOrcaWorkerForm(params: {
         agentsRef.current = next;
         setAgents(next);
         if (next.includes(formRef.current.agent)) {
-          converge(formRef.current.agent, ++generationRef.current);
+          converge(formRef.current.agent);
           return;
         }
-        const generation = ++generationRef.current;
         const switched = next[0]!;
         const remembered = prefsRef.current.agents[switched];
         setForm((current) => ({
@@ -272,7 +278,7 @@ export function useOrcaWorkerForm(params: {
           agent: switched,
           model: { id: remembered.model, providerId: null, effort: remembered.effort, fast: remembered.fast },
         }));
-        converge(switched, generation);
+        converge(switched);
       })
       .catch(() => undefined);
     return () => { cancelled = true; };
@@ -280,7 +286,8 @@ export function useOrcaWorkerForm(params: {
 
   /** 重新打开已确认的表单(新建任务的协同草稿):角色模式跟随保存的角色,不沿用上次未提交的编辑。 */
   const restore = useCallback((value: OrcaWorkerFormValue) => {
-    generationRef.current += 1;
+    formEpochRef.current += 1;
+    convergeGenRef.current += 1;
     touchedRef.current = true;
     setCustomRoleMode(!isPredefinedOrcaRole(value.role.trim().toLowerCase()));
     setForm(value);
@@ -288,14 +295,14 @@ export function useOrcaWorkerForm(params: {
 
   /** 恢复记忆(上次的 Agent 不在当前电脑上时取第一个可用 Agent)。初始任务不记忆。 */
   const reset = useCallback(() => {
-    const generation = ++generationRef.current;
+    const epoch = ++formEpochRef.current;
     touchedRef.current = false;
     setCustomRoleMode(false);
     const apply = (prefs: OrcaWorkerCreationPrefs) => {
       const available = agentsRef.current;
       const agent = available.includes(prefs.lastAgent) ? prefs.lastAgent : available[0] ?? prefs.lastAgent;
       setForm(orcaWorkerFormFromPrefs(prefs, agent));
-      converge(agent, generation);
+      converge(agent);
     };
     apply(prefsRef.current);
     // 预读尚未完成(极少见:刚登录就打开表单):读完后仅在用户还没动过这张表单时补一次。
@@ -305,7 +312,7 @@ export function useOrcaWorkerForm(params: {
         if (prefsScopeRef.current !== scope) return;
         prefsRef.current = prefs;
         prefsLoadedRef.current = true;
-        if (generation !== generationRef.current || touchedRef.current) return;
+        if (epoch !== formEpochRef.current || touchedRef.current) return;
         apply(prefs);
       });
     }
@@ -314,14 +321,13 @@ export function useOrcaWorkerForm(params: {
   /** 切 Agent:带出该 Agent 上次的模型 / 推理强度 / Fast(对齐桌面)。 */
   const changeAgent = useCallback((agent: OrcaWorkerAgentKind) => {
     touchedRef.current = true;
-    const generation = ++generationRef.current;
     const remembered = prefsRef.current.agents[agent];
     setForm((current) => ({
       ...current,
       agent,
       model: { id: remembered.model, providerId: null, effort: remembered.effort, fast: remembered.fast },
     }));
-    converge(agent, generation);
+    converge(agent);
   }, [converge]);
 
   /** 提交成功后写回记忆(与桌面一样只在提交时记)。 */
@@ -366,7 +372,7 @@ export function useOrcaWorkerForm(params: {
   const select = useCallback(async (config: MobileModelConfiguration): Promise<boolean> => {
     if (!ALL_AGENTS.includes(config.agent as OrcaWorkerAgentKind)) return false;
     touchedRef.current = true;
-    generationRef.current += 1;
+    convergeGenRef.current += 1;
     setForm((current) => ({
       ...current,
       agent: config.agent as OrcaWorkerAgentKind,
