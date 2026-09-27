@@ -243,23 +243,17 @@ export function startRemoteSessionsReconciler(
   // 同一个在途 Promise,若每个 tick 都挂 then,一次 gave-up 会被重复记账、退避直接跳档
   // (review P2)。per-device 在途标记保证一次合并请求只记一次。
   const inFlight = new Set<string>();
-  const pending = new Map<string, boolean>();
   let stopped = false;
-  const drain = () => {
+  const runPass = (opts?: { ignoreBackoff?: boolean }) => {
+    // Hidden auxiliary windows retain their push mirror and failure backoff, but do no polling.
     if (stopped || !isActive()) return;
-    const eligible = new Map(getEligibleDevices());
-    // Only two background devices at once; do not fill the shared reliable
-    // stream with every sidebar snapshot when the window regains focus.
-    for (const [deviceId, ignoreBackoff] of pending) {
-      if (inFlight.size >= 2) break;
-      pending.delete(deviceId);
-      if (!eligible.has(deviceId) || inFlight.has(deviceId)) continue;
-      if (!ignoreBackoff && !backoff.shouldAttempt(deviceId)) continue;
+    const seen = new Set<string>();
+    for (const [deviceId, name] of getEligibleDevices()) {
+      seen.add(deviceId);
+      if (inFlight.has(deviceId)) continue;
+      if (!opts?.ignoreBackoff && !backoff.shouldAttempt(deviceId)) continue;
       inFlight.add(deviceId);
-      let request: Promise<unknown>;
-      try { request = refresh(deviceId, eligible.get(deviceId)); }
-      catch (error) { request = Promise.reject(error); }
-      void request
+      void refresh(deviceId, name)
         .then((result) => {
           if (stopped) return;
           backoff.report(
@@ -274,26 +268,16 @@ export function startRemoteSessionsReconciler(
         })
         .finally(() => {
           inFlight.delete(deviceId);
-          drain();
         });
     }
-  };
-  const runPass = (opts?: { ignoreBackoff?: boolean }) => {
-    if (stopped || !isActive()) return;
-    const seen = new Set<string>();
-    for (const [deviceId] of getEligibleDevices()) {
-      seen.add(deviceId);
-      if (!inFlight.has(deviceId)) pending.set(deviceId, pending.get(deviceId) === true || opts?.ignoreBackoff === true);
-    }
     backoff.retainOnly(seen);
-    drain();
   };
   const timer = setInterval(runPass, intervalMs);
   return {
     stop() {
       stopped = true;
       clearInterval(timer);
-      pending.clear();
+      inFlight.clear();
     },
     // 从闲置回到在用：立刻对账，不等下一拍 10 秒，也不吃失败退避。闲着不加 30 分钟兜底。
     wake() {

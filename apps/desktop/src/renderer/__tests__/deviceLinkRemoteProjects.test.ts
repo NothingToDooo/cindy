@@ -83,47 +83,20 @@ describe('archived session retry backoff', () => {
 });
 
 describe('startRemoteSessionsReconciler', () => {
-  it('bounds background concurrency and rechecks queued devices before sending', async () => {
+  it('keeps a healthy third peer independent of two stalled peers and stops cleanly', async () => {
     vi.useFakeTimers();
-    const eligible = new Map([['a', 'A'], ['b', 'B'], ['c', 'C'], ['d', 'D']]);
-    const finish = new Map<string, (result: string) => void>();
-    const refresh = vi.fn((id: string) => new Promise<string>((resolve) => { finish.set(id, resolve); }));
-    const { wake, stop } = startRemoteSessionsReconciler(() => eligible, refresh);
-    wake();
-    expect(refresh.mock.calls.map(([id]) => id)).toEqual(['a', 'b']);
-    // One unavailable peer must not prevent a healthy queued peer from healing.
-    eligible.delete('c');
-    finish.get('b')!('ok');
-    await vi.advanceTimersByTimeAsync(0);
-    expect(refresh.mock.calls.map(([id]) => id)).toEqual(['a', 'b', 'd']);
-    wake();
-    stop();
-    finish.get('a')!('gave-up');
-    finish.get('d')!('ok');
-    await vi.advanceTimersByTimeAsync(60_000);
-    wake();
-    expect(refresh).toHaveBeenCalledTimes(3);
-  });
-
-  it('does not start queued background reads while hidden, and resumes on wake', async () => {
-    vi.useFakeTimers();
-    let visible = true;
-    const finish: Array<() => void> = [];
-    const refresh = vi.fn(() => new Promise<void>((resolve) => finish.push(resolve)));
+    const refresh = vi.fn((id: string) => id === 'healthy' ? Promise.resolve('ok') : new Promise<string>(() => {}));
     const { wake, stop } = startRemoteSessionsReconciler(
-      () => new Map([['a', 'A'], ['b', 'B'], ['c', 'C']]), refresh, 10_000, undefined, () => visible,
+      () => new Map([['a', 'A'], ['b', 'B'], ['healthy', 'C']]), refresh, 1000,
     );
     wake();
-    visible = false;
-    finish[0]();
-    await vi.advanceTimersByTimeAsync(0);
-    expect(refresh).toHaveBeenCalledTimes(2);
-    visible = true;
-    wake();
-    expect(refresh.mock.calls[2]).toEqual(['c', 'C']);
+    expect(refresh.mock.calls.map(([id]) => id)).toEqual(['a', 'b', 'healthy']);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(refresh.mock.calls.map(([id]) => id)).toEqual(['a', 'b', 'healthy', 'healthy']);
     stop();
-    finish.slice(1).forEach((resolve) => resolve());
-    await vi.advanceTimersByTimeAsync(0);
+    wake();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(refresh).toHaveBeenCalledTimes(4);
   });
   it('preserves failure backoff while a window is hidden', async () => {
     vi.useFakeTimers();

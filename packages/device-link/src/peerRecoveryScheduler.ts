@@ -143,9 +143,10 @@ export class PeerRecoveryScheduler {
   request(deviceId: string): void {
     if (!deviceId) return;
     const entry = this.getOrCreateEntry(deviceId);
-    // Repeated presence/refresh notifications are not evidence of recovery.
-    // Keep the existing deadline: otherwise a noisy caller defeats backoff.
-    if (entry.retryTimer) return;
+    if (entry.retryTimer) {
+      clearTimeout(entry.retryTimer);
+      entry.retryTimer = null;
+    }
     // A cancelled generation may still be settling. Keep the next generation
     // serialized behind it so one peer never has two recovery runs in flight.
     if (entry.running) {
@@ -295,14 +296,11 @@ export class PeerRecoveryScheduler {
     generation: number,
     result: PeerRecoveryResult,
   ): void {
-    if (entry.generation === generation && (!entry.rerun || result.retry)) {
+    if (entry.generation === generation && !entry.rerun) {
       if (!result.retry) {
         entry.retryAttempt = 0;
         entry.phase = 'idle';
       } else {
-        // A rerun requested during a failed attempt joins its retry. It must not
-        // turn a persistent outage into a tight request → failure → rerun loop.
-        entry.rerun = false;
         const delay = Math.min(
           this.retryBaseMs * 2 ** entry.retryAttempt,
           this.retryMaxMs,

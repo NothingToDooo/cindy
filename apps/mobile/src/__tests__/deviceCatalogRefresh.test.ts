@@ -13,6 +13,21 @@ const catalog = (id: string) => ({ providers: [{ id } as ProviderView] });
 const flush = async () => { await vi.advanceTimersByTimeAsync(50); };
 
 describe('catalog invalidation under a slow device link', () => {
+  it.each(['cancel', 'clear', 'dispose'] as const)('does not revive blocked work after %s', async (action) => {
+    const { createDeviceCatalogRefresh } = await import('@/device-link/deviceCatalogRefresh');
+    let available = false;
+    const readProviders = vi.fn(async () => catalog('new'));
+    const refresh = createDeviceCatalogRefresh({ readProviders, readCapabilities: async () => null,
+      connectionEpoch: () => 1, canRead: () => available });
+    refresh.notify('a');
+    await flush();
+    if (action === 'cancel') refresh.cancel('a');
+    else refresh[action]();
+    available = true;
+    await vi.advanceTimersByTimeAsync(30000);
+    expect(readProviders).not.toHaveBeenCalled();
+    refresh.dispose();
+  });
   it('invalidates but does not send background catalog reads to an unavailable peer', async () => {
     const { createDeviceCatalogRefresh } = await import('@/device-link/deviceCatalogRefresh');
     let available = false;
@@ -26,8 +41,8 @@ describe('catalog invalidation under a slow device link', () => {
     expect(readProviders).toHaveBeenCalledExactlyOnceWith('b');
     expect(readCapabilities.mock.calls.every(([id]) => id === 'b')).toBe(true);
     available = true;
-    refresh.notify('a');
-    await flush();
+    // Recovery needs no second provider notification or picker remount.
+    await vi.advanceTimersByTimeAsync(2000);
     expect(readProviders).toHaveBeenCalledWith('a');
     refresh.dispose();
   });

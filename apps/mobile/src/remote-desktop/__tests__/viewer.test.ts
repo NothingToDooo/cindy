@@ -353,11 +353,11 @@ describe("remote desktop viewport", () => {
     const v = viewer();
     v.send({ type: 'control', enabled: true });
     v.send({ type: 'events', events: [{ kind: 'text', text: 'first' }] });
+    const abandoned = v.messages.filter((m) => m.type === 'input').at(-1)!;
     v.send({ type: 'events', events: [{ kind: 'text', text: 'stale' }] });
     v.frame(2_001);
     v.flush();
     expect(v.messages.filter((m) => m.type === 'inputOverflow')).toHaveLength(1);
-    v.ack();
     v.flush();
     v.send({ type: 'events', events: [{ kind: 'text', text: 'ignored' }] });
     expect(v.messages.flatMap((m) => m.events ?? [])).toEqual([{ kind: 'text', text: 'first' }]);
@@ -366,6 +366,13 @@ describe("remote desktop viewport", () => {
     expect(v.messages.flatMap((m) => m.events ?? [])).toEqual([
       { kind: 'text', text: 'first' }, { kind: 'text', text: 'fresh' },
     ]);
+    v.send({ type: 'events', events: [{ kind: 'text', text: 'next' }] });
+    v.send({ type: 'ack', epoch: abandoned.epoch, sequence: abandoned.sequence });
+    v.flush();
+    expect(v.messages.filter((m) => m.type === 'input')).toHaveLength(2);
+    v.ack();
+    v.flush();
+    expect(v.messages.filter((m) => m.type === 'input')).toHaveLength(3);
   });
   it('does not overtake congested data-channel input through the relay', () => {
     const v = viewer(true);

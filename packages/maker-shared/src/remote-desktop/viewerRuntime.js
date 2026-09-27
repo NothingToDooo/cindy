@@ -2320,6 +2320,10 @@ export function mountRemoteDesktopViewer(root, postMessage, config) {
       }
       case "control":
         release();
+        // A new control intent abandons the previous relay batch. Advance the
+        // existing sequence fence so a late old ACK cannot unlock a new batch.
+        seq++;
+        sending = false;
         control = message.enabled;
         if (!control) showKeyboard(false);
         pending = [];

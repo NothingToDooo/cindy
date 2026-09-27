@@ -18,33 +18,21 @@ async function flush(): Promise<void> {
 }
 
 describe('PeerRecoveryScheduler', () => {
-  it('coalesces failure-time reruns and repeated notifications into the existing backoff', async () => {
+  it('lets a recovery request wake a peer before its old retry deadline', async () => {
     vi.useFakeTimers();
-    const first = deferred<{ retry: boolean }>();
-    const run = vi.fn((id: string) => id === 'a' ? first.promise : Promise.resolve({ retry: false }));
-    const scheduler = new PeerRecoveryScheduler(run, { retryBaseMs: 2_000 });
+    const run = vi.fn(async () => ({ retry: true }));
+    const scheduler = new PeerRecoveryScheduler(run);
     try {
       scheduler.request('a');
-      for (let i = 0; i < 20; i++) scheduler.request('a');
-      first.resolve({ retry: true });
       await flush();
-      expect(run).toHaveBeenCalledTimes(1);
       expect(scheduler.getSnapshot('a').phase).toBe('waiting-retry');
-      for (let i = 0; i < 19; i++) {
-        await vi.advanceTimersByTimeAsync(100);
-        scheduler.request('a');
-      }
-      scheduler.request('b');
-      await flush();
-      expect(run.mock.calls.map(([id]) => id)).toEqual(['a', 'b']);
-      await vi.advanceTimersByTimeAsync(100);
-      expect(run.mock.calls.map(([id]) => id)).toEqual(['a', 'b', 'a']);
-      expect(scheduler.getSnapshot('a').retryAttempt).toBe(2);
-      // A real lifecycle reset cancels the old delay and permits immediate recovery.
-      scheduler.pause();
-      scheduler.resume();
+      run.mockResolvedValue({ retry: false });
       scheduler.request('a');
-      expect(run).toHaveBeenCalledTimes(4);
+      await flush();
+      expect(run).toHaveBeenCalledTimes(2);
+      expect(scheduler.getSnapshot('a').phase).toBe('idle');
+      await vi.advanceTimersByTimeAsync(30000);
+      expect(run).toHaveBeenCalledTimes(2);
     } finally {
       scheduler.clear();
       vi.useRealTimers();

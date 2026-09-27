@@ -25,7 +25,10 @@ export function createDeviceCatalogRefresh(options: {
     evictAgentCapabilitiesForDevice(id);
   };
   const scheduler = new PeerRecoveryScheduler(async (id) => {
-    if (disposed || options.canRead?.(id) === false) return { retry: false };
+    if (disposed) return { retry: false };
+    // Keep the invalidation pending without putting requests on an unreadable
+    // link. Reuse the scheduler's backoff and cancellation, including dispose.
+    if (options.canRead?.(id) === false) return { retry: true };
     const epoch = options.connectionEpoch();
     const providerGeneration = getDeviceProvidersGen(id);
     const generation = getAgentCapabilitiesGeneration(id);
@@ -43,8 +46,9 @@ export function createDeviceCatalogRefresh(options: {
         if (!disposed && normalized) commitAgentCapabilities(id, agent, generation, normalized);
       }),
     ]);
-    // Failures use the existing picker/reconnect recovery, not another retry loop.
-    return { retry: false };
+    // A gate may close while a cache read waits for an older in-flight read.
+    // Retain that invalidation too; ordinary read errors keep existing policy.
+    return { retry: !disposed && options.canRead?.(id) === false };
   });
   return {
     notify(id: string) {
