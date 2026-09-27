@@ -10,6 +10,7 @@ import { matchesReadEvidence, readImportHttpEvidence, verifyImportedAutomation }
 import { normalizeAutomation } from '../sourceAutomations.js';
 import { resolveImportEnvironmentDependencies } from '../environmentSelection.js';
 import type { ImportItem, ImportSource } from '../types.js';
+import * as connectionModule from '../connections.js';
 let server: Server | undefined;
 afterEach(async () => { vi.unstubAllGlobals(); if (server) await new Promise<void>(resolve => { server!.closeAllConnections(); server!.close(() => resolve()); }); server = undefined; });
 it('checks actual authenticated response data and refuses redirects/error envelopes', async () => {
@@ -94,6 +95,32 @@ it.each(['hermes', 'openclaw'] as const)('allows a %s reminder with a verified T
   fetch.mockResolvedValue(Response.json({ ok: false }, { status: 403 }));
   expect((await verifyImportedAutomation('/fixture', 'bot', item, () => {}, selected)).verified).toBe(false);
   expect(oneShot).not.toHaveBeenCalled();
+});
+
+it('redacts MCP catalog credentials before planning while forwarding the original tool identity privately', async () => {
+  const token = 'fixture-connection-token';
+  const header = 'fixture-header-token';
+  const mcp = [{ name: `source_${token}`, url: 'https://example.invalid/mcp', env: { PRIVATE: token }, headers: { Authorization: `Bearer ${header}` } }];
+  vi.mocked(companionEnvironmentStore.read).mockResolvedValue({ version: 1, env: {}, mcp, credentials: [] });
+  const toolName = `read_${token}`;
+  const callTool = vi.fn(async () => ({ structuredContent: { rows: [{ count: 7 }] } }));
+  const imported = vi.spyOn(connectionModule, 'withImportedConnection').mockImplementation(async (_server, _env, _assert, run) => run({
+    listTools: async () => ({ tools: [{ name: toolName, description: `${token} ${header}`, inputSchema: { type: 'object', properties: { query: { type: 'string', default: header } } }, annotations: { readOnlyHint: true } }] }), callTool,
+  } as never));
+  const oneShot = vi.fn(async (_agent, prompt: string) => {
+    expect(prompt).not.toContain(token); expect(prompt).not.toContain(header);
+    const context = JSON.parse(prompt.slice(prompt.lastIndexOf('\n') + 1));
+    const connection = context.connections[0];
+    return JSON.stringify({ reads: [{ kind: 'mcp', connection: connection.name, tool: connection.tools[0].name, arguments: { query: 'daily' }, pointer: '/rows', array: true }] });
+  });
+  vi.mocked(getMakerIfReady).mockReturnValue({ oneShot, getSessionMeta: vi.fn().mockResolvedValue({ agentKind: 'pi', model: 'fixture-model' }) } as never);
+  vi.mocked(getBotRemoteResourceSource).mockResolvedValue({ canonicalSessionId: 'fixture-session' } as never);
+  try {
+    const result = await verifyImportedAutomation('/fixture', 'bot', { view: { id: 'query', name: 'Query', category: 'automations', selected: true }, automation: { sourceId: 'query', original: {}, fingerprint: 'fixture' } }, () => {});
+    expect(result.verified).toBe(true);
+    expect(oneShot).toHaveBeenCalledOnce();
+    expect(callTool).toHaveBeenCalledWith({ name: toolName, arguments: { query: 'daily' } }, undefined, { timeout: 30000 });
+  } finally { imported.mockRestore(); }
 });
 
 it.skipIf(process.platform === 'win32')('checks a local script without executing it, and refuses invalid or data-dependent scripts', async () => {

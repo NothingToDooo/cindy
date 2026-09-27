@@ -7,6 +7,7 @@ import { resolveLiziMcpSessionContext } from '@cindy/mcps';
 import { readCompanionSessionEnvironment } from './runtime.js';
 import { withImportedConnection } from './connections.js';
 import { fingerprint } from './files.js';
+import { connectionRedactions, publicConnectionName, redactImportedTool } from './connectionCatalog.js';
 
 export const COMPANION_CONNECTIONS_MCP_NAME = 'companion_connections';
 
@@ -21,12 +22,13 @@ export function createCompanionConnectionsProvider(): McpProvider {
         if (!session.sessionId) return undefined;
         return readCompanionSessionEnvironment(session.sessionId);
       };
-      const toolName = (connection: string, tool: string) => `c_${fingerprint(connection).slice(0, 12)}_${tool.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 32)}_${fingerprint(tool).slice(0, 8)}`;
+      const toolName = (connection: string, tool: string, publicName = tool) => `c_${fingerprint(connection).slice(0, 12)}_${publicName.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 32)}_${fingerprint(tool).slice(0, 8)}`;
       server.server.setRequestHandler(ListToolsRequestSchema, async (_request, extra) => {
         const scope = await resolve();
         if (!scope) return { tools: [] };
         const tools: Tool[] = [{ name: 'run_command', description: 'Run a command with this companion’s imported environment and API credentials. Use this for imported skills and data queries that require their original environment. This executes arbitrary shell code with private credentials and may write files or use the network; it requires the current task’s command authorization. Output masking is not a security sandbox.', annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true }, inputSchema: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'], additionalProperties: false } }];
         for (const connection of scope.environment.mcp.filter(connection => connection.enabled !== false)) {
+          const secrets = connectionRedactions(connection, scope.environment.env);
           // Keep a failed or partially paginated catalog local to its connection.
           // Never swallow cancellation or an account change as an optional outage.
           try {
@@ -37,7 +39,10 @@ export function createCompanionConnectionsProvider(): McpProvider {
               do {
                 if (++pages > 100) throw new Error('Connection page limit exceeded');
                 const page = await client.listTools({ cursor }, { timeout: 15_000 });
-                for (const tool of page.tools) entries.push({ ...tool, name: toolName(connection.name, tool.name), description: `${connection.name} · ${tool.name}\n${tool.description ?? ''}` });
+                for (const tool of page.tools) {
+                  const redacted = redactImportedTool({ ...tool, description: `${connection.name} · ${tool.name}\n${tool.description ?? ''}` }, secrets);
+                  entries.push({ ...redacted, name: toolName(connection.name, tool.name, redacted.name) });
+                }
                 cursor = page.nextCursor;
                 if (tools.length + entries.length > 1000) throw new Error('Connection tool limit exceeded');
               } while (cursor);
@@ -66,6 +71,7 @@ export function createCompanionConnectionsProvider(): McpProvider {
         }
         // Resolve against the actual catalog; an arbitrary model-supplied name cannot choose a server.
         for (const connection of scope.environment.mcp.filter(connection => connection.enabled !== false && request.params.name.startsWith(`c_${fingerprint(connection.name).slice(0, 12)}_`))) {
+          const secrets = connectionRedactions(connection, scope.environment.env);
           const result = await withImportedConnection(connection, scope.environment.env, scope.assertOwner, async client => {
             let cursor: string | undefined;
             let count = 0; let pages = 0;
@@ -73,7 +79,7 @@ export function createCompanionConnectionsProvider(): McpProvider {
               if (++pages > 100) throw new Error('Connection page limit exceeded');
               const page = await client.listTools({ cursor }, { timeout: 15_000 });
               count += page.tools.length;
-              const tool = page.tools.find(item => toolName(connection.name, item.name) === request.params.name);
+              const tool = page.tools.find(item => toolName(connection.name, item.name, publicConnectionName(item.name, secrets)) === request.params.name);
               if (tool) return client.callTool({ name: tool.name, arguments: request.params.arguments ?? {} }, undefined, { timeout: 120_000 });
               if (count > 1000) throw new Error('Connection tool limit exceeded');
               cursor = page.nextCursor;
@@ -81,7 +87,7 @@ export function createCompanionConnectionsProvider(): McpProvider {
             return undefined;
           }, { identity: scope.identity, signal: extra.signal });
           if (result) {
-            const redacted = redactEnvironmentData(result, scope.environment.env);
+            const redacted = redactEnvironmentData(result, secrets);
             // Preserve MCP content discriminators even if a source variable happens
             // to contain "text". Business strings and structured data stay redacted.
             const originalContent = result.content;

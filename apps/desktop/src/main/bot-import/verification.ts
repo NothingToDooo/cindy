@@ -6,7 +6,8 @@ import { getMakerIfReady } from '../maker-host/index.js';
 import { getBotRemoteResourceSource } from '../localDb/ipc/bots.js';
 import { companionEnvironmentStore } from './runtime.js';
 import { withImportedConnection } from './connections.js';
-import { object, string, type ImportItem } from './types.js';
+import { object, string, type ImportItem, type ImportedMcpServer } from './types.js';
+import { connectionRedactions, publicConnectionName, redactImportedTool } from './connectionCatalog.js';
 import { verifyImportedDelivery } from './delivery.js';
 import { fingerprint, writeImportFiles } from './files.js';
 import { importedProcessEnvironment, redactEnvironmentValues, runImportedProcess } from './process.js';
@@ -49,9 +50,18 @@ export async function verifyImportedAutomation(root: string, botId: string, item
     if (!environment || !item.automation) return { verified: false, reason: 'CREDENTIAL_STORAGE_UNAVAILABLE' };
     await verifyImportedDelivery(environment, item.automation.deliveries ?? [], assertOwner);
     const connections: Array<{ name: string; tools: Array<{ name: string; description?: string; inputSchema: unknown }> }> = [];
+    const readTargets = new Map<string, { server: ImportedMcpServer; tools: Map<string, string> }>();
     for (const server of environment.mcp.filter(server => server.enabled !== false)) {
       const tools = await withImportedConnection(server, environment.env, assertOwner, async client => (await client.listTools({}, { timeout: 15_000 })).tools);
-      connections.push({ name: server.name, tools: tools.filter(tool => tool.annotations?.readOnlyHint === true).map(tool => ({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema })) });
+      const secrets = connectionRedactions(server, environment.env);
+      const name = publicConnectionName(server.name, secrets);
+      const target = { server, tools: new Map<string, string>() };
+      connections.push({ name, tools: tools.filter(tool => tool.annotations?.readOnlyHint === true).map(tool => {
+        const redacted = redactImportedTool(tool, secrets);
+        target.tools.set(redacted.name, tool.name);
+        return { name: redacted.name, description: redacted.description, inputSchema: redacted.inputSchema };
+      }) });
+      readTargets.set(name, target);
     }
     // Delivery credentials are required for selection/handover, but are not data
     // reads. Remove only delivery roots before expanding read dependencies: a
@@ -114,10 +124,11 @@ export async function verifyImportedAutomation(root: string, botId: string, item
     for (const read of plan.reads) {
       let data: unknown;
       if (read.kind === 'mcp') {
-        const server = environment.mcp.find(server => server.name === read.connection);
-        if (!server || !connections.find(connection => connection.name === read.connection)?.tools.some(tool => tool.name === read.tool)) return { verified: false, reason: 'AUTOMATION_READ_NOT_VERIFIED' };
-        data = await withImportedConnection(server, environment.env, assertOwner, async client => {
-          const result = await client.callTool({ name: string(read.tool), arguments: object(read.arguments) }, undefined, { timeout: 30_000 });
+        const target = readTargets.get(string(read.connection));
+        const tool = target?.tools.get(string(read.tool));
+        if (!target || !tool) return { verified: false, reason: 'AUTOMATION_READ_NOT_VERIFIED' };
+        data = await withImportedConnection(target.server, environment.env, assertOwner, async client => {
+          const result = await client.callTool({ name: tool, arguments: object(read.arguments) }, undefined, { timeout: 30_000 });
           if (result.isError) throw new Error('Query failed');
           if (result.structuredContent) return result.structuredContent;
           const blocks = Array.isArray(result.content) ? result.content : [];

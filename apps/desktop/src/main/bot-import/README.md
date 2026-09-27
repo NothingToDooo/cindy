@@ -57,6 +57,12 @@ theme tokens. No new native Mobile dependencies or fingerprint inputs are added.
   Sequential calls reuse the cached connection. Overlapping calls use independent
   transports, including during initialization; cancellation or failure closes only
   that caller's transport. Temporary parallel connections close after completion.
+  Public tool catalogs and takeover planning redact metadata/schema string values
+  against imported variables, connection-local env, resolved headers (including
+  authorization payloads), and credential-bearing URL components. The same values
+  are masked in tool responses. JSON Schema type syntax remains intact; names
+  containing credentials use public aliases and resolve to original names only
+  inside the host. The connection configuration itself is not modified.
 - Cron/timezone, anchored intervals, one-time triggers, paused state and selected
   Hermes scripts/monitors/repeat counters feed the existing routine engine.
   Pure-script output appears in the canonical teammate chat. Explicit Telegram

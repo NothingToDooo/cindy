@@ -11,6 +11,9 @@ import { readCompanionSessionEnvironment } from '../runtime.js';
 import { createCompanionConnectionsProvider } from '../connectionProvider.js';
 import { redactEnvironmentData } from '../process.js';
 import { withImportedConnection } from '../connections.js';
+import * as connectionModule from '../connections.js';
+import { connectionRedactions, redactImportedTool } from '../connectionCatalog.js';
+import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 let root: string | undefined;
 afterEach(async () => { vi.unstubAllEnvs(); if (root) await fs.rm(root, { recursive: true, force: true }); });
 
@@ -40,6 +43,44 @@ it.skipIf(process.platform === 'win32')('uses original credentials in a real imp
 it('preserves structured numeric data while redacting string credentials without name or length heuristics', () => {
   expect(redactEnvironmentData({ count: 1, value: '1', key: 'a+b', nested: ['x'] }, { arbitrary: 'a+b', code: '1', another: 'x' }))
     .toEqual({ count: 1, value: '[code]', key: '[arbitrary]', nested: ['[another]'] });
+});
+
+it('redacts resolved catalog credentials without changing schema syntax, tool dispatch or connection configuration', async () => {
+  const env = { TOKEN: 'fixture-global-token', TYPE: 'object' };
+  const connection = { name: 'fixture-server', url: 'https://fixture-user:fixture-password@example.invalid/mcp?key=fixture-url-key',
+    env: { TOKEN: 'fixture-local-token' }, headers: { Authorization: 'Bearer fixture-header-token', 'X-Api-Key': 'fixture-api-key' } };
+  const secrets = [env.TOKEN, connection.env.TOKEN, connection.headers.Authorization, 'fixture-header-token', connection.headers['X-Api-Key'], connection.url, 'fixture-user', 'fixture-password', 'fixture-url-key'];
+  const echo = secrets.join(' ');
+  const tool: Tool = { name: `read_${connection.env.TOKEN}`, title: echo, description: echo,
+    inputSchema: { type: 'object', properties: { query: { type: 'string', description: echo, default: echo }, count: { type: 'integer', minimum: 1 } }, required: ['query'], additionalProperties: false },
+    outputSchema: { type: 'object', properties: { result: { type: ['object', 'null'], description: echo, examples: [{ note: echo }] } } },
+    annotations: { title: echo, readOnlyHint: true }, _meta: { debug: [echo] } };
+  const original = structuredClone({ tool, connection, env });
+  const callTool = vi.fn(async () => ({ content: [{ type: 'text', text: echo }], structuredContent: { rows: 2, authenticated: true } }));
+  const imported = vi.spyOn(connectionModule, 'withImportedConnection').mockImplementation(async (server, environment, assert, run) => {
+    expect(server).toEqual(original.connection); expect(environment).toEqual(original.env); assert();
+    return run({ listTools: async () => ({ tools: [tool] }), callTool } as never);
+  });
+  vi.mocked(readCompanionSessionEnvironment).mockResolvedValue({ identity: 'catalog-fixture', botId: 'bot', userData: '/fixture', assertOwner() {}, environment: { version: 1, env, mcp: [connection], credentials: [] } });
+  const config = createCompanionConnectionsProvider().toClaudeSdkConfig!({} as never) as { instance: McpServer };
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'fixture', version: '1' });
+  await config.instance.connect(serverTransport); await client.connect(clientTransport);
+  try {
+    const catalog = await client.listTools();
+    expect(catalog.tools).toHaveLength(2);
+    for (const secret of secrets) expect(JSON.stringify(catalog)).not.toContain(secret);
+    const importedTool = catalog.tools[1]!;
+    expect(importedTool.inputSchema).toMatchObject({ type: 'object', properties: { query: { type: 'string' }, count: { type: 'integer', minimum: 1 } }, required: ['query'], additionalProperties: false });
+    expect(importedTool.outputSchema).toMatchObject({ type: 'object', properties: { result: { type: ['object', 'null'] } } });
+    expect(importedTool.annotations?.readOnlyHint).toBe(true);
+    const result = await client.callTool({ name: importedTool.name, arguments: { query: 'ordinary data', count: 2 } });
+    expect(callTool).toHaveBeenCalledWith({ name: tool.name, arguments: { query: 'ordinary data', count: 2 } }, undefined, { timeout: 120000 });
+    for (const secret of secrets) expect(JSON.stringify(result)).not.toContain(secret);
+    expect(result.structuredContent).toEqual({ rows: 2, authenticated: true });
+    expect({ tool, connection, env }).toEqual(original);
+    expect(redactImportedTool({ ...tool, name: 'ordinary_read' }, connectionRedactions(connection, env)).name).toBe('ordinary_read');
+  } finally { imported.mockRestore(); await client.close(); await config.instance.close(); }
 });
 
 it('keeps healthy tools and commands available when another server is stopped or fails during pagination', async () => {
