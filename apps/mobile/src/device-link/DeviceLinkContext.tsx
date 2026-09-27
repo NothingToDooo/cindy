@@ -934,6 +934,12 @@ export function DeviceLinkProvider({ children }: { children: ReactNode }) {
     clientRef.current = client;
     const catalogRefresh = createDeviceCatalogRefresh({
       connectionEpoch: () => connectionEpochRef.current,
+      canRead: (deviceId) => client === clientRef.current
+        && client.getStatus() === 'online'
+        && !backgroundReleaseInFlightRef.current
+        && !unresponsiveDevicesStore.has(deviceId)
+        && !revokedDevicesStore.has(deviceId)
+        && presenceAvailableByDeviceRef.current.get(deviceId) !== false,
       readProviders: (deviceId) => sendInvokeWithAccessHandling<DeviceProvidersPayload>(
         client, deviceId, 'maker:provider:list',
         [{ capabilities: [CONTROLLER_CAPABILITY_PROVIDER_LOGO_KINDS_V2] }],

@@ -13,6 +13,24 @@ const catalog = (id: string) => ({ providers: [{ id } as ProviderView] });
 const flush = async () => { await vi.advanceTimersByTimeAsync(50); };
 
 describe('catalog invalidation under a slow device link', () => {
+  it('invalidates but does not send background catalog reads to an unavailable peer', async () => {
+    const { createDeviceCatalogRefresh } = await import('@/device-link/deviceCatalogRefresh');
+    let available = false;
+    const readProviders = vi.fn(async (_id: string) => catalog('new'));
+    const readCapabilities = vi.fn(async (_id: string, _agent: string) => null);
+    const refresh = createDeviceCatalogRefresh({ readProviders, readCapabilities,
+      connectionEpoch: () => 1, canRead: (id) => id !== 'a' || available });
+    refresh.notify('a');
+    refresh.notify('b');
+    await flush();
+    expect(readProviders).toHaveBeenCalledExactlyOnceWith('b');
+    expect(readCapabilities.mock.calls.every(([id]) => id === 'b')).toBe(true);
+    available = true;
+    refresh.notify('a');
+    await flush();
+    expect(readProviders).toHaveBeenCalledWith('a');
+    refresh.dispose();
+  });
   it('coalesces four notifications and serializes a burst during a read without committing stale results', async () => {
     const { createDeviceCatalogRefresh } = await import('@/device-link/deviceCatalogRefresh');
     const cache = await import('@/device-link/deviceProvidersCache');

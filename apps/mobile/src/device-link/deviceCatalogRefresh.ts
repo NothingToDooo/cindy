@@ -15,6 +15,7 @@ export function createDeviceCatalogRefresh(options: {
   readProviders(deviceId: string): Promise<DeviceProvidersPayload>;
   readCapabilities(deviceId: string, agent: 'claude-code' | 'codex' | 'pi'): Promise<unknown>;
   connectionEpoch(): number;
+  canRead?(deviceId: string): boolean;
 }) {
   let disposed = false;
   const queued = new Map<string, ReturnType<typeof setTimeout>>();
@@ -24,11 +25,12 @@ export function createDeviceCatalogRefresh(options: {
     evictAgentCapabilitiesForDevice(id);
   };
   const scheduler = new PeerRecoveryScheduler(async (id) => {
+    if (disposed || options.canRead?.(id) === false) return { retry: false };
     const epoch = options.connectionEpoch();
     const providerGeneration = getDeviceProvidersGen(id);
     const generation = getAgentCapabilitiesGeneration(id);
     const read = <T,>(fetcher: () => Promise<T>): Promise<T> => {
-      if (disposed || getAgentCapabilitiesGeneration(id) !== generation) return Promise.reject(new Error('Catalog refresh superseded'));
+      if (disposed || options.canRead?.(id) === false || getAgentCapabilitiesGeneration(id) !== generation) return Promise.reject(new Error('Catalog refresh superseded'));
       return fetcher();
     };
     await Promise.allSettled([
