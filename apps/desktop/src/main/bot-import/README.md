@@ -2,6 +2,9 @@
 
 `host.ts` is the single owner-scoped service for Desktop IPC, Mobile's existing
 Remote Resource transport, and the `companion_import.import_agent` command.
+Desktop IPC encodes stable import errors through `throwIpcError`; the form uses
+the shared decoder to distinguish editable rejections from uncertain outcomes.
+Mobile retains the existing Remote Resource error codes and retry behavior.
 The command has `sources`, `preview`, `start`, and `status` operations. Callers
 retain one `requestId` across reconnects and retries. Previews expose selectable
 metadata, never source paths, environment values or credential contents.
@@ -204,6 +207,10 @@ omitting it retains normal companion defaults, and a rejected request can be cor
   listing with the same 100-page and 1000-tool catalog budgets.
 - Cron/timezone, anchored intervals, one-time triggers, paused state and selected
   Hermes scripts/monitors/repeat counters feed the existing routine engine.
+  Source-wide Hermes models and OpenClaw agent/default models use the existing
+  model-mapping issue, just like a model specified on the job itself. Their
+  routines remain disabled and the source keeps running until mapped; the import
+  never silently substitutes Cindy's model during takeover.
   Finite-repeat routines stop after their last successful execution and delivery:
   disabling, clearing future triggers and cancelling queued followers commit
   with the final successful history entry. Failed result saves retry persistence

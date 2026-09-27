@@ -4,6 +4,8 @@ import { remoteResourceRegistry, RemoteResourceRegistryError } from '../device-l
 import { assertTrustedAppRendererEvent } from '../security/trustedAppRenderer.js';
 import { listCompanionImportSources, previewCompanionImport, startCompanionImport, getCompanionImportResult } from './host.js';
 import { CompanionImportError } from './types.js';
+import { isIpcErrorCode } from '../../shared/ipc-errors.js';
+import { throwIpcError } from '../utils/ipcValidate.js';
 
 /** The same host service serves local UI, device-link and command callers. */
 export function registerCompanionImport(): void {
@@ -16,7 +18,10 @@ export function registerCompanionImport(): void {
       if (operation === 'start') return await startCompanionImport(input as CompanionImportSelection, controller);
       if (operation === 'status' && typeof input === 'string') return await getCompanionImportResult(input);
       throw new CompanionImportError('INVALID_REQUEST');
-    } catch (error) { throw new Error(error instanceof CompanionImportError ? error.code : 'IMPORT_FAILED'); }
+    } catch (error) {
+      const code = error instanceof CompanionImportError && isIpcErrorCode(error.code) ? error.code : 'IMPORT_FAILED';
+      throwIpcError(code, code);
+    }
   });
   remoteResourceRegistry.register({
     collection: { id: 'companion-import', resourceKind: 'import', title: 'Import', placement: 'hidden', icon: { name: 'import', fallbackText: '↓' } },

@@ -5,6 +5,7 @@ import { areCompanionImportEntriesSelected, toggleCompanionImportEntries, compan
 import { normalizeBotName } from '../../../shared/botCreation';
 import { BOT_PORTRAIT_COUNT, BotPortraitPicker, galleryPortrait } from './BotPortraitPicker';
 import { useBotProfiles } from './botStore';
+import { extractIpcError } from '../../utils/ipcError';
 
 /** Import only adds a selection step. Identity and all later settings use the normal teammate UI. */
 export function BotImportForm({ api = window.electronAPI.companionImport, onBack, onCreated, onBusy }: {
@@ -32,13 +33,14 @@ export function BotImportForm({ api = window.electronAPI.companionImport, onBack
     if (lock.current) return;
     lock.current = true; setBusy(true); onBusy(true); setError(false);
     try { await fn(); } catch (cause) {
+      const code = extractIpcError(cause)?.code;
       // Only definitive creation/preflight rejections unlock editing. An ambiguous ACK
       // keeps the same request ID and is reconciled before any retry.
-      if (cause instanceof Error && /INVALID_SELECTION|PROFILE_TEXT_TOO_LARGE|IMPORT_NAME_EXISTS|SOURCE_SNAPSHOT_TOO_LARGE|SOURCE_TOO_MANY_FILES|SOURCE_FILE_TOO_LARGE|SOURCE_ITEM_TOO_LARGE|SOURCE_LINK_OUTSIDE_FOLDER|SOURCE_LINK_CYCLE|SOURCE_NOT_REGULAR_FILE|SOURCE_CHANGED/.test(cause.message)) {
+      if (code && ['INVALID_SELECTION', 'PROFILE_TEXT_TOO_LARGE', 'IMPORT_NAME_EXISTS', 'SOURCE_SNAPSHOT_TOO_LARGE', 'SOURCE_TOO_MANY_FILES', 'SOURCE_FILE_TOO_LARGE', 'SOURCE_ITEM_TOO_LARGE', 'SOURCE_LINK_OUTSIDE_FOLDER', 'SOURCE_LINK_CYCLE', 'SOURCE_NOT_REGULAR_FILE', 'SOURCE_CHANGED'].includes(code)) {
         intent.current = undefined;
         if (alive.current) setResult(undefined);
       }
-      if (cause instanceof Error && /PREVIEW_EXPIRED|SELECTION_CHANGED/.test(cause.message)) {
+      if (code === 'PREVIEW_EXPIRED' || code === 'SELECTION_CHANGED') {
         intent.current = undefined;
         if (alive.current) { setPreview(undefined); setResult(undefined); }
         // Host restarts invalidate source IDs too. Reuse the existing source step.

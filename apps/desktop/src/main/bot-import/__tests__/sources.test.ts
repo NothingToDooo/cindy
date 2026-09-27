@@ -3,7 +3,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createImportSourceReader, discoverImportSources, inspectImportSource } from '../sources.js';
-import { validateImportSelection } from '../transfer.js';
+import { transferCompanion, validateImportSelection, type TransferDeps } from '../transfer.js';
 import { selectedImportEnvironment } from '../environmentSelection.js';
 import { createImportBudget } from '../files.js';
 
@@ -12,6 +12,38 @@ beforeEach(async () => { home = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-i
 afterEach(async () => { vi.restoreAllMocks(); await fs.rm(home, { recursive: true, force: true }); });
 async function write(name: string, text: string) { const file = path.join(home, name); await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, text); }
 const deps = () => ({ home, env: {}, readCronDatabase: vi.fn(async () => []) });
+
+it.each([
+  { kind: 'hermes', config: { model: 'source-model' }, blocked: true },
+  { kind: 'openclaw', config: { agents: { list: [{ id: 'main', model: 'source-model' }] } }, blocked: true },
+  { kind: 'openclaw', config: { agents: { defaults: { model: { primary: 'source-model' } } } }, blocked: true },
+  { kind: 'hermes', config: {}, blocked: false },
+  { kind: 'openclaw', config: {}, blocked: false },
+] as const)('preserves inherited $kind model semantics before takeover ($config)', async ({ kind, config, blocked }) => {
+  await write(`.${kind}/${kind === 'hermes' ? 'config.yaml' : 'openclaw.json'}`, JSON.stringify(config));
+  await write(`.${kind}/cron/jobs.json`, JSON.stringify({ jobs: [{ id: 'report', agentId: 'main', prompt: 'Report', payload: { message: 'Report' }, schedule: { kind: 'interval', minutes: 5 } }] }));
+  const reader = deps(); const [source] = await discoverImportSources(reader);
+  const snapshot = await inspectImportSource(source!, reader);
+  const task = snapshot.items.find(item => item.automation)!;
+  const transfer: TransferDeps = { assertOwner: vi.fn(), readReceipt: vi.fn(async () => undefined), saveReceipt: vi.fn(async () => {}),
+    createCompanion: vi.fn(async () => {}), importItem: vi.fn(async () => {}), saveEnvironment: vi.fn(async () => {}), saveCheckpoint: vi.fn(async () => {}),
+    createConversation: vi.fn(async () => 'chat'), createRoutine: vi.fn(async () => 'routine'),
+    verifyAutomation: vi.fn(async () => ({ verified: true })), pauseSource: vi.fn(async () => {}), resumeSource: vi.fn(async () => {}), enableRoutine: vi.fn(async () => {}) };
+  const result = await transferCompanion(snapshot, { requestId: 'fixture-model-request', previewId: 'preview', name: 'Ada', entryIds: snapshot.items.filter(item => item.view.selected).map(item => item.view.id), takeover: true }, transfer);
+  expect(transfer.createRoutine).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ enabled: false }), expect.any(String), task);
+  if (blocked) {
+    expect(task.view.issues).toContain('AUTOMATION_MODEL_NEEDS_MAPPING');
+    expect(result.checks.find(check => check.entryId === task.view.id)).toMatchObject({ status: 'needs-attention', message: 'AUTOMATION_MODEL_NEEDS_MAPPING' });
+    expect(transfer.verifyAutomation).not.toHaveBeenCalled();
+    expect(transfer.pauseSource).not.toHaveBeenCalled();
+    expect(transfer.enableRoutine).not.toHaveBeenCalled();
+  } else {
+    expect(task.view.issues).toBeUndefined();
+    expect(result.checks.find(check => check.entryId === task.view.id)?.status).toBe('taken-over');
+    expect(transfer.pauseSource).toHaveBeenCalledOnce();
+    expect(transfer.enableRoutine).toHaveBeenCalledOnce();
+  }
+});
 
 it('shares one byte budget across referenced skill trees without truncating a snapshot', async () => {
   await write('.hermes/config.yaml', 'name: Ada\n');

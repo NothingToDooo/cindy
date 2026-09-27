@@ -51,7 +51,8 @@ export function normalizeAutomation(source: ImportSource, job: Record<string, un
   // Never start a simpler task while claiming it inherited a stricter tool policy/model/context.
   if (job.enabled_toolsets || Object.keys(object(job.tools)).length || items.some(item => item.credential?.format === 'source-tools')) issues.push('SOURCE_TOOL_POLICY_NEEDS_MAPPING');
   if (job.context_from) issues.push('AUTOMATION_CONTEXT_NEEDS_MAPPING');
-  if (job.model || job.provider || job.base_url || payload.model || job.reasoning_effort || payload.thinking) issues.push('AUTOMATION_MODEL_NEEDS_MAPPING');
+  if (job.model || job.provider || job.base_url || payload.model || job.reasoning_effort || payload.thinking
+    || items.some(item => item.credential?.format === 'source-model')) issues.push('AUTOMATION_MODEL_NEEDS_MAPPING');
   if (job.workdir && path.resolve(string(job.workdir)) !== path.resolve(source.workspace)) issues.push('AUTOMATION_WORKDIR_NEEDS_MAPPING');
   if (job.failure_deliver && job.failure_deliver !== job.deliver) issues.push('DELIVERY_NEEDS_ADAPTER');
   if (!sourceId || !name) issues.push('SOURCE_AUTOMATION_INVALID');
