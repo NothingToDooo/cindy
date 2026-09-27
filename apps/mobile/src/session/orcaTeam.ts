@@ -19,6 +19,7 @@ import {
   type OrcaWorkerPermissionMode,
 } from '@cindy/maker-shared/orca-team';
 import { formatRemoteError, isTransientRemoteError } from '@cindy/maker-shared/device-link-contract';
+import { chatEligibleSourcesForModel, type ProviderView } from '@cindy/model-providers/registry';
 import { normalizeMobileAgentCapabilities } from '@/session/agentCapabilities';
 import { humanizeRemoteError } from '@/device-link/remoteStatus';
 import { i18n } from '@/i18n';
@@ -81,6 +82,22 @@ export function convergeOrcaWorkerModel(
     effort,
     fast: model.fast && option.supportsFastMode && capabilities.hasFastMode,
   };
+}
+
+/**
+ * 提交前收窄显式来源(对齐桌面 CreateWorkerPopover 的 narrowProviderSource):用户在选择器里
+ * 指定的来源已不再可路由该模型(断开 / 停用 / 下架)时清掉来源,交给被控端默认路由,而不是
+ * 带着失效来源被 PROVIDER_ROUTE_UNAVAILABLE 拒绝。来源目录未就绪(null)时原样提交。
+ */
+export function narrowOrcaWorkerProvider(
+  form: OrcaWorkerFormValue,
+  providers: readonly ProviderView[] | null,
+): OrcaWorkerFormValue {
+  const model = form.model;
+  if (!model?.providerId || !providers) return form;
+  const routable = chatEligibleSourcesForModel([...providers], model.id, form.agent)
+    .some((provider) => provider.id === model.providerId);
+  return routable ? form : { ...form, model: { ...model, providerId: null } };
 }
 
 /** 表单 → 被控端 enable-orca / worker:create 的共同字段。 */

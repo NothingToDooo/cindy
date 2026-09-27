@@ -10,9 +10,11 @@ import {
   orcaWorkerFormFromPrefs,
   readOrcaCollabEntryStatus,
   rememberOrcaStartFailure,
+  narrowOrcaWorkerProvider,
   subscribeOrcaStartFailure,
   takeOrcaStartFailure,
 } from '@/session/orcaTeam';
+import type { ProviderView } from '@cindy/model-providers/registry';
 import type { MobileMakerTransport } from '@/device-link/mobileMakerTransport';
 import { defaultOrcaWorkerCreationPrefs } from '@/session/orcaWorkerPrefs';
 
@@ -280,4 +282,17 @@ describe('mobile Orca collaboration mutations', () => {
     // 20s 一次的探针在 30s 总时限内只来得及两次,不会跑满四次。
     expect(listWorkers.mock.calls.length).toBeLessThanOrEqual(2);
   });
+
+  it('clears an explicit provider that no longer serves the chosen model before submitting', () => {
+    const provider = (id: string, connected = true) => ({
+      id, name: id, agents: ['codex'], connected, routing: { codex: {} }, models: { codex: [{ id: 'gpt-5.5' }] },
+    }) as unknown as ProviderView;
+    const chosen = { ...form, agent: 'codex' as const, model: { id: 'gpt-5.5', providerId: 'a', effort: 'high', fast: false } };
+    // 来源 A 仍可路由 → 原样;A 断开、B 仍提供同名模型 → 清掉来源交给被控端默认路由。
+    expect(narrowOrcaWorkerProvider(chosen, [provider('a'), provider('b')])).toBe(chosen);
+    expect(narrowOrcaWorkerProvider(chosen, [provider('a', false), provider('b')]).model?.providerId).toBeNull();
+    // 目录未就绪时不猜。
+    expect(narrowOrcaWorkerProvider(chosen, null)).toBe(chosen);
+  });
 });
+

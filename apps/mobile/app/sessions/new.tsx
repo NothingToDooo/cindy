@@ -139,6 +139,7 @@ import {
   isOrcaCollabEligible,
   orcaAgentLabel,
   orcaCollabEntryHint,
+  narrowOrcaWorkerProvider,
   orcaCollabDraftTargetKey,
   readOrcaCollabEntryStatus,
   rememberOrcaStartFailure,
@@ -4727,7 +4728,7 @@ export default function NewRemoteSessionScreen() {
         // 任务后(与桌面控制端老被控端兼容路径同口径,见 buildDraftWorkerInitialTask)。
         ...(collabDraft ? {
           orcaEnable: buildOrcaEnableOptions(
-            collabDraft,
+            narrowOrcaWorkerProvider(collabDraft, deviceProviders.ready ? deviceProviders.providers : null),
             buildDraftWorkerInitialTask(collabDraft.initialTask, effectiveDraft.firstMessage),
           ),
           collabDraft,
@@ -4833,6 +4834,8 @@ export default function NewRemoteSessionScreen() {
     agentAuthVerdict,
     auth.user?.id,
     collabDraft,
+    deviceProviders.ready,
+    deviceProviders.providers,
     confirmAgentUnauthenticated,
     deviceLinkStatus,
     selectedDeviceId,
@@ -5434,7 +5437,7 @@ export default function NewRemoteSessionScreen() {
       if (collabDraft) {
         try {
           await enableOrcaTeam(maker, result.sessionId, buildOrcaEnableOptions(
-            collabDraft,
+            narrowOrcaWorkerProvider(collabDraft, deviceProviders.ready ? deviceProviders.providers : null),
             buildDraftWorkerInitialTask(collabDraft.initialTask, input.objective),
           ));
         } catch (collabErr) {
@@ -5595,6 +5598,8 @@ export default function NewRemoteSessionScreen() {
     agentAuthVerdict,
     auth,
     collabDraft,
+    deviceProviders.ready,
+    deviceProviders.providers,
     confirmAgentUnauthenticated,
     draft,
     goalBusy,

@@ -238,7 +238,7 @@ import type { MobileModelConfiguration } from '@/session/unifiedMobileModels';
 import { resolveAgentCapability } from '@cindy/model-providers';
 import { ModelPickerSheet } from '@/session/ModelPickerSheet';
 import { MobileModelIconMark } from '@/session/MobileProviderMark';
-import { getModel } from '@cindy/model-providers/registry';
+import { getModel, type ProviderView } from '@cindy/model-providers/registry';
 import { shouldBlockLegacyRemoteModelWindowSwitch } from '@cindy/maker-shared/agent-capabilities';
 import { clearSessionMirror, makeSessionMirrorAccessors } from '@/session/sessionModelMirror';
 import { effortLabelFromRuntime, rowFastEditable } from '@/session/modelPickerRows';
@@ -2039,6 +2039,8 @@ export default function SessionScreen() {
       params: { sessionId: targetSessionId, deviceId, deviceName },
     });
   }, [deviceId, deviceName, router, sessionId]);
+  // 来源目录在协同 hook 之后才取得(它依赖 Worker 选择器是否打开),经 ref 在提交时读。
+  const collabProvidersRef = useRef<readonly ProviderView[] | null>(null);
   const collab = useSessionOrcaCollab({
     maker,
     deviceId: deviceId || null,
@@ -2047,6 +2049,7 @@ export default function SessionScreen() {
     // 按区域限定的账号键:Global 与中国大陆版同号不同人,记忆(含完全访问)不能串。
     prefsScope: outboxOwner.accountKey || null,
     connectionEpoch,
+    getProviders: () => collabProvidersRef.current,
     enabled: !isSharedTaskPeer(deviceId) && !sessionManagedByHost,
     sheetView: contextSheetView === 'collab' || contextSheetView === 'collab-create' ? contextSheetView : null,
     sheetOpen: contextSheetOpen,
@@ -2058,6 +2061,7 @@ export default function SessionScreen() {
     deviceId || undefined,
     modelSheetOpen || collab.workerForm.modelPicker.open,
   );
+  collabProvidersRef.current = composerDeviceProviders.ready ? composerDeviceProviders.providers : null;
   // 新建任务页在后台开启协同失败时任务照单任务继续,提示在这里(跳转后的会话页)出现。
   useEffect(() => {
     const show = () => {

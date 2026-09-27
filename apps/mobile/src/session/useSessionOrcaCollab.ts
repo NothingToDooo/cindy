@@ -10,6 +10,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert } from 'react-native';
+import type { ProviderView } from '@cindy/model-providers/registry';
 import type { AgentKind } from '@cindy/model-providers/types';
 import { confirmFullAccessChange } from '@/session/fullAccessConfirmation';
 import {
@@ -18,6 +19,7 @@ import {
   createOrcaWorker,
   describeOrcaError,
   isOrcaAmbiguousTimeout,
+  narrowOrcaWorkerProvider,
   enableOrcaTeam,
   isOrcaCollabEligible,
   orcaAgentKindForSession,
@@ -418,6 +420,8 @@ export function useSessionOrcaCollab(params: {
   prefsScope: string | null;
   /** 隧道重连代次(会话页的 connectionEpoch):重连后补拉团队与 Worker 所属 Lead。 */
   connectionEpoch?: number;
+  /** 提交时读被控端来源目录(未就绪 = null),用于收窄已失效的显式来源。 */
+  getProviders?: () => readonly ProviderView[] | null;
   /** 共享任务访客 / 宿主托管任务不提供协同编排(不拉团队、不挂入口)。 */
   enabled: boolean;
   /** + 面板当前是否展示协同视图。 */
@@ -427,7 +431,7 @@ export function useSessionOrcaCollab(params: {
   setSheetOpen(open: boolean): void;
   openSession(sessionId: string): void;
 }) {
-  const { maker, deviceId, sessionId, session, prefsScope, connectionEpoch, enabled, sheetView, sheetOpen, setSheetView, setSheetOpen, openSession } = params;
+  const { maker, deviceId, sessionId, session, prefsScope, connectionEpoch, getProviders, enabled, sheetView, sheetOpen, setSheetView, setSheetOpen, openSession } = params;
   const role = enabled ? session?.orcaRole ?? null : null;
   const isLead = role === 'lead';
   const isWorker = role === 'worker';
@@ -496,14 +500,17 @@ export function useSessionOrcaCollab(params: {
 
   const form = workerForm.form;
   const formValid = workerForm.valid;
+  const getProvidersRef = useRef(getProviders);
+  getProvidersRef.current = getProviders;
 
   const submitEnable = useCallback(async () => {
     if (!deviceId || !formValid || busy) return;
     setBusy(true);
     setError(null);
     try {
-      await enableOrcaTeam(makerRef.current, sessionId, buildOrcaEnableOptions(form, form.initialTask));
-      rememberWorkerForm(form);
+      const submitted = narrowOrcaWorkerProvider(form, getProvidersRef.current?.() ?? null);
+      await enableOrcaTeam(makerRef.current, sessionId, buildOrcaEnableOptions(submitted, submitted.initialTask));
+      rememberWorkerForm(submitted);
       remoteSessionStore.applySessionPatch(deviceId, sessionId, { orcaRole: 'lead' });
       setSheetView('collab');
       void refreshTeam();
@@ -519,8 +526,9 @@ export function useSessionOrcaCollab(params: {
     setBusy(true);
     setError(null);
     try {
-      await createOrcaWorker(makerRef.current, sessionId, form, team.workers);
-      rememberWorkerForm(form);
+      const submitted = narrowOrcaWorkerProvider(form, getProvidersRef.current?.() ?? null);
+      await createOrcaWorker(makerRef.current, sessionId, submitted, team.workers);
+      rememberWorkerForm(submitted);
       setSheetView('collab');
       void refreshTeam();
     } catch (err) {
