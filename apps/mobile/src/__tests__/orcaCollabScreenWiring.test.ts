@@ -12,6 +12,10 @@ describe('mobile Orca collaboration wiring', () => {
     expect(source).toContain('testID="session.contextSheetCollabRow"');
     expect(source).toContain('onPress={() => void collab.submitEnable()}');
     expect(source).toContain('onPress={() => void collab.submitCreate()}');
+    // 点 Worker 直接进入;长按才弹管理操作。
+    expect(source).toContain('onWorkerLongPress={collab.showWorkerActions}');
+    expect(source).toContain('onWorkerPress={collab.openWorker}');
+    expect(read('src/session/ContextSheetCollabView.tsx')).toContain('onLongPress={() => onWorkerLongPress(worker)}');
   });
 
   it('keeps the Worker model picker separate from the task model', () => {

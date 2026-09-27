@@ -9140,7 +9140,8 @@ export default function SessionScreen() {
               loading={collab.team.loading}
               onCreateWorker={collab.openCreateWorker}
               onEndTeam={collab.confirmEndTeam}
-              onWorkerPress={collab.pressWorker}
+              onWorkerLongPress={collab.showWorkerActions}
+              onWorkerPress={collab.openWorker}
               settings={collab.team.settings}
               workers={collab.team.workers}
             />

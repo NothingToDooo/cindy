@@ -157,6 +157,8 @@ export interface ContextSheetRowProps {
   icon: ReactNode;
   label: string;
   onPress: () => void;
+  /** 长按(如协同 Worker 行的管理操作);不传则只有点按。 */
+  onLongPress?: () => void;
   /** 'chevron' 表示带二级视图；也可以传自定义 trailing 节点。 */
   trailing?: 'chevron' | ReactNode;
   disabled?: boolean;
@@ -174,6 +176,7 @@ export function ContextSheetRow({
   icon,
   label,
   onPress,
+  onLongPress,
   trailing,
   disabled,
   busy,
@@ -192,6 +195,7 @@ export function ContextSheetRow({
       accessibilityRole="button"
       accessibilityState={{ disabled: disabled || busy }}
       disabled={disabled || busy}
+      onLongPress={onLongPress}
       onPress={() => (dismissBeforePress ? dismiss(onPress) : onPress())}
       style={({ pressed }) => [styles.row, pressed && styles.rowPressed, disabled && styles.rowDisabled]}
       testID={testID}

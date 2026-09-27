@@ -10,6 +10,7 @@ import {
 } from "react";
 import { Button, HStack, Image, Picker, RNHostView, ProgressView, Spacer, Text, TextField, VStack, useNativeState } from '@expo/ui/swift-ui';
 import {
+  accessibilityAddTraits,
   accessibilityHint,
   accessibilityLabel,
   buttonStyle,
@@ -20,6 +21,8 @@ import {
   foregroundStyle,
   lineLimit,
   listRowInsets,
+  onLongPressGesture,
+  onTapGesture,
   pickerStyle,
   shapes,
   tag,
@@ -90,51 +93,66 @@ export function ContextSheetRow(props: ContextSheetRowProps) {
   const dismiss = useContext(DismissAction);
   const { colors } = useTheme();
   const labelModifiers = props.destructive ? [foregroundStyle(colors.destructive)] : [];
+  const press = () => (props.dismissBeforePress ? dismiss(props.onPress) : props.onPress());
+  const inactive = !!props.disabled || !!props.busy;
+  const content = (extraModifiers: ReturnType<typeof frame>[]) => (
+    <HStack
+      modifiers={[
+        frame({ maxWidth: Infinity, minHeight: 44 }),
+        contentShape(shapes.rectangle()),
+        ...extraModifiers,
+      ]}
+    >
+      <RNHostView matchContents>
+        <View style={{ width: 28, height: 28, justifyContent: "center" }}>
+          {props.icon}
+        </View>
+      </RNHostView>
+      {props.detail ? (
+        <VStack alignment="leading" spacing={2}>
+          <Text modifiers={[...labelModifiers, lineLimit(1)]}>{props.label}</Text>
+          <Text modifiers={[font({ textStyle: 'footnote' }), foregroundStyle(colors.textSecondary), lineLimit(1)]}>{props.detail}</Text>
+        </VStack>
+      ) : (
+        <Text modifiers={labelModifiers}>{props.label}</Text>
+      )}
+      <Spacer />
+      {props.busy ? (
+        <ProgressView />
+      ) : props.trailing && props.trailing !== "chevron" ? (
+        <RNHostView matchContents>
+          <View>{props.trailing}</View>
+        </RNHostView>
+      ) : props.trailing === "chevron" ? (
+        <Image size={iconSize.lg} systemName="chevron.right" />
+      ) : null}
+    </HStack>
+  );
+  const accessibility = props.accessibilityHint ? [accessibilityHint(props.accessibilityHint)] : [];
+  if (props.onLongPress) {
+    // 带长按的行(协同 Worker):SwiftUI Button 与长按手势会互相抢,改用同一视图上的
+    // 点按 + 长按手势,点按直接执行,长按弹出管理操作。
+    const longPress = props.onLongPress;
+    return content([
+      listRowInsets({ top: 4, bottom: 4, leading: 16, trailing: 16 }),
+      disable(inactive),
+      accessibilityAddTraits(['isButton']),
+      ...accessibility,
+      ...(inactive ? [] : [onTapGesture(press), onLongPressGesture(longPress)]),
+    ]);
+  }
   return (
     <Button
-      onPress={() =>
-        props.dismissBeforePress ? dismiss(props.onPress) : props.onPress()
-      }
+      onPress={press}
       testID={props.testID}
       modifiers={[
         buttonStyle("plain"),
         listRowInsets({ top: 4, bottom: 4, leading: 16, trailing: 16 }),
-        disable(!!props.disabled || !!props.busy),
-        ...(props.accessibilityHint
-          ? [accessibilityHint(props.accessibilityHint)]
-          : []),
+        disable(inactive),
+        ...accessibility,
       ]}
     >
-      <HStack
-        modifiers={[
-          frame({ maxWidth: Infinity, minHeight: 44 }),
-          contentShape(shapes.rectangle()),
-        ]}
-      >
-        <RNHostView matchContents>
-          <View style={{ width: 28, height: 28, justifyContent: "center" }}>
-            {props.icon}
-          </View>
-        </RNHostView>
-        {props.detail ? (
-          <VStack alignment="leading" spacing={2}>
-            <Text modifiers={[...labelModifiers, lineLimit(1)]}>{props.label}</Text>
-            <Text modifiers={[font({ textStyle: 'footnote' }), foregroundStyle(colors.textSecondary), lineLimit(1)]}>{props.detail}</Text>
-          </VStack>
-        ) : (
-          <Text modifiers={labelModifiers}>{props.label}</Text>
-        )}
-        <Spacer />
-        {props.busy ? (
-          <ProgressView />
-        ) : props.trailing && props.trailing !== "chevron" ? (
-          <RNHostView matchContents>
-            <View>{props.trailing}</View>
-          </RNHostView>
-        ) : props.trailing === "chevron" ? (
-          <Image size={iconSize.lg} systemName="chevron.right" />
-        ) : null}
-      </HStack>
+      {content([])}
     </Button>
   );
 }

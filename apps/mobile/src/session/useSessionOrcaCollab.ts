@@ -609,21 +609,19 @@ export function useSessionOrcaCollab(params: {
   }, [runTeamAction, sessionId]);
 
   /**
-   * 点 Worker 行:打开 / 设为焦点 / 归档。Android 原生 Alert 最多三个按钮,所以每一层
-   * 都控制在三个以内:已是焦点时「打开 / 归档 / 取消」;否则「打开 / 更多 / 取消」,
-   * 「更多」再给「设为焦点 / 归档 / 取消」。
+   * 长按 Worker 行:管理操作(点按直接打开 Worker,不弹窗)。Android 原生 Alert 最多三个
+   * 按钮:已是焦点时「归档 / 取消」,否则「设为焦点 / 归档 / 取消」。
    */
-  const pressWorker = useCallback((worker: OrcaTeamWorker) => {
+  const showWorkerActions = useCallback((worker: OrcaTeamWorker) => {
     const name = orcaWorkerDisplayName(worker);
     const cancel = { text: i18n.t('session.collab.cancel'), style: 'cancel' as const };
-    const open = { text: i18n.t('session.collab.openWorker'), onPress: () => openWorker(worker) };
     const archive = {
       text: i18n.t('session.collab.archive'),
       style: 'destructive' as const,
       onPress: () => confirmArchive(worker),
     };
     if (worker.focused) {
-      Alert.alert(name, orcaWorkerStatusLabel(worker.status), [open, archive, cancel]);
+      Alert.alert(name, orcaWorkerStatusLabel(worker.status), [archive, cancel]);
       return;
     }
     const setFocus = {
@@ -635,12 +633,8 @@ export function useSessionOrcaCollab(params: {
         );
       },
     };
-    Alert.alert(name, orcaWorkerStatusLabel(worker.status), [
-      open,
-      { text: i18n.t('session.collab.moreActions'), onPress: () => Alert.alert(name, undefined, [setFocus, archive, cancel]) },
-      cancel,
-    ]);
-  }, [confirmArchive, openWorker, runTeamAction, sessionId]);
+    Alert.alert(name, orcaWorkerStatusLabel(worker.status), [setFocus, archive, cancel]);
+  }, [confirmArchive, runTeamAction, sessionId]);
 
   const confirmEndTeam = useCallback(() => {
     Alert.alert(
@@ -689,7 +683,8 @@ export function useSessionOrcaCollab(params: {
     openCreateWorker,
     submitEnable,
     submitCreate,
-    pressWorker,
+    openWorker,
+    showWorkerActions,
     confirmEndTeam,
   };
 }

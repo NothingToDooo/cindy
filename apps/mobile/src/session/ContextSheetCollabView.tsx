@@ -194,7 +194,10 @@ export interface OrcaTeamPanelViewProps {
   loading: boolean;
   busy: boolean;
   error?: string | null;
+  /** 点按:直接打开 Worker 任务。 */
   onWorkerPress(worker: OrcaTeamWorker): void;
+  /** 长按:设为焦点 / 归档等管理操作。 */
+  onWorkerLongPress(worker: OrcaTeamWorker): void;
   onCreateWorker(): void;
   onEndTeam(): void;
 }
@@ -222,6 +225,7 @@ export function OrcaTeamPanelView({
   busy,
   error,
   onWorkerPress,
+  onWorkerLongPress,
   onCreateWorker,
   onEndTeam,
 }: OrcaTeamPanelViewProps) {
@@ -248,6 +252,7 @@ export function OrcaTeamPanelView({
             icon={<WorkerStatusDot status={worker.status} />}
             key={worker.workerId}
             label={orcaWorkerDisplayName(worker)}
+            onLongPress={() => onWorkerLongPress(worker)}
             onPress={() => onWorkerPress(worker)}
             testID={`collab.worker.${worker.workerId}`}
             trailing={(

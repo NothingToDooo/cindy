@@ -110,7 +110,7 @@ it('never lets a late memory read overwrite a permission the user already chose'
   expect(latest!.form.permissionMode).toBe('auto');
 });
 
-it('keeps every Worker action menu within three buttons for Android', async () => {
+it('opens a Worker on tap and keeps the long-press action menu within three buttons for Android', async () => {
   const { Alert } = await import('react-native');
   const { useSessionOrcaCollab } = await import('@/session/useSessionOrcaCollab');
   let collab: ReturnType<typeof useSessionOrcaCollab> | null = null;
@@ -126,19 +126,23 @@ it('keeps every Worker action menu within three buttons for Android', async () =
     collab = useSessionOrcaCollab({
       maker, deviceId: 'dev-1', sessionId: 'lead-1', prefsScope: 'user-1', enabled: true,
       session: { id: 'lead-1', orcaRole: 'lead', workspaceKind: 'project', workingDir: '/repo', agentKind: 'codex' } as never,
-      sheetView: null, sheetOpen: false, setSheetView: () => undefined, setSheetOpen: () => undefined, openSession: () => undefined,
+      sheetView: null, sheetOpen: false, setSheetView: () => undefined, setSheetOpen: () => undefined, openSession,
     });
     return null;
   }
+  const openSession = vi.fn();
   await act(async () => root.render(<Host />));
   const alert = vi.mocked(Alert.alert);
   const worker = { workerId: 'w-1', sessionId: 's-1', role: 'developer', label: null, status: 'idle' as const, focused: false, agentKind: 'codex' as const, model: null, effort: null, title: null };
-  act(() => collab!.pressWorker(worker));
-  const first = alert.mock.calls.at(-1)![2]!;
-  expect(first.length).toBeLessThanOrEqual(3);
-  act(() => first.find((button) => button.text === 'More actions' || button.text === '更多操作')?.onPress?.());
+  // 点按直接进入 Worker,不弹窗。
+  const alertsBefore = alert.mock.calls.length;
+  act(() => collab!.openWorker(worker));
+  expect(openSession).toHaveBeenCalledWith('s-1');
+  expect(alert.mock.calls.length).toBe(alertsBefore);
+  // 长按才弹管理操作,单层且不超过三个按钮。
+  act(() => collab!.showWorkerActions(worker));
   expect(alert.mock.calls.at(-1)![2]!.length).toBeLessThanOrEqual(3);
-  act(() => collab!.pressWorker({ ...worker, focused: true }));
+  act(() => collab!.showWorkerActions({ ...worker, focused: true }));
   expect(alert.mock.calls.at(-1)![2]!.length).toBeLessThanOrEqual(3);
 });
 
@@ -295,7 +299,7 @@ it('treats a timed-out Worker archive as unconfirmed and rechecks the team', asy
   await act(async () => root.render(<Host />));
   const loads = listWorkers.mock.calls.length;
   const worker = { workerId: 'w-1', sessionId: 's-1', role: 'developer', label: null, status: 'idle' as const, focused: false, agentKind: 'codex' as const, model: null, effort: null, title: null };
-  act(() => collab!.pressWorker({ ...worker, focused: true }));
+  act(() => collab!.showWorkerActions({ ...worker, focused: true }));
   act(() => vi.mocked(Alert.alert).mock.calls.at(-1)![2]!.find((button) => button.style === 'destructive')!.onPress?.());
   const confirm = vi.mocked(Alert.alert).mock.calls.at(-1)![2]!.find((button) => button.style === 'destructive')!;
   await act(async () => { confirm.onPress?.(); await flush(); });
