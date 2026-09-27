@@ -954,6 +954,21 @@ describe('newSessionCreation pipeline', () => {
       });
     }
 
+    it('brings the collaboration draft back with the draft when a failed create returns to editing', async () => {
+      const maker = withOrca(makeMaker({
+        createSession: vi.fn(async () => { throw new Error('INVALID_PARAMS: cannot create session'); }),
+      }), vi.fn());
+      const collabDraft = {
+        role: 'reviewer', agent: 'codex' as const, model: null, permissionMode: 'auto' as const, initialTask: 'check tests',
+      };
+      startNewSessionCreation(makeParams('orca-edit', maker, { orcaEnable, collabDraft }));
+      await flushPipeline();
+      expect(getNewSessionCreationTask('orca-edit')?.status).toBe('create-failed');
+      const prepared = await prepareNewSessionCreationForEdit('orca-edit');
+      stashNewSessionDraftForEdit(prepared!);
+      expect(drainStashedNewSessionDraft()?.collabDraft).toEqual(collabDraft);
+    });
+
     it('starts collaboration after createSession and before the first message is queued', async () => {
       const enable = vi.fn(async () => ({ workerSessionId: 'worker-1' }));
       const maker = withOrca(makeMaker(), enable);

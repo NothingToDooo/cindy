@@ -332,6 +332,15 @@ export async function createOrcaWorker(
   throw new Error('[DUPLICATE_LABEL] no unique worker label available');
 }
 
+/** 新建页协同草稿所属目标(设备 + 工作区):目标变了草稿作废。 */
+export function orcaCollabDraftTargetKey(
+  deviceId: string | null | undefined,
+  workspaceKind: string | null | undefined,
+  workingDir: string | null | undefined,
+): string {
+  return [deviceId ?? '', workspaceKind ?? '', workingDir ?? ''].join('\u0000');
+}
+
 // ─── 新建任务开启协同失败的跨页提示 ──────────────────────────────────────────
 // 新建页在后台管线里开启协同;失败时任务照单任务继续,提示要在跳转后的会话页出现。
 // 会话页通常在失败发生前就已挂载,所以既要能在挂载时取走,也要能在失败时推给已挂载的页面。

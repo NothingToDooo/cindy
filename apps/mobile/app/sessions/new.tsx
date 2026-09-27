@@ -139,6 +139,7 @@ import {
   isOrcaCollabEligible,
   orcaAgentLabel,
   orcaCollabEntryHint,
+  orcaCollabDraftTargetKey,
   readOrcaCollabEntryStatus,
   rememberOrcaStartFailure,
   type OrcaCollabEntryStatus,
@@ -582,9 +583,13 @@ export default function NewRemoteSessionScreen() {
   }), [draft.workingDir, draft.workspaceKind]);
   const collabEligible = isOrcaCollabEligible(collabTarget);
   // 换设备 / 换工作区后,草稿里的协同设置属于旧目标:丢弃,避免在新目标上静默开启。
+  // 按草稿武装时的目标比对(而不是「目标一变就清」):返回编辑恢复草稿时目标与草稿一起回填,
+  // 不会被这里误清。
+  const collabTargetKey = orcaCollabDraftTargetKey(selectedDeviceId, draft.workspaceKind, draft.workingDir);
+  const collabDraftTargetRef = useRef<string | null>(null);
   useEffect(() => {
-    setCollabDraft(null);
-  }, [selectedDeviceId, draft.workspaceKind, draft.workingDir]);
+    if (collabDraftTargetRef.current !== collabTargetKey) setCollabDraft(null);
+  }, [collabTargetKey]);
   // 读入口状态;重连后重读:断线时读失败会落成「不可用」,不能让表单一直卡住。
   useEffect(() => {
     if (!contextSheetOpen || !collabEligible || !selectedDeviceId) return undefined;
@@ -768,6 +773,14 @@ export default function NewRemoteSessionScreen() {
     if (!stashed) return;
     restoreCreationDraft(stashed.draft, [...stashed.attachments]);
     if (stashed.notice) setAttachmentError(stashed.notice);
+    if (stashed.collabDraft && stashed.deviceId) {
+      collabDraftTargetRef.current = orcaCollabDraftTargetKey(
+        stashed.deviceId,
+        stashed.draft.workspaceKind,
+        stashed.draft.workingDir,
+      );
+      setCollabDraft(stashed.collabDraft);
+    }
     if (stashed.deviceId) {
       userTouchedDeviceRef.current = true;
       setSelectedDeviceId(stashed.deviceId);
@@ -4717,6 +4730,7 @@ export default function NewRemoteSessionScreen() {
             collabDraft,
             buildDraftWorkerInitialTask(collabDraft.initialTask, effectiveDraft.firstMessage),
           ),
+          collabDraft,
         } : {}),
         precreatedWorktree,
         precreatedWorktreeAccountId: worktreeAccountId,
@@ -6265,6 +6279,7 @@ export default function NewRemoteSessionScreen() {
             onPress={() => {
               // 与桌面新建任务一样:确认协同草稿即记住这次的 Worker 选择。
               collabForm.remember(collabForm.form);
+              collabDraftTargetRef.current = collabTargetKey;
               setCollabDraft(collabForm.form);
               setContextSheetView('main');
               setContextSheetOpen(false);

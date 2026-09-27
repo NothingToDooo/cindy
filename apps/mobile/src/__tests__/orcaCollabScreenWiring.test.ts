@@ -48,5 +48,8 @@ describe('mobile Orca collaboration wiring', () => {
       .toBeLessThan(source.indexOf('await maker.goal.set({ sessionId: result.sessionId'));
     expect(source).toContain('setCollabDraft(null);');
     expect(source).toContain('prefsScope: outboxOwner.accountKey || null,');
+    // create-failed「返回编辑」带回协同草稿;目标比对防止恢复时被「换目标即清」误清。
+    expect(source).toContain('if (collabDraftTargetRef.current !== collabTargetKey) setCollabDraft(null);');
+    expect(source).toContain('if (stashed.collabDraft && stashed.deviceId) {');
   });
 });
