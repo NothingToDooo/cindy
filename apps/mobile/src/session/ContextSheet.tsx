@@ -285,15 +285,21 @@ export function ContextSheetChoiceRow<T extends string>({
               disabled={disabled}
               key={option.id}
               onPress={() => onChange(option.id)}
-              style={({ pressed }) => [
-                styles.choicePill,
-                selected && styles.choicePillSelected,
-                pressed && styles.rowPressed,
-                disabled && styles.rowDisabled,
-              ]}
+              style={styles.choiceHitArea}
               testID={testID ? `${testID}.${option.id}` : undefined}
             >
-              <Text style={[styles.choicePillText, selected && styles.choicePillTextSelected]}>{option.label}</Text>
+              {({ pressed }) => (
+                <View
+                  style={[
+                    styles.choicePill,
+                    selected && styles.choicePillSelected,
+                    pressed && styles.rowPressed,
+                    disabled && styles.rowDisabled,
+                  ]}
+                >
+                  <Text style={[styles.choicePillText, selected && styles.choicePillTextSelected]}>{option.label}</Text>
+                </View>
+              )}
             </Pressable>
           );
         })}
@@ -426,9 +432,14 @@ function makeContextSheetStyles(colors: ThemeColors) {
       paddingVertical: spacing.sm,
     },
     choicePills: {
+      columnGap: spacing.sm,
       flexDirection: 'row' as const,
       flexWrap: 'wrap' as const,
-      gap: spacing.sm,
+    },
+    // 命中区 44pt(可见 pill 仍是 32pt);换行时相邻两行命中区之间的留白就是 pill 的上下余量。
+    choiceHitArea: {
+      height: 44,
+      justifyContent: 'center' as const,
     },
     choicePill: {
       alignItems: 'center' as const,
@@ -450,10 +461,11 @@ function makeContextSheetStyles(colors: ThemeColors) {
     choicePillTextSelected: {
       color: colors.ctaText,
     },
+    // 单行输入按 pill,多行输入按 inner-control 8px(DESIGN.md §5)。
     textField: {
       backgroundColor: colors.surface,
       borderColor: colors.border,
-      borderRadius: radius.container,
+      borderRadius: radius.pill,
       borderWidth: StyleSheet.hairlineWidth,
       color: colors.textPrimary,
       fontSize: typeScale.body,
@@ -462,6 +474,7 @@ function makeContextSheetStyles(colors: ThemeColors) {
       paddingVertical: spacing.sm + 2,
     },
     textFieldMultiline: {
+      borderRadius: radius.control,
       minHeight: 96,
       textAlignVertical: 'top' as const,
     },
