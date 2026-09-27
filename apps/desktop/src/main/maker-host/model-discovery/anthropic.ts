@@ -735,6 +735,39 @@ export function hasAnthropicDiscoveredModels(): boolean {
   return lastApplied.length > 0;
 }
 
+/** 最近一次看到的已登录 Claude 账号(CLI 报告的 email),用于识别不经登出的直接换号。 */
+let lastClaudeLoginEmail: string | undefined;
+
+/**
+ * 按 CLI 登录态变化同步 Anthropic 清单(bootstrap 的登录态监听调用)。
+ * - 登出:清空清单与缓存(世代自增,作废在途探测);
+ * - 已登录但账号变了(终端里 A → B,中间没有登出):按换号处理,先清空旧账号的清单、
+ *   缓存与在途探测,再为新账号读取;
+ * - 其它登录变化:请求一次主动读取(未绑定 Cindy 使用许可时内部跳过)。
+ */
+export function syncAnthropicModelsWithClaudeLogin(status: {
+  loggedIn: boolean;
+  email?: string;
+}): void {
+  if (!status.loggedIn) {
+    lastClaudeLoginEmail = undefined;
+    void clearAnthropicDiscoveredModels().catch(() => undefined);
+    return;
+  }
+  const switched =
+    lastClaudeLoginEmail !== undefined &&
+    status.email !== undefined &&
+    status.email !== lastClaudeLoginEmail;
+  if (status.email !== undefined) lastClaudeLoginEmail = status.email;
+  if (!switched) {
+    requestAnthropicModelProbe();
+    return;
+  }
+  void clearAnthropicDiscoveredModels()
+    .catch(() => undefined)
+    .then(() => requestAnthropicModelProbe());
+}
+
 /** 后台请求一次主动探测;失败只记日志。 */
 export function requestAnthropicModelProbe(): void {
   void refreshAnthropicModelsFromProbe().then(
@@ -772,6 +805,7 @@ export function waitForAnthropicDiscoveryIdleForTest(): Promise<void> {
 export function resetAnthropicDiscoveryForTest(): void {
   lastApplied = [];
   probeInflight = null;
+  lastClaudeLoginEmail = undefined;
   explicitWindows.clear();
   explicitEffortModelIds.clear();
   explicitFastModeModelIds.clear();

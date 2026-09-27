@@ -45,6 +45,7 @@ import {
   waitForAnthropicDiscoveryIdleForTest,
   refreshAnthropicModelsFromProbe,
   setAnthropicModelProbe,
+  syncAnthropicModelsWithClaudeLogin,
 } from '../model-discovery/anthropic.js';
 import {
   getActiveCatalog,
@@ -452,6 +453,54 @@ describe('noteAnthropicSdkSupportedModels(登录态门控 + 合并纪律)', () =
 
     deliverOld();
     await expect(oldFlight).resolves.toBe(false);
+    expect(anthropicIds()).toEqual(['claude-sonnet-4-5']);
+    setAnthropicModelProbe(null);
+  });
+
+  it('终端里直接换号(不经登出):先清旧账号清单与在途探测,再为新账号读取', async () => {
+    // 生产中同一个 maker 的探测函数在换号前后不变,作废只能靠授权世代。
+    let deliverA!: () => void;
+    const probe = vi.fn<(onModels: (models: unknown[]) => void) => Promise<boolean>>();
+    probe.mockImplementationOnce(
+      (onModels) =>
+        new Promise<boolean>((resolve) => {
+          deliverA = () => {
+            onModels([{ value: 'claude-opus-4-8', displayName: 'Account A Opus 4.8' }]);
+            resolve(true);
+          };
+        }),
+    );
+    probe.mockImplementationOnce(async (onModels) => {
+      onModels([{ value: 'claude-sonnet-4-5', displayName: 'Sonnet 4.5' }]);
+      return true;
+    });
+    setAnthropicModelProbe(probe);
+
+    syncAnthropicModelsWithClaudeLogin({ loggedIn: true, email: 'a@example.test' });
+    await vi.waitFor(() => expect(probe).toHaveBeenCalledTimes(1));
+    // B 的请求不能复用 A 的在途探测。
+    syncAnthropicModelsWithClaudeLogin({ loggedIn: true, email: 'b@example.test' });
+    await vi.waitFor(() => expect(probe).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(anthropicIds()).toEqual(['claude-sonnet-4-5']));
+
+    // A 的迟到结果被丢弃。
+    deliverA();
+    await waitForAnthropicDiscoveryIdleForTest();
+    expect(anthropicIds()).toEqual(['claude-sonnet-4-5']);
+    setAnthropicModelProbe(null);
+  });
+
+  it('同一账号的重复登录态变化不清空清单', async () => {
+    const probe = vi.fn(async (onModels: (models: unknown[]) => void) => {
+      onModels([{ value: 'claude-sonnet-4-5', displayName: 'Sonnet 4.5' }]);
+      return true;
+    });
+    setAnthropicModelProbe(probe);
+    syncAnthropicModelsWithClaudeLogin({ loggedIn: true, email: 'a@example.test' });
+    await vi.waitFor(() => expect(anthropicIds()).toEqual(['claude-sonnet-4-5']));
+    probe.mockImplementationOnce(() => new Promise<boolean>(() => {}));
+    syncAnthropicModelsWithClaudeLogin({ loggedIn: true, email: 'a@example.test' });
+    await waitForAnthropicDiscoveryIdleForTest();
     expect(anthropicIds()).toEqual(['claude-sonnet-4-5']);
     setAnthropicModelProbe(null);
   });

@@ -694,6 +694,7 @@ import {
   noteAnthropicSdkSupportedModels,
   clearAnthropicDiscoveredModels,
   requestAnthropicModelProbe,
+  syncAnthropicModelsWithClaudeLogin,
 } from './maker-host/model-discovery/anthropic.js';
 import {
   clearXaiDiscoveredModels,
@@ -5090,13 +5091,9 @@ const registerIpcHandlers = () => {
   onClaudeCliLoginStatusChange((status) => {
     void broadcastClaudeAuthStateChanged();
     syncClaudeSubscriptionUsageForAuthChange();
-    if (!status.loggedIn) {
-      resetProviderModelAutoRefreshCooldowns('anthropic');
-      void clearAnthropicDiscoveredModels().catch(() => undefined);
-    } else {
-      // 登录(含在终端里登录)后主动读一次清单;未绑定 Cindy 使用许可时内部跳过。
-      requestAnthropicModelProbe();
-    }
+    if (!status.loggedIn) resetProviderModelAutoRefreshCooldowns('anthropic');
+    // 登出清空清单;登录(含在终端里登录)后主动读一次;直接换号先清旧账号再读。
+    syncAnthropicModelsWithClaudeLogin(status);
   });
   // 启动时后台读一次(不阻塞):已连接的用户由 provider 目录加载等这次结果;
   // 从未连接的用户据此自动沿用本机登录。明确断开过的用户不再读。
