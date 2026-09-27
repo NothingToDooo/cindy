@@ -621,6 +621,11 @@ async function receive(
           record.sourceSessionId !== request.sourceSessionId)
       )
         throw new Error('MIGRATION_ID_CONFLICT');
+      // The existing receipt lock owns one staging path across attempts. Reclaim an
+      // interrupted receive before either reimporting or adopting an already committed task.
+      const directory = path.join(scope.root, 'incoming', request.id);
+      await fs.rm(directory, { recursive: true, force: true });
+      scope.assertCurrent();
       if (record?.stage === 'ready' || record?.stage === 'active') return view(scope, record);
       const existing = await scope.db.queryOne<{ workingDir: string }>(
         'SELECT working_dir AS workingDir FROM sessions WHERE id = ?',
@@ -673,8 +678,8 @@ async function receive(
       };
       scope.save(record);
       await fs.mkdir(workingDir);
-      const directory = await fs.mkdtemp(path.join(scope.root, 'incoming-'));
       try {
+        await fs.mkdir(directory, { recursive: true, mode: 0o700 });
         assertMemoryCapacity(request.files.manifest.size);
         await receiveFile(scope, request.files.manifest, path.join(directory, 'workspace.json'));
         const workspace = JSON.parse(
@@ -834,14 +839,15 @@ async function receive(
         } finally {
           cancelShareDraft(inspected.draftId);
         }
-        scope.assertCurrent();
-        record = { ...record, stage: 'ready' } as IncomingMigration;
-        scope.save(record);
-        return view(scope, record);
       } finally {
         // These are transfer artifacts only. Keep project files on all outcomes, including an unknown DB commit.
-        await fs.rm(directory, { recursive: true, force: true }).catch(() => {});
+        // Publish ready only after cleanup: the source can query the receipt after a lost reply.
+        await fs.rm(directory, { recursive: true, force: true });
       }
+      scope.assertCurrent();
+      record = { ...record, stage: 'ready' } as IncomingMigration;
+      scope.save(record);
+      return view(scope, record);
     },
   );
 }

@@ -498,6 +498,60 @@ describe('durable cross-machine handoff', () => {
     expect(await fs.readFile(path.join(state.root, 'shared', 'draft'), 'utf8')).toBe('original');
   });
 
+  it.each(['receiving', 'committed', 'imported'])(
+    'reclaims interrupted receive staging before retrying a %s receipt',
+    async (stage) => {
+      state.restoresFail = stage === 'receiving';
+      state.importsFail = stage === 'committed';
+      const remove = fs.rm.bind(fs);
+      let staging = '';
+      // Leave actual transfer artifacts behind as a process exit would. A completed
+      // import must not publish ready while cleanup still needs a retry.
+      const cleanup = vi.spyOn(fs, 'rm').mockImplementation(async (target, options) => {
+        if (
+          device() === 'B' &&
+          await fs.stat(path.join(String(target), 'workspace.json')).catch(() => null)
+        ) {
+          staging = String(target);
+          throw new Error('receive cleanup interrupted');
+        }
+        return remove(target, options);
+      });
+      try {
+        await start();
+        const interrupted = await settled();
+        expect(interrupted.stage).toBe('transferring');
+        expect(staging).not.toBe('');
+        const receipt = state.context.run({ device: 'B' }, () =>
+          migrationScope().readIncoming(interrupted.targetSessionId!)!,
+        );
+        expect(receipt.stage).toBe('receiving');
+        const otherStaging = path.join(path.dirname(staging), 'other-migration');
+        await fs.mkdir(otherStaging);
+        await fs.writeFile(path.join(otherStaging, 'keep'), 'other transfer');
+        await fs.writeFile(path.join(receipt.workingDir, 'draft'), 'user recovery edit');
+        expect(await fs.readdir(staging)).toContain('workspace.json');
+        const imports = state.imports.mock.calls.length;
+        await requestTaskMigration({ action: 'retry', sessionId: 'fork' });
+        expect((await settled()).stage).toBe('transferring');
+        expect(state.imports).toHaveBeenCalledTimes(imports);
+        cleanup.mockRestore();
+        state.restoresFail = false;
+        await requestTaskMigration({ action: 'retry', sessionId: 'fork' });
+        expect((await settled()).stage).toBe('complete');
+        await expect(fs.stat(staging)).rejects.toMatchObject({ code: 'ENOENT' });
+        expect(await fs.readFile(path.join(otherStaging, 'keep'), 'utf8')).toBe('other transfer');
+        expect(state.imports).toHaveBeenCalledTimes(1);
+        expect(await fs.readFile(path.join(receipt.workingDir, 'draft'), 'utf8')).toBe(
+          'user recovery edit',
+        );
+        expect(await fs.readFile(path.join(state.root, 'shared', 'draft'), 'utf8')).toBe('original');
+      } finally {
+        cleanup.mockRestore();
+      }
+    },
+  );
+
   it('blocks current sharing but permits migration after all sharing identities are closed', async () => {
     state.sharingLatest = [
       { shared_task_id: 'closed', session_id: 'fork', terminal: 1, snapshot: null },
