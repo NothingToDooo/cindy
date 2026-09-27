@@ -1044,6 +1044,8 @@ P2 继续后移:
 
 ## 12. 自动化 / Scheduler
 
+> 历史设计：手机版已移除自动化与例行任务管理入口及其 Maestro 流程，保留运行历史。当前测试命令以 [README](../README.md) 为准。
+
 ### 12.1 桌面事实
 
 `SchedulerPage` 的关键语义:
@@ -1108,8 +1110,6 @@ V1 暂缓:
 - 当前已有 `scheduleModel.test` 覆盖 sort/filter/summary/run folding。
 - 当前已有 `scheduleFormModel.test` 覆盖 create/update/template input serialization。
 - 当前已有 `scheduleDelete.test` 覆盖生成会话 keep/archive/delete 删除策略。
-- 当前已有 `automations.yaml` 覆盖 run now、pause/resume、open session。
-- 当前已有 `automations_create_edit.yaml` 覆盖 template gallery、create/edit、delete dialog。
 
 ## 13. 文件页和选项卡
 

@@ -1427,6 +1427,7 @@ export function mobileRouteCoverage(repoRoot, catalog = mobileCatalogSurfaces())
   const excluded = new Map([
     ['_layout.tsx', 'layout; visible mounted feedback is a separate overlay surface'],
     ['+native-intent.ts', 'native intent routing; no screen'],
+    ['automations/[deviceId].tsx', 'legacy automation link redirect; no screen'],
     ['splash-preview.tsx', 'MOBILE_VISUAL_MOCK_ENABLED preview; not production UI'],
     ['listperf.tsx', '__DEV__ list performance harness; not production UI'],
   ]);

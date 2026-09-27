@@ -1442,13 +1442,11 @@ pnpm test:device-link
 
 当前进展:
 
-- 已新增 `pnpm --filter mobile test:web-smoke`,用 Expo Web export 编译整套 mobile route bundle,并断言 `Device Link` / `Remote Device` / `Remote Session` / `Remote Automations` / `maker:schedule:delete` 等关键路由和能力 marker 存在。它不是替代真机点击 E2E,但能在无模拟器、无 Maestro 的机器上先拦住 route import、bundle compile、关键页面被 tree-shake/路由遗漏这类回归。
+- 已新增 `pnpm --filter mobile test:web-smoke`,用 Expo Web export 编译整套 mobile route bundle,并断言 `Device Link` / `Remote Device` / `Remote Session` / `maker:schedule:delete` 等关键路由和能力 marker 存在。它不是替代真机点击 E2E,但能在无模拟器、无 Maestro 的机器上先拦住 route import、bundle compile、关键页面被 tree-shake/路由遗漏这类回归。
 - 已接入 Maestro 第一层真实点击流:默认 `remote_control_smoke.yaml` 覆盖 mock login 和设备列表;`remote_session_smoke.yaml` 覆盖打开会话和发送消息;`create_session_smoke.yaml` 覆盖从手机新建 dialogue 会话并发送首条消息;`fixture_controls_smoke.yaml` 覆盖队列和 pending interactions;`media_smoke.yaml` 覆盖媒体图片 payload 和缩放;`file_preview.yaml` 覆盖远程文件文本预览、PDF/drawio 降级、路径复制和 diff 当前文件预览;`test:e2e:local:fixture` / `test:e2e:local:create` / `test:e2e:local:controls` / `test:e2e:local:file` / `test:e2e:local:media` 用 mock host 让它进入可自动回归状态。
-- 已新增 native E2E doctor 和 `test:e2e:local:full`:doctor 在真实 Maestro 前统一检查 CLI/模拟器/API base;full suite 用 controls mock host 串起 create、session、pending controls、media、file、fork/rewind、automations,并支持 `--check-only` 先验证本地 relay 和 mock host。
+- 已新增 native E2E doctor 和 `test:e2e:local:full`:doctor 在真实 Maestro 前统一检查 CLI/模拟器/API base;full suite 用 controls mock host 串起 create、session、pending controls、media、file、fork/rewind,并支持 `--check-only` 先验证本地 relay 和 mock host。
 - 已新增 `visual_smoke.yaml`、`visual_session_idle.yaml`、`visual_session_running.yaml`、`visual_session_queue.yaml`、`visual_session_pending.yaml`、`visual_session_payload.yaml`、`visual_session_revoked.yaml`、`visual_session_offline.yaml` 和 `pnpm --filter mobile test:e2e:visual`,用 Maestro `takeScreenshot` 自动采集设备列表、Settings、设备详情、会话、会话控制面板、payload full-screen viewer、idle/running/pending/queue/offline/revoked 十二张关键截图;同时新增 `pnpm --filter mobile test:e2e:visual:update-baseline -- --profile <profile> --actual-dir <dir>` 和 `pnpm --filter mobile test:e2e:visual:baseline -- --profile <profile> --actual-dir <dir>`。local visual suite 会隔离每个 state flow 的 mock host 生命周期并清理 stale e2e 设备记录,避免长 flow 连续切 session 造成同步竞态或设备列表计数漂移。当前 `ios-iphone-17-pro-expo-go` baseline 已接受 12 张并通过裁掉顶部 120px 后的 sha256 严格比对;Android profile 需要单独目录保存。
 - 已新增 `fork_rewind.yaml`,覆盖发送一条消息后执行 rewind preview/confirm,再 fork 会话并进入 forked session。
-- 已新增 `automations.yaml`,覆盖进入远程自动化页、Run now、pause/resume、打开自动化 run 对应会话。
-- 已新增 `automations_create_edit.yaml`,覆盖远程自动化页里的 template gallery 和 create/edit 基础表单锚点。
 - `pnpm --filter mobile test:e2e:reconnect:local` 现与根 `pnpm test:device-link` 共用正式客户端的真实 WebSocket 集成套件，不再依赖拆仓前的 server/dev-login。默认使用本仓 contract fixture；独立测试 relay 的显式互操作入口与覆盖边界见 [Device Link 测试说明](../../../packages/device-link/TESTING.md)。
 
 优先用 Maestro 做第一版黑盒流程,原因是脚本短、可读、适合 AI 维护。Detox 留给后面需要深层 native assertion 时再引入。
@@ -1471,8 +1469,6 @@ apps/mobile/e2e/maestro/
   plan_review.yaml
   visual_smoke.yaml
   fork_rewind.yaml
-  automations.yaml
-  automations_create_edit.yaml
 ```
 
 流程:
@@ -1490,8 +1486,6 @@ apps/mobile/e2e/maestro/
 - `e2e/maestro/plan_review.yaml`
 - `e2e/maestro/visual_smoke.yaml`
 - `e2e/maestro/fork_rewind.yaml`
-- `e2e/maestro/automations.yaml`
-- `e2e/maestro/automations_create_edit.yaml`
 
 每条 flow 都要输出截图、失败时的 app 日志、relay/desktop/device-link 日志切片。视觉截图先用 `visual_smoke.yaml` / `visual_session_idle.yaml` / `visual_session_running.yaml` / `visual_session_queue.yaml` / `visual_session_pending.yaml` / `visual_session_revoked.yaml` / `visual_session_offline.yaml` 采集,确认目标设备 profile 后运行 `test:e2e:visual:update-baseline`,之后每次回归运行 `test:e2e:visual:baseline`;当前 iOS profile 已把 `visual-settings` 写入 manifest 并纳入普通 baseline check。当前基线脚本使用严格文件 hash,只有在固定模拟器 / 固定系统版本下才应作为阻断门禁,跨设备 profile 必须分目录保存。CI 或本机跑不过模拟器时,至少要跑 `test:web-smoke` 作为降级门禁,但不能把它当最终 E2E。Reconnect 已先用 headless relay smoke 覆盖真实断连补账;后续如果要做 native `reconnect.yaml`,必须复用同样的断连 fixture,不要写一个只点“重新同步”的伪断线 flow。
 
