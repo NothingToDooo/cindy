@@ -656,6 +656,49 @@ describe('durable cross-machine handoff', () => {
       expect(state.imports).toHaveBeenCalledTimes(1);
     },
   );
+  it('reclaims interrupted upload parts before resource checks, preserving snapshots and other handoffs', async () => {
+    const workerDir = await team();
+    state.restoresFail = true;
+    await start();
+    const interrupted = await settled();
+    expect(interrupted.stage).toBe('transferring');
+    const directory = path.join(state.root, 'A', 'task-migrations', 'outgoing', interrupted.targetSessionId!);
+    const leftovers = [directory, path.join(directory, '1')].map(dir => path.join(dir, 'parts-Ab12Cd'));
+    const unrelated = path.join(state.root, 'A', 'task-migrations', 'outgoing', 'another-handoff', 'parts-Ab12Cd');
+    const sourceParts = path.join(workerDir, 'parts-Ab12Cd');
+    for (const dir of [...leftovers, unrelated, sourceParts]) {
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(path.join(dir, 'part'), 'retained bytes');
+    }
+    const snapshot = await fs.readFile(path.join(directory, 'session.cshare'));
+    const uploads = state.files.size;
+    const remove = fs.rm.bind(fs);
+    const failCleanup = vi.spyOn(fs, 'rm').mockImplementation(async (file, options) => {
+      if (String(file) === leftovers[0]) throw new Error('cleanup denied');
+      return remove(file, options);
+    });
+    try {
+      await requestTaskMigration({ action: 'retry', sessionId: 'fork' });
+      expect((await settled()).stage).toBe('transferring');
+      expect(state.files.size).toBe(uploads);
+      expect(await fs.readFile(path.join(leftovers[0], 'part'), 'utf8')).toBe('retained bytes');
+    } finally {
+      failCleanup.mockRestore();
+    }
+    state.noSpace = true;
+    await requestTaskMigration({ action: 'retry', sessionId: 'fork' });
+    expect((await settled()).error).toBe('MIGRATION_NO_SPACE');
+    for (const dir of leftovers) await expect(fs.stat(dir)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await fs.readFile(path.join(directory, 'session.cshare'))).toEqual(snapshot);
+    expect(state.files.size).toBe(uploads);
+    state.noSpace = false;
+    state.restoresFail = false;
+    await requestTaskMigration({ action: 'retry', sessionId: 'fork' });
+    expect((await settled()).stage).toBe('complete');
+    for (const dir of [unrelated, sourceParts])
+      expect(await fs.readFile(path.join(dir, 'part'), 'utf8')).toBe('retained bytes');
+    expect(await fs.readFile(path.join(workerDir, 'draft'), 'utf8')).toBe('worker files');
+  });
   it('adopts a committed import after its database reply is lost', async () => {
     state.importsFail = true;
     await start();

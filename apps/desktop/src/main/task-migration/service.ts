@@ -478,6 +478,18 @@ async function transfer(scope: Scope, record: MigrationHandoff) {
     readAtomicFileSync(path.join(directory, 'workspace.json')) ?? 'null',
   ) as WorkspaceBundle;
   if (!workspace) throw new Error('MIGRATION_SNAPSHOT_MISSING');
+  // startBackground holds this handoff's existing cross-process lock. A crash
+  // skips sendParts' finally; reclaim only its temporary directories, including
+  // separate Worker workspaces, before disk budgets or uploads are retried.
+  for (const [index] of workspaces(workspace).entries()) {
+    const artifacts = workspaceDirectory(directory, index);
+    for (const entry of await fs.readdir(artifacts, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !/^parts-[A-Za-z0-9]{6}$/.test(entry.name)) continue;
+      scope.assertCurrent();
+      await fs.rm(path.join(artifacts, entry.name), { recursive: true, force: true });
+    }
+  }
+  scope.assertCurrent();
   await preflight(scope, record, workspace, directory);
   const files: MigrationFiles = {
     session: await sendFile(scope, record.targetDeviceId, path.join(directory, 'session.cshare')),
