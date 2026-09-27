@@ -885,6 +885,10 @@ export function applyPendingAgentSwitchIfIdle(
         sessionId,
         targetAgentKind: intent.targetAgentKind,
         runtimeSource: intent.runtimeSource,
+        // 系统配置对齐的身份必须随重入传递: resume 回落的恢复意图丢了它, 就会被
+        // 当成用户选择打上 manual 墓碑, 任务永久脱离跟随(chatgpt-codex-connector P2,
+        // PR #5155)。
+        configStaged: intent.configStaged,
         model: intent.model,
         providerId: intent.providerId,
         effort: intent.effort,

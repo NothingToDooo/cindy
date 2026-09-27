@@ -168,6 +168,44 @@ describe('same-engine selection at send', () => {
 });
 
 describe('performSessionAgentSwitch', () => {
+  it('keeps the config-staged identity through resume-fallback recovery re-entry', async () => {
+    // 渠道默认触发的跨引擎切换若走 resume 回落恢复, 恢复意图必须保留 configStaged ——
+    // 否则被通用路径消费时当成用户选择打上 manual 墓碑, 任务永久脱离跟随
+    // (chatgpt-codex-connector P2, PR #5155)。
+    let row = makeRow();
+    let failFallback = true;
+    const onUserRouteSelectionLanded = vi.fn();
+    const pending = createPendingAgentSwitchRegistry();
+    const { deps } = makeDeps({
+      pendingSwitches: pending,
+      onUserRouteSelectionLanded,
+      getSessionRow: async () => ({ ...row }),
+      findParkedEngineSession: async (_id, kind) =>
+        kind === 'codex' ? { sdkSessionId: 'broken-codex', watermarkCreatedAt: 0, watermarkRowid: 0 } : null,
+      applyAgentSwitchToDb: async (_id, patch) => {
+        row = { ...row, ...patch, providerId: patch.providerId ?? null, sdkSessionId: patch.sdkSessionId ?? null };
+      },
+      insertBoundaryMessage: async () => 'boundary-1',
+      bootstrapSwitchedSession: async () => {
+        throw new Error('resume failed');
+      },
+      applyResumeFallbackAtomically: async () => {
+        if (failFallback) throw new Error('db locked');
+        row.sdkSessionId = null;
+      },
+    });
+    await performSessionAgentSwitch(deps, { ...validParams, configStaged: true });
+    await applyPendingAgentSwitchIfIdle(deps, 's1');
+    expect(pending.get('s1')?.resumeFallbackRecovery).toBeDefined();
+    expect(onUserRouteSelectionLanded).not.toHaveBeenCalled();
+
+    // 恢复尾段重试成功后被消费: 仍然是系统配置切换, 不立碑。
+    failFallback = false;
+    await applyPendingAgentSwitchIfIdle(deps, 's1');
+    expect(onUserRouteSelectionLanded).not.toHaveBeenCalled();
+    expect(pending.get('s1')).toBeUndefined();
+  });
+
   it('cycles Claude → Codex → Pi → Claude → Codex and recovers a broken parked thread once', async () => {
     let row = makeRow();
     const parked = new Map<string, string>();

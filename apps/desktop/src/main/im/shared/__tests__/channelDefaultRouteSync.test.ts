@@ -278,6 +278,36 @@ describe('syncUnderLock', () => {
     expect((await rowOf('t1')).imDefaultRoute).toBe(buildImDefaultRouteRecord('fp-old', OLD));
   });
 
+  it('withdraws its intent and restores the claim when the staged claim rewrite fails', async () => {
+    // 暂缓声称(pendingRev 补写)失败时不能留「无修订号声称 + 带修订号意图」—— 下一条
+    // 消息会把系统意图误判成用户选择, 走 manual 后被通用 apply 用更宽的忙判定应用掉
+    // (chatgpt-codex-connector P2, PR #5155)。撤回意图、恢复原声称, 下一条消息重试。
+    await insertTask('t1', OLD);
+    mocks.readPendingRoute.mockReturnValueOnce(undefined).mockReturnValue({ ...NEW, rev: 5 });
+    mocks.applyRoute.mockResolvedValue('staged');
+    const real = db;
+    let updates = 0;
+    db = new Proxy(real, {
+      get(target, prop, receiver) {
+        if (prop === 'update') {
+          return (...args: unknown[]) => {
+            updates += 1;
+            // 第 1 次 = 预写声称(成功); 第 2 次 = 补 pendingRev 的声称(故障); 第 3 次 = 恢复。
+            if (updates === 2) throw new Error('database is locked');
+            return (target.update as unknown as (...a: unknown[]) => unknown)(...args);
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    }) as typeof db;
+
+    await expect(sync().syncUnderLock('t1')).resolves.toBe(true);
+    db = real;
+
+    expect(mocks.cancelPending).toHaveBeenCalledWith('t1');
+    expect((await rowOf('t1')).imDefaultRoute).toBe(buildImDefaultRouteRecord('fp-old', OLD));
+  });
+
   it('withdraws its staged intent without blocking when applying it fails', async () => {
     await insertTask('t1', OLD, {
       record: buildImDefaultRouteRecord('fp-old', OLD, { route: NEW, fp: 'fp-new' }),

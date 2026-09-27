@@ -265,10 +265,24 @@ export function createImChannelDefaultRouteSync(deps: {
           );
         }
       } catch (err) {
+        // 声称写失败不能留「无修订号的声称 + 带修订号的意图」: 下一条消息的
+        // decideImDefaultRoute 会把系统意图误判成用户选择, 走 manual 后被通用 apply
+        // 用更宽的忙判定应用掉(chatgpt-codex-connector P2, PR #5155)。撤回本次意图
+        // 并恢复原声称 —— 下一条消息按「仍在跟随」重新发起切换, 自愈确定。
+        // (send 锁在手, 意图必然是本次登记的, 不会误伤用户的选择。)
         log.warn(
-          `default route staged claim write failed (non-fatal) session=...${sessionId.slice(-8)}: ` +
+          `default route staged claim write failed; withdrawing intent session=...${sessionId.slice(-8)}: ` +
             (err instanceof Error ? err.message : String(err)),
         );
+        cancelPendingAgentSwitchForSession(sessionId);
+        try {
+          await writeRecord(sessionId, buildImDefaultRouteRecord(e.record.fp, e.record.route));
+        } catch (restoreErr) {
+          log.warn(
+            `default route claim restore failed (non-fatal) session=...${sessionId.slice(-8)}: ` +
+              (restoreErr instanceof Error ? restoreErr.message : String(restoreErr)),
+          );
+        }
       }
       log.info(`default route switch staged session=...${sessionId.slice(-8)} (runtime busy)`);
       return true;
