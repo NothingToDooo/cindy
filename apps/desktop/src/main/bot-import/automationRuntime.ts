@@ -9,6 +9,7 @@ import { object, string, CompanionImportError } from './types.js';
 import { writeImportFiles } from './files.js';
 import { redactEnvironmentValues, runImportedProcess } from './process.js';
 import { sendImportedDelivery } from './delivery.js';
+import { importedScriptName, importedScriptInterpreter } from './scripts.js';
 
 /** Source script bytes are encrypted at rest and materialized only in a private execution directory. */
 export async function prepareImportedAutomation(root: string, routine: Routine, runId: string, signal: AbortSignal, assertOwner: () => void) {
@@ -25,14 +26,10 @@ export async function prepareImportedAutomation(root: string, routine: Routine, 
   await fs.mkdir(privateRoot, { recursive: true, mode: 0o700 }); assertOwner();
   const directory = await fs.mkdtemp(path.join(privateRoot, 'run-'));
   const runScript = async (value: string) => {
-    const relative = path.relative(path.join(binding.sourceRoot, 'scripts'), path.resolve(binding.sourceRoot, 'scripts', value));
-    const name = `scripts/${relative.split(path.sep).join('/')}`;
+    const name = importedScriptName(binding.sourceRoot, value);
     if (!Object.hasOwn(environment.files ?? {}, name)) throw new CompanionImportError('AUTOMATION_SCRIPT_MISSING');
     const script = path.join(directory, name);
-    // Hermes uses bash for .sh/.bash and Python otherwise. Preserve its installed virtualenv when available.
-    const sourcePython = path.join(binding.sourceRoot, 'hermes-agent', '.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
-    const python = await fs.access(sourcePython).then(() => sourcePython, () => process.platform === 'win32' ? 'python' : 'python3');
-    const result = await runImportedProcess({ command: /\.(sh|bash)$/i.test(script) ? process.platform === 'win32' ? 'bash' : '/bin/bash' : python,
+    const result = await runImportedProcess({ command: await importedScriptInterpreter(binding.sourceRoot, name),
       args: [script], cwd: path.dirname(script), env: { ...process.env, ...environment.env, HERMES_HOME: directory },
       timeoutMs: 300_000, signal, assertOwner });
     if (result.exitCode !== 0) throw new CompanionImportError('AUTOMATION_COMMAND_FAILED');

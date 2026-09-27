@@ -51,3 +51,30 @@ it('verifies a selected skill bundled script using real HTTP without giving the 
   expect(prompt).not.toContain('fixture-private-token');
   expect(prompt).not.toContain('UNSELECTED_TOKEN');
 });
+
+it.skipIf(process.platform === 'win32')('checks a local script without executing it, and refuses invalid or data-dependent scripts', async () => {
+  const fs = await import('node:fs/promises');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-import-local-script-test-'));
+  try {
+    const marker = path.join(root, 'must-not-be-created');
+    const script = `printf report\ntouch '${marker}'\n`;
+    const environment = { version: 1 as const, env: {}, mcp: [], credentials: [], files: { 'scripts/local.sh': Buffer.from(script).toString('base64') } };
+    vi.mocked(companionEnvironmentStore.read).mockResolvedValue(environment);
+    const oneShot = vi.fn().mockResolvedValue(JSON.stringify({ localScript: true, reads: [] }));
+    vi.mocked(getMakerIfReady).mockReturnValue({ oneShot, getSessionMeta: vi.fn().mockResolvedValue({ agentKind: 'pi', model: 'fixture-model' }) } as never);
+    vi.mocked(getBotRemoteResourceSource).mockResolvedValue({ canonicalSessionId: 'fixture-session' } as never);
+    const item = { view: { id: 'local', name: 'Local report', category: 'automations' as const, selected: true, dependsOn: ['script'] },
+      automation: { sourceId: 'local', original: { script: 'local.sh', no_agent: true }, fingerprint: 'fixture' } };
+    const selected = [{ view: { id: 'script', name: 'local.sh', category: 'connections' as const, selected: true }, asset: { name: 'scripts/local.sh', bytes: Buffer.from(script) } }];
+    expect((await verifyImportedAutomation(root, 'bot', item, () => {}, selected, root)).verified).toBe(true);
+    await expect(fs.access(marker)).rejects.toThrow();
+    expect(await fs.readdir(path.join(root, 'bots/bot/import-executions'))).toEqual([]);
+    environment.files['scripts/local.sh'] = Buffer.from('if then broken').toString('base64');
+    expect((await verifyImportedAutomation(root, 'bot', item, () => {}, selected, root)).verified).toBe(false);
+    environment.files['scripts/local.sh'] = Buffer.from(script).toString('base64');
+    item.view.dependsOn.push('api');
+    expect((await verifyImportedAutomation(root, 'bot', item, () => {}, [...selected, { view: { id: 'api', name: 'API_URL', category: 'connections', selected: true }, env: { API_URL: 'https://example.invalid' } }], root)).verified).toBe(false);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});

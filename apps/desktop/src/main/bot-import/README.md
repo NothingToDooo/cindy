@@ -24,10 +24,11 @@ theme tokens. No new native Mobile dependencies or fingerprint inputs are added.
   use the existing account encrypted credential store. The teammate folder has
   a non-secret `environment.json` binding. Cancellation of a variable does not
   secretly copy its expanded value into another selected connection.
-- Claude Code, Codex and Pi load the teammate's environment at runtime without
-  changing the host process environment or overriding Cindy's model route.
-  Codex hosts are partitioned by environment identity. Imported MCP connections
-  and explicit commands receive the original tool credentials.
+- Claude Code, Codex and Pi use the shared `companion_connections` bridge for
+  imported skills, commands and data queries. Only those host-owned subprocesses
+  and connections receive imported variables; the model harness does not inherit
+  them. Values stay encrypted across restarts without changing Cindy's model route.
+  Codex hosts remain partitioned by companion environment identity.
 - Cron/timezone, anchored intervals, one-time triggers, paused state and selected
   Hermes scripts/monitors/repeat counters feed the existing routine engine.
   Pure-script output appears in the canonical teammate chat. Explicit Telegram
@@ -39,10 +40,16 @@ uses the teammate's current model to plan bounded read-only probes, then the
 host executes real MCP/HTTP reads and validates response data. The planner sees
 variable names and redacted task/script text, not credential values. HTTP checks
 reject redirects; Telegram checks read identity/destination without test sends.
+For scripts classified as local-only with no data/connection dependency, the same
+runtime interpreter parses the selected script without executing business actions.
+This checks availability and syntax, not a full business execution; scripts with
+external data still require actual read evidence.
 
 ## Handover and compatibility
 
-The durable receipt records item copies and each automation's handover phase.
+The encrypted selected snapshot, including full skill resources, is written before
+the first receipt is accepted or an item is copied. The durable receipt records
+item copies and each automation's handover phase.
 The target routine starts disabled. Actual target reads must pass before the
 source's native CLI pauses its task; only then is the target enabled. Source
 configuration changes invalidate handover. In-flight source execution is allowed

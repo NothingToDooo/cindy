@@ -2,6 +2,7 @@ import { parseRoutineInput, type RoutineTrigger } from '@cindy/maker-scheduler';
 import { fingerprint } from './files.js';
 import { object, string, type ImportItem, type ImportSource } from './types.js';
 import path from 'node:path';
+import { importedScriptName } from './scripts.js';
 import { importDelivery } from './delivery.js';
 
 /** Runtime counters are not configuration; changes to them must not invalidate a handover. */
@@ -29,7 +30,10 @@ export function normalizeAutomation(source: ImportSource, job: Record<string, un
   } else issues.push('AUTOMATION_TRIGGER_NEEDS_ADAPTER');
 
   const selectedSkills = new Set([string(job.skill), ...(Array.isArray(job.skills) ? job.skills.map(string) : [])]);
-  const scriptNames = [string(job.script), string(job.monitor_script)].filter(Boolean).map(file => `scripts/${path.relative(path.join(source.root, 'scripts'), path.resolve(source.root, 'scripts', file)).split(path.sep).join('/')}`);
+  const scriptNames = [string(job.script), string(job.monitor_script)].filter(Boolean).flatMap(file => {
+    try { return [importedScriptName(source.root, file)]; }
+    catch { issues.push('AUTOMATION_SCRIPT_MISSING'); return []; }
+  });
   const scriptItems = items.filter(item => item.asset && scriptNames.includes(item.asset.name));
   const searchText = [prompt, ...scriptItems.map(item => item.asset!.bytes.toString('utf8')), ...items.filter(item => item.view.category === 'skills' && selectedSkills.has(item.view.name)).flatMap(item => (item.files ?? []).filter(file => /\.(md|py|js|mjs|sh|ts|json|yaml|yml|toml)$/i.test(file.name)).map(file => file.bytes.toString('utf8')))].join('\n');
   const dependsOn = items.filter(item =>

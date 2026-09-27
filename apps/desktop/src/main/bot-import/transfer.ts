@@ -8,6 +8,7 @@ export interface ImportReceipt {
   result: CompanionImportResult;
   copied: string[];
   environmentSaved?: boolean;
+  checkpointSaved?: boolean;
   routines: Record<string, { id: string; phase: 'created' | 'verified' | 'pausing-source' | 'source-paused' | 'complete' }>;
 }
 
@@ -18,6 +19,7 @@ export interface TransferDeps {
   createCompanion(botId: string, selection: CompanionImportSelection): Promise<void>;
   importItem(botId: string, item: ImportItem, snapshot: ImportSnapshot): Promise<void>;
   saveEnvironment(botId: string, items: ImportItem[]): Promise<void>;
+  saveCheckpoint(botId: string, items: ImportItem[]): Promise<void>;
   createConversation(botId: string): Promise<string>;
   createRoutine(botId: string, input: RoutineInput, creationId: string, item: ImportItem): Promise<string>;
   /** Success requires actual read evidence from the target environment, not just presence of keys. */
@@ -57,16 +59,28 @@ export async function transferCompanion(snapshot: ImportSnapshot, selection: Com
   };
   receipt.result.status = 'running';
   receipt.result.checks = receipt.result.checks.filter(item => item.entryId !== 'import');
+  // Capture only selected resources before publishing an accepted receipt. The
+  // same bytes feed copying, read verification and recovery without source files.
+  if (!receipt.checkpointSaved) {
+    for (const item of items) {
+      if (item.sourceDirectory && !item.filesComplete) {
+        item.files = await readImportTree(item.sourceDirectory);
+        item.filesComplete = true;
+        deps.assertOwner();
+      }
+    }
+    await deps.saveCheckpoint(botId, items);
+    deps.assertOwner();
+    receipt.checkpointSaved = true;
+  }
   await save();
   await deps.createCompanion(botId, selection);
   deps.assertOwner();
   // Each selected item is a separate checkpoint. Retrying never copies unselected source files.
   for (const item of items.filter(item => item.view.category !== 'automations' && item.view.category !== 'connections')) {
     if (receipt.copied.includes(item.view.id)) continue;
-    const prepared = item.sourceDirectory ? { ...item, files: await readImportTree(item.sourceDirectory) } : item;
     deps.assertOwner();
-    await deps.importItem(botId, prepared, snapshot);
-    if (prepared !== item) Object.assign(item, prepared);
+    await deps.importItem(botId, item, snapshot);
     deps.assertOwner();
     receipt.copied.push(item.view.id);
     check(item.view.id, 'copied');

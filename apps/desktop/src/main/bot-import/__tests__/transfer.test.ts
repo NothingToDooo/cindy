@@ -1,3 +1,6 @@
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
 import { describe, expect, it, vi } from 'vitest';
 import { transferCompanion, type ImportReceipt, type TransferDeps } from '../transfer.js';
 import { CompanionImportError, type ImportSnapshot } from '../types.js';
@@ -13,7 +16,7 @@ const selection: CompanionImportSelection = { requestId: 'fixture-request-0001',
 function harness() {
   let receipt: ImportReceipt | undefined;
   const deps: TransferDeps = { assertOwner: vi.fn(), readReceipt: async () => structuredClone(receipt), saveReceipt: async value => { receipt = structuredClone(value); },
-    createCompanion: vi.fn(async () => {}), importItem: vi.fn(async () => {}), saveEnvironment: vi.fn(async () => {}),
+    createCompanion: vi.fn(async () => {}), importItem: vi.fn(async () => {}), saveEnvironment: vi.fn(async () => {}), saveCheckpoint: vi.fn(async () => {}),
     createConversation: vi.fn(async () => 'chat'), createRoutine: vi.fn(async () => 'routine'),
     verifyAutomation: vi.fn(async () => ({ verified: true })), pauseSource: vi.fn(async () => {}), resumeSource: vi.fn(async () => {}), enableRoutine: vi.fn(async () => {}),
   };
@@ -68,6 +71,7 @@ describe('companion takeover transaction', () => {
     expect((await transferCompanion(snapshot, selection, deps)).status).toBe('complete');
     expect(deps.pauseSource).toHaveBeenCalledTimes(1);
     expect(deps.saveEnvironment).toHaveBeenCalledTimes(1);
+    expect(deps.saveCheckpoint).toHaveBeenCalledTimes(1);
   });
   it('reconciles a lost source pause acknowledgement instead of activating two schedulers', async () => {
     const { deps } = harness();
@@ -78,4 +82,38 @@ describe('companion takeover transaction', () => {
     expect(vi.mocked(deps.pauseSource).mock.calls[1]?.[2]).toBe(true);
   });
 
+});
+
+it('checkpoints full selected skills before acknowledging or copying and resumes after source removal', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-import-checkpoint-test-'));
+  try {
+    await fs.mkdir(path.join(root, 'scripts'));
+    await fs.writeFile(path.join(root, 'SKILL.md'), 'Use scripts/query.py');
+    await fs.writeFile(path.join(root, 'scripts/query.py'), 'print("rows")');
+    const source: ImportSnapshot = { ...snapshot, items: [...snapshot.items,
+      { view: { id: 'skill', name: 'report', category: 'skills', selected: true }, sourceDirectory: root },
+    ] };
+    const input = { ...selection, entryIds: [...selection.entryIds, 'skill'] };
+    const { deps, receipt } = harness();
+    let durable: ImportSnapshot | undefined;
+    vi.mocked(deps.saveCheckpoint).mockImplementation(async (_botId, items) => {
+      // Real JSON serialization mirrors the encrypted store across a process restart.
+      durable = JSON.parse(JSON.stringify({ ...source, items }), (_key, value) => value?.type === 'Buffer' ? Buffer.from(value.data) : value);
+    });
+    vi.mocked(deps.importItem).mockImplementation(async () => {
+      expect(durable?.items.some(item => item.view.id === 'unselected')).toBe(false);
+      expect(durable?.items.find(item => item.view.id === 'skill')?.files?.map(file => file.name)).toEqual(['scripts/query.py', 'SKILL.md']);
+    });
+    vi.mocked(deps.importItem).mockRejectedValueOnce(new Error('process interrupted'));
+    await expect(transferCompanion(source, input, deps)).rejects.toThrow('process interrupted');
+    expect(receipt()?.result.status).toBe('running');
+    expect(durable).toBeDefined();
+    await fs.rm(root, { recursive: true, force: true });
+    vi.mocked(deps.verifyAutomation).mockImplementation(async () => {
+      expect(durable?.items.find(item => item.view.id === 'skill')?.files?.find(file => file.name === 'scripts/query.py')?.bytes.toString()).toBe('print("rows")');
+      return { verified: true };
+    });
+    expect((await transferCompanion(durable!, input, deps)).status).toBe('complete');
+    expect(deps.pauseSource).toHaveBeenCalledOnce();
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
 });

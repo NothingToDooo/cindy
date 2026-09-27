@@ -1,4 +1,3 @@
-import { mergeSessionEnvironment } from '../shared/session-environment.js';
 /**
  * CodexAgent — 路线 A 完整版 (Phase 1+2+3+4 全打通)。
  *
@@ -2485,7 +2484,6 @@ export class CodexAgent extends BaseAgent {
       customContextWindow?: number;
       sqliteHome?: string;
       historyHome?: string;
-      environment?: Record<string, string>;
     } = {},
   ): Promise<AppServerHost> {
     const key = opts.keyOverride ?? (opts.providerId ? `local-account:${opts.providerId}` : hostKey(remoteHostId));
@@ -2709,7 +2707,6 @@ assertRouteCurrent();
         opts.historyHome,
         opts.localAuthPolicy,
         opts.routeIsCurrent,
-        opts.environment,
       ).finally(() => {
         // 成功: this.hosts 已赋值, 后续走快路径; 失败: 清掉 promise 让下次调用能重试
         const current = this.hostPromises.get(key);
@@ -2957,7 +2954,6 @@ assertRouteCurrent();
     historyHome?: string,
     localAuthPolicy?: 'isolated' | 'legacy-shared',
     routeIsCurrent?: () => boolean,
-    environment?: Record<string, string>,
   ): Promise<AppServerHost> {
     const seq = (this.createHostSeqByKey.get(key) ?? 0) + 1;
     this.createHostSeqByKey.set(key, seq);
@@ -3050,7 +3046,7 @@ assertRouteCurrent();
       }
       effectiveMode =
         spawnCredentialMode ?? resolveEffectiveCredentialModeFromAuthSource(undefined, state.authSource);
-      env = mergeSessionEnvironment(await buildCodexEnv(this.deps.auth, this.deps.runtimeConfig, authOptions), environment);
+      env = await buildCodexEnv(this.deps.auth, this.deps.runtimeConfig, authOptions);
       assertCurrentGeneration('env');
 
       extraArgs = [...baseExtraArgs];
@@ -5006,7 +5002,7 @@ assertRouteCurrent();
       if (!routeSelection.isCurrent()) throw new CodexRouteSelectionChangedError();
       acquireHostBindingLeaseIfNeeded();
       return await this.getHost(opts.remoteHostId, credentialMode, {
-        ...(companionEnvironment ? { keyOverride: currentHostKey, environment: companionEnvironment.env } : {}),
+        ...(companionEnvironment ? { keyOverride: currentHostKey } : {}),
         ...(accountProviderId ? { providerId: accountProviderId } : {}),
         ...(sessionSqliteHome ? { sqliteHome: sessionSqliteHome } : {}),
         ...(sessionStorage ? { historyHome: sessionStorage.historyHome } : {}),

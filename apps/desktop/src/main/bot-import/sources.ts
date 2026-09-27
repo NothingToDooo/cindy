@@ -1,5 +1,6 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { importedScriptName } from './scripts.js';
 import JSON5 from 'json5';
 import yaml from 'js-yaml';
 import { parse as parseEnv } from 'dotenv';
@@ -222,7 +223,7 @@ export async function inspectImportSource(source: ImportSource, deps: SourceRead
     await document(items, source.root, 'SOUL.md', 'identity', 'personality');
     await document(items, source.root, 'USER.md', 'user', 'memory');
     // Hermes-specific context files take precedence, rather than concatenating conflicting files.
-    for (const filename of ['.hermes.md', 'HERMES.md', 'AGENTS.md', 'CLAUDE.md']) {
+    for (const filename of ['.hermes.md', 'HERMES.md']) {
       const before = items.length;
       await document(items, workspace, filename, 'instructions', 'personality');
       if (items.length !== before) break;
@@ -272,8 +273,11 @@ export async function inspectImportSource(source: ImportSource, deps: SourceRead
   }
   await connections(items, source, values, deps);
   if (source.kind === 'hermes' && (await directories(source.root)).includes('scripts')) {
-    const usedScripts = new Set(jobs.flatMap(job => [string(job.script), string(job.monitor_script)]).filter(Boolean).map(file => path.relative(path.join(source.root, 'scripts'), sourcePath(deps.home, file, path.join(source.root, 'scripts')))));
-    for (const file of await readImportTree(path.join(source.root, 'scripts'))) items.push({ view: { id: entryId('script', file.name), category: 'connections', name: `scripts/${file.name}`, selected: usedScripts.has(file.name) }, asset: { name: `scripts/${file.name}`, bytes: file.bytes } });
+    const usedScripts = new Set(jobs.flatMap(job => [string(job.script), string(job.monitor_script)]).filter(Boolean).flatMap(file => {
+      try { return [importedScriptName(source.root, sourcePath(deps.home, file, path.join(source.root, 'scripts')))]; }
+      catch { return []; }
+    }));
+    for (const file of await readImportTree(path.join(source.root, 'scripts'))) items.push({ view: { id: entryId('script', file.name), category: 'connections', name: `scripts/${file.name}`, selected: usedScripts.has(`scripts/${file.name}`) }, asset: { name: `scripts/${file.name}`, bytes: file.bytes } });
   }
   const row = source.kind === 'openclaw' ? agentRows(values).find(row => row.id === source.agentId) ?? {} : values;
   const tools = source.kind === 'openclaw' ? { ...(values.tools ? { global: values.tools } : {}), ...(row.tools ? { agent: row.tools } : {}) } : object(values.tools);

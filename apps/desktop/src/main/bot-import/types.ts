@@ -38,6 +38,8 @@ export interface ImportItem {
   view: CompanionImportEntry;
   files?: ImportFile[];
   sourceDirectory?: string;
+  /** Selected skill resources have been captured for copying, verification and restart. */
+  filesComplete?: boolean;
   text?: string;
   role?: 'identity' | 'user' | 'instructions';
   env?: Record<string, string>;

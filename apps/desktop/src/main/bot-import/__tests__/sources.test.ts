@@ -76,3 +76,24 @@ describe('installed agent imports', () => {
     expect(reader.readCronDatabase).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'main', defaultAgent: true }));
   });
 });
+
+it('imports Hermes context without turning unrelated repository instructions into personality', async () => {
+  await write('.hermes/config.yaml', 'name: Ada\n');
+  await write('.hermes/AGENTS.md', 'Only obey repository coding rules');
+  await write('.hermes/CLAUDE.md', 'Project build instructions');
+  const reader = deps(); const [source] = await discoverImportSources(reader);
+  expect((await inspectImportSource(source!, reader)).items.filter(item => item.role === 'instructions')).toEqual([]);
+  await write('.hermes/HERMES.md', 'Speak gently and briefly.');
+  expect((await inspectImportSource(source!, reader)).items.find(item => item.role === 'instructions')?.text).toBe('Speak gently and briefly.');
+});
+
+it('selects nested automation scripts using the same portable asset identity as dependencies', async () => {
+  await write('.hermes/config.yaml', 'name: Ada\n');
+  await write('.hermes/scripts/reports/daily.sh', 'printf report');
+  await write('.hermes/cron/jobs.json', JSON.stringify([{ id: 'daily', script: path.join('reports', 'daily.sh'), no_agent: true, schedule: { kind: 'interval', minutes: 5 } }]));
+  const reader = deps(); const [source] = await discoverImportSources(reader);
+  const snapshot = await inspectImportSource(source!, reader);
+  const script = snapshot.items.find(item => item.asset)!;
+  expect(script.view.selected).toBe(true);
+  expect(snapshot.items.find(item => item.automation)?.view.dependsOn).toContain(script.view.id);
+});

@@ -1,4 +1,3 @@
-import { mergeSessionEnvironment } from '../shared/session-environment.js';
 import { getPiExtensionUiCapability } from './extension-ui-capabilities.js';
 import { parsePiManagementArgs, parsePiManagementText } from './managed-command.js';
 import { snapshotDisabledSkillLaunch, currentDisabledSkillLaunchPaths, extendDisabledSkillLaunchPaths, type DisabledSkillLaunchSnapshot } from '../shared/skill-activation.js';
@@ -5148,7 +5147,7 @@ export class PiAgent extends BaseAgent {
       const companionEnvironment = opts.botRuntimeProfile && !remote && opts.sessionId
         ? await this.deps.resolveSessionEnvironment?.(opts.sessionId) : undefined;
       const spawnEnv: NodeJS.ProcessEnv = {
-        ...(remote ? {} : mergeSessionEnvironment(process.env, companionEnvironment?.env)),
+        ...(remote ? {} : process.env),
         ...(typeof this.deps.runtimeConfig.behaviorFlags === 'function'
           ? this.deps.runtimeConfig.behaviorFlags({
               credentialMode,

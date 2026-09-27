@@ -40,7 +40,19 @@ export function runImportedProcess(input: {
 }
 
 export function redactEnvironmentValues(text: string, env: Record<string, string>): string {
-  let result = text;
-  for (const [key, value] of Object.entries(env)) if (value.length >= 8 && /TOKEN|SECRET|PASSWORD|API_KEY|AUTH/i.test(key)) result = result.split(value).join(`[${key}]`);
-  return result;
+  // Source variable names are arbitrary (PATs and credential-bearing URLs need
+  // no TOKEN suffix). Match in one pass so replacements cannot redact each other.
+  const values = new Map(Object.entries(env).filter(([, value]) => value.length > 0).map(([name, value]) => [value, `[${name}]`]));
+  if (!values.size) return text;
+  const pattern = [...values.keys()].sort((a, b) => b.length - a.length)
+    .map(value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+  return text.replace(new RegExp(pattern, 'g'), value => values.get(value)!);
+}
+
+/** Redact string values without corrupting JSON numbers or booleans. */
+export function redactEnvironmentData<T>(value: T, env: Record<string, string>): T {
+  if (typeof value === 'string') return redactEnvironmentValues(value, env) as T;
+  if (Array.isArray(value)) return value.map(child => redactEnvironmentData(child, env)) as T;
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, redactEnvironmentData(child, env)])) as T;
+  return value;
 }

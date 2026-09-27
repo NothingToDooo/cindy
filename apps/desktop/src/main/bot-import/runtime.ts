@@ -33,5 +33,5 @@ export async function readCompanionSessionEnvironment(sessionId: string) {
 
 export async function resolveCompanionRuntimeEnvironment(sessionId: string) {
   const result = await readCompanionSessionEnvironment(sessionId);
-  return result ? { identity: result.identity, env: result.environment.env, assertCurrent: result.assertOwner } : undefined;
+  return result ? { identity: result.identity, assertCurrent: result.assertOwner } : undefined;
 }

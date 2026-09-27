@@ -177,6 +177,12 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
         await getBotMemoryService().importDocument(botId, item.view.id, item.view.name, item.text, item.role === 'user' ? 'user' : 'reference');
       }
     },
+    async saveCheckpoint(botId, items) {
+      const previous = await companionEnvironmentStore.read(scope.root, botId, scope.assert);
+      const pendingImport = { selection, snapshotJson: JSON.stringify({ ...snapshot, avatarImageBase64: selection.avatarImageBase64, items }) };
+      if (previous) await companionEnvironmentStore.update(scope.root, botId, scope.assert, environment => { environment.pendingImport = pendingImport; });
+      else await companionEnvironmentStore.write(scope.root, botId, { version: 1, env: {}, mcp: [], credentials: [], pendingImport }, scope.assert);
+    },
     async saveEnvironment(botId, items) {
       const previous = await companionEnvironmentStore.read(scope.root, botId, scope.assert);
       const chosen = new Set(items.map(item => item.view.id));
@@ -229,7 +235,7 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
       });
       return routine.id;
     },
-    verifyAutomation: (botId, item) => verifyImportedAutomation(scope.root, botId, item, scope.assert, selected),
+    verifyAutomation: (botId, item) => verifyImportedAutomation(scope.root, botId, item, scope.assert, selected, snapshot.source.root),
     pauseSource: (item, source, resumeInterruptedPause) => changeSourceAutomationState(source.source, item, false, readers(), scope.assert, resumeInterruptedPause),
     resumeSource: (item, source) => changeSourceAutomationState(source.source, item, true, readers(), scope.assert),
     async enableRoutine(botId, routineId, item) {

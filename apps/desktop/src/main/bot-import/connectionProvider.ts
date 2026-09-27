@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { runImportedProcess, redactEnvironmentValues } from './process.js';
+import { runImportedProcess, redactEnvironmentValues, redactEnvironmentData } from './process.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, type Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { McpProvider } from '@cindy/maker-core';
@@ -70,7 +70,14 @@ export function createCompanionConnectionsProvider(): McpProvider {
             } while (cursor);
             return undefined;
           }, { identity: scope.identity, signal: extra.signal });
-          if (result) return JSON.parse(redactEnvironmentValues(JSON.stringify(result), scope.environment.env));
+          if (result) {
+            const redacted = redactEnvironmentData(result, scope.environment.env);
+            // Preserve MCP content discriminators even if a source variable happens
+            // to contain "text". Business strings and structured data stay redacted.
+            const originalContent = result.content;
+            if (Array.isArray(originalContent) && Array.isArray(redacted.content)) redacted.content = redacted.content.map((block, index) => ({ ...block, type: originalContent[index]!.type }));
+            return redacted;
+          }
         }
         throw new Error('Companion tool unavailable');
       });
