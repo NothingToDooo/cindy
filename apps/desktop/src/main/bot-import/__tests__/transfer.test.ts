@@ -81,6 +81,20 @@ describe('companion takeover transaction', () => {
     expect((await transferCompanion(snapshot, selection, deps)).status).toBe('complete');
     expect(vi.mocked(deps.pauseSource).mock.calls[1]?.[2]).toBe(true);
   });
+  it('retains the pause intent on owner change and reconciles it only when that owner returns', async () => {
+    const { deps, receipt } = harness(); let owns = true;
+    vi.mocked(deps.assertOwner).mockImplementation(() => { if (!owns) throw new CompanionImportError('OWNER_CHANGED'); });
+    vi.mocked(deps.pauseSource).mockImplementationOnce(async () => { owns = false; throw new CompanionImportError('OWNER_CHANGED'); });
+    await expect(transferCompanion(snapshot, selection, deps)).rejects.toThrow('OWNER_CHANGED');
+    expect(receipt()?.routines.task?.phase).toBe('pausing-source');
+    expect(deps.enableRoutine).not.toHaveBeenCalled(); expect(deps.resumeSource).not.toHaveBeenCalled();
+    await expect(transferCompanion(snapshot, selection, deps)).rejects.toThrow('OWNER_CHANGED');
+    expect(deps.pauseSource).toHaveBeenCalledTimes(1);
+    owns = true;
+    expect((await transferCompanion(snapshot, selection, deps)).status).toBe('complete');
+    expect(vi.mocked(deps.pauseSource).mock.calls[1]?.[2]).toBe(true);
+    expect(deps.createRoutine).toHaveBeenCalledTimes(1); expect(deps.enableRoutine).toHaveBeenCalledTimes(1);
+  });
 
 });
 

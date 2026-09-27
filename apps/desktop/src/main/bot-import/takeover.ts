@@ -1,12 +1,9 @@
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { inspectImportSource, type SourceReaderDeps } from './sources.js';
 import { fingerprint } from './files.js';
 import { CompanionImportError, object, type ImportItem, type ImportSource } from './types.js';
-
-const exec = promisify(execFile);
+import { importedProcessEnvironment, runImportedProcess } from './process.js';
 
 function definition(job: Record<string, unknown>): string {
   const { enabled: _enabled, state: _state, paused_at: _pausedAt, paused_reason: _pausedReason,
@@ -17,9 +14,9 @@ function definition(job: Record<string, unknown>): string {
   return fingerprint(rest);
 }
 
-async function binary(source: ImportSource, home: string): Promise<string> {
+async function binary(source: ImportSource, home: string, env: Record<string, string>): Promise<string> {
   const name = source.kind === 'hermes' ? 'hermes' : 'openclaw';
-  const folders = [path.join(home, '.local', 'bin'), ...(process.env.PATH ?? '').split(path.delimiter), '/opt/homebrew/bin', '/usr/local/bin'];
+  const folders = [path.join(home, '.local', 'bin'), ...(env.PATH ?? '').split(path.delimiter), '/opt/homebrew/bin', '/usr/local/bin'];
   for (const dir of folders) {
     for (const suffix of process.platform === 'win32' ? ['.exe', '.cmd', '.bat', ''] : ['']) {
       const file = path.join(dir, `${name}${suffix}`);
@@ -31,7 +28,7 @@ async function binary(source: ImportSource, home: string): Promise<string> {
 
 /** Native commands own the source lock/gateway. Never edit a live cron JSON or SQLite file. */
 export async function changeSourceAutomationState(source: ImportSource, item: ImportItem, enabled: boolean,
-  readers: SourceReaderDeps, assertOwner: () => void, resumeInterruptedPause = false): Promise<void> {
+  readers: SourceReaderDeps, assertOwner: () => void, resumeInterruptedPause = false, selectedEnvironment: Record<string, string> = {}): Promise<void> {
   const original = item.automation;
   if (!original || !/^[a-zA-Z0-9_-]{1,128}$/.test(original.sourceId)) throw new CompanionImportError('SOURCE_AUTOMATION_INVALID');
   const readCurrent = async () => {
@@ -47,15 +44,19 @@ export async function changeSourceAutomationState(source: ImportSource, item: Im
     if (enabled || resumeInterruptedPause) return;
     throw new CompanionImportError('SOURCE_AUTOMATION_CHANGED');
   }
-  const command = await binary(source, readers.home); assertOwner();
+  const env = importedProcessEnvironment({ ...selectedEnvironment,
+    ...(source.kind === 'hermes' ? { HERMES_HOME: source.root } : { OPENCLAW_STATE_DIR: source.root, OPENCLAW_CONFIG_PATH: source.configFile }) });
+  const command = await binary(source, readers.home, env); assertOwner();
   const args = ['cron', source.kind === 'hermes' ? enabled ? 'resume' : 'pause' : enabled ? 'enable' : 'disable', original.sourceId];
-  const env = { ...process.env, ...(source.kind === 'hermes' ? { HERMES_HOME: source.root } : { OPENCLAW_STATE_DIR: source.root, OPENCLAW_CONFIG_PATH: source.configFile }) };
   let commandFailed = false;
   try {
-    if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(command)) {
-      // Every argument except the trusted executable is fixed text or a validated portable ID.
-      await exec(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `""${command}" ${args.join(' ')}"`], { env, timeout: 30_000, maxBuffer: 1024 * 1024, windowsHide: true });
-    } else await exec(command, args, { env, timeout: 30_000, maxBuffer: 1024 * 1024, windowsHide: true });
+    const batch = process.platform === 'win32' && /\.(cmd|bat)$/i.test(command);
+    // The shared runner terminates the entire child tree when ownership changes.
+    // The persisted pausing-source phase remains for same-owner reconciliation.
+    const result = await runImportedProcess({ command: batch ? env.COMSPEC || 'cmd.exe' : command,
+      args: batch ? ['/d', '/s', '/c', `""${command}" ${args.join(' ')}"`] : args,
+      cwd: source.root, env, timeoutMs: 30_000, signal: new AbortController().signal, assertOwner });
+    commandFailed = result.exitCode !== 0;
   } catch { commandFailed = true; }
   assertOwner();
   let after: ImportItem;

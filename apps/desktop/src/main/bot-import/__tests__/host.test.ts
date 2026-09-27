@@ -6,12 +6,12 @@ import type { Routine, RoutineInput } from '@cindy/maker-scheduler';
 import { createCompanionEnvironmentStore } from '../environment.js';
 import type { ImportSnapshot } from '../types.js';
 
-const h = vi.hoisted(() => ({ root: '', created: false, verified: false, sourceEnabled: true, failReadyWrite: false,
+const h = vi.hoisted(() => ({ root: '', created: false, verified: false, sourceEnabled: true, failReadyWrite: false, boundary: false,
   snapshot: null as unknown as ImportSnapshot, store: null as unknown as ReturnType<typeof createCompanionEnvironmentStore>,
-  routines: [] as Routine[], pause: vi.fn(),
+  routines: [] as Routine[], pause: vi.fn(), sourceEnvironment: {} as Record<string, string>,
 }));
 vi.mock('electron', () => ({ app: { getPath: () => h.root } }));
-vi.mock('../../appSessionState.js', () => ({ activeOwnerScopeKey: () => h.root, ownerScopedUserDataPath: () => h.root, getActiveAppSession: () => ({ dataOwnerId: 'fixture-owner' }), isAppSessionBoundaryPending: () => false }));
+vi.mock('../../appSessionState.js', () => ({ activeOwnerScopeKey: () => h.root, ownerScopedUserDataPath: () => h.root, getActiveAppSession: () => ({ dataOwnerId: 'fixture-owner' }), isAppSessionBoundaryPending: () => h.boundary }));
 vi.mock('../../localDb/ipc/bots.js', () => ({
   listBotRemoteResourceSources: async () => [],
   getBotRemoteResourceSource: async () => { if (!h.created) throw new Error('[NOT_FOUND]'); return { canonicalSessionId: 'chat' }; },
@@ -24,7 +24,7 @@ vi.mock('../../maker-ipc/botSkillStore.js', () => ({ importBotSkillFiles: vi.fn(
 vi.mock('../sources.js', () => ({ discoverImportSources: async () => [h.snapshot.source], inspectImportSource: async () => h.snapshot }));
 vi.mock('../openclawCron.js', () => ({ readOpenClawCronDatabase: vi.fn() }));
 vi.mock('../verification.js', () => ({ verifyImportedAutomation: async () => ({ verified: h.verified, reason: 'AUTOMATION_DATA_READ_FAILED' }) }));
-vi.mock('../takeover.js', () => ({ changeSourceAutomationState: async (_source: unknown, _item: unknown, enabled: boolean) => { h.pause(enabled); h.sourceEnabled = enabled; } }));
+vi.mock('../takeover.js', () => ({ changeSourceAutomationState: async (_source: unknown, _item: unknown, enabled: boolean, _readers: unknown, _owner: unknown, _resume: boolean, env: Record<string, string>) => { h.pause(enabled); h.sourceEnabled = enabled; h.sourceEnvironment = env; } }));
 vi.mock('../runtime.js', () => ({ companionEnvironmentStore: {
   read: (...args: Parameters<typeof h.store.read>) => h.store.read(...args),
   write: (...args: Parameters<typeof h.store.write>) => h.store.write(...args),
@@ -46,12 +46,12 @@ vi.mock('../../routines/service.js', () => ({
     h.routines = h.routines.map(row => row.id === id ? { ...row, ...input, revision: row.revision + 1 } : row);
   } }),
 }));
-import { listCompanionImportSources, previewCompanionImport, startCompanionImport, getCompanionImportResult } from '../host.js';
+import { listCompanionImportSources, previewCompanionImport, startCompanionImport, getCompanionImportResult, recoverCompanionImports } from '../host.js';
 import { assertImportedAutomationReady, prepareImportedAutomation } from '../automationRuntime.js';
 
 beforeEach(async () => {
   h.root = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-import-host-test-'));
-  h.created = false; h.verified = false; h.sourceEnabled = true; h.failReadyWrite = false; h.routines = []; h.pause.mockClear();
+  h.created = false; h.verified = false; h.sourceEnabled = true; h.failReadyWrite = false; h.boundary = false; h.routines = []; h.pause.mockClear(); h.sourceEnvironment = {};
   const values = new Map<string, string>();
   h.store = createCompanionEnvironmentStore({ read: key => values.get(key) ?? null, write: (key, value) => {
     if (h.failReadyWrite && Object.values<{ handover?: string }>(JSON.parse(value).automations ?? {}).some(binding => binding.handover === 'ready')) { h.failReadyWrite = false; return false; }
@@ -63,6 +63,50 @@ beforeEach(async () => {
   }] };
 });
 afterEach(async () => { await fs.rm(h.root, { recursive: true, force: true }); });
+
+it.each(['scan', 'same-request'] as const)('recovers an indexed checkpoint before receipt acknowledgement through %s', async recovery => {
+  h.verified = true;
+  h.snapshot.items.push(
+    { view: { id: 'selected-env', name: 'Selected', category: 'connections', selected: true }, env: { SOURCE_KEY: 'fake-selected-credential' } },
+    { view: { id: 'excluded-env', name: 'Excluded', category: 'connections', selected: false }, env: { UNUSED_KEY: 'fake-excluded-credential' } },
+  );
+  const [source] = await listCompanionImportSources('fixture');
+  const preview = await previewCompanionImport(source!.id, 'fixture');
+  const selection = { requestId: 'fixture-request-12345', previewId: preview.id, name: 'Ada', entryIds: ['task', 'selected-env'], takeover: true };
+  const receiptFile = path.join(h.root, 'companion-imports', `${selection.requestId}.json`);
+  const write = h.store.write.bind(h.store);
+  let release!: () => void; const pause = new Promise<void>(resolve => { release = resolve; });
+  let checkpointWritten = false; let botId = ''; let acknowledged = false;
+  vi.spyOn(h.store, 'write').mockImplementationOnce(async (...args) => {
+    // A restart can discover the request even before the checkpoint flag is saved.
+    const index = await fs.readFile(receiptFile, 'utf8');
+    expect(index).not.toContain('fake-selected-credential'); expect(index).not.toContain('fake-excluded-credential');
+    expect(JSON.parse(index)).toMatchObject({ result: { requestId: selection.requestId, status: 'running', botId: args[1] } });
+    expect(JSON.parse(index).checkpointSaved).not.toBe(true);
+    await write(...args); botId = args[1]; checkpointWritten = true;
+    await pause; h.boundary = true; // Simulates stopping before the acknowledgement write.
+  });
+  const pending = startCompanionImport(selection, 'fixture').then(value => { acknowledged = true; return value; }).catch(error => error);
+  try {
+    await vi.waitFor(() => expect(checkpointWritten).toBe(true));
+    // Several acknowledgement polling ticks must not accept the index alone.
+    await new Promise(resolve => setTimeout(resolve, 100));
+    expect(acknowledged).toBe(false); expect(h.created).toBe(false);
+    const stored = (await h.store.read(h.root, botId, () => {}))!.pendingImport!;
+    expect(stored.snapshotJson).toContain('fake-selected-credential');
+    expect(stored.snapshotJson).not.toContain('fake-excluded-credential');
+  } finally { release(); }
+  expect(await pending).toMatchObject({ code: 'OWNER_CHANGED' });
+  h.boundary = false;
+  // A new controller cannot use the old in-memory preview; both paths use the checkpoint.
+  if (recovery === 'scan') await recoverCompanionImports();
+  else await startCompanionImport(selection, 'restarted-controller');
+  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('complete'));
+  expect(h.routines).toHaveLength(1); expect(h.routines[0]?.enabled).toBe(true);
+  expect(h.pause).toHaveBeenCalledExactlyOnceWith(false);
+  expect((await h.store.read(h.root, botId, () => {}))?.env).toEqual({ SOURCE_KEY: 'fake-selected-credential' });
+  expect(h.sourceEnvironment).toEqual({ SOURCE_KEY: 'fake-selected-credential' });
+});
 
 it('persists a failed handover, blocks use, and unlocks the same routine only after a successful retry', async () => {
   const [source] = await listCompanionImportSources('fixture');

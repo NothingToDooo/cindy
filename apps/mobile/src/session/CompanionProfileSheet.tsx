@@ -454,7 +454,7 @@ function CompanionCreateSheetContent({ visible, onClose, onClosed, deviceId, dev
     finally { if (current.current === sequence) setLoading(false); }
   };
   useEffect(() => {
-    if (visible) { requestId.current = null; setPortraitChanged(false); setNameTaken(false); setUnconfirmed(false); setValues({ name: '', avatarImageBase64: randomCompanionPortrait() }); }
+    if (visible) { setImporting(false); setOpeningImport(false); requestId.current = null; setPortraitChanged(false); setNameTaken(false); setUnconfirmed(false); setValues({ name: '', avatarImageBase64: randomCompanionPortrait() }); }
   }, [visible]);
   useEffect(() => {
     setData(null); setError(false);

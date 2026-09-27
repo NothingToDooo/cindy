@@ -61,8 +61,8 @@ export async function transferCompanion(snapshot: ImportSnapshot, selection: Com
   };
   receipt.result.status = 'running';
   receipt.result.checks = receipt.result.checks.filter(item => item.entryId !== 'import');
-  // Capture only selected resources before publishing an accepted receipt. The
-  // same bytes feed copying, read verification and recovery without source files.
+  // Capture only selected resources, then publish a non-secret request index
+  // before storing credentials. Acceptance still waits for the full checkpoint.
   if (!receipt.checkpointSaved) {
     for (const item of items) {
       if (item.sourceDirectory && !item.filesComplete) {
@@ -71,6 +71,7 @@ export async function transferCompanion(snapshot: ImportSnapshot, selection: Com
         deps.assertOwner();
       }
     }
+    await save();
     await deps.saveCheckpoint(botId, items);
     deps.assertOwner();
     receipt.checkpointSaved = true;

@@ -254,8 +254,8 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
       return routine.id;
     },
     verifyAutomation: (botId, item) => verifyImportedAutomation(scope.root, botId, item, scope.assert, selected, snapshot.source.root),
-    pauseSource: (item, source, resumeInterruptedPause) => changeSourceAutomationState(source.source, item, false, readers(), scope.assert, resumeInterruptedPause),
-    resumeSource: (item, source) => changeSourceAutomationState(source.source, item, true, readers(), scope.assert),
+    pauseSource: (item, source, resumeInterruptedPause) => changeSourceAutomationState(source.source, item, false, readers(), scope.assert, resumeInterruptedPause, selectedImportEnvironment(selected)),
+    resumeSource: (item, source) => changeSourceAutomationState(source.source, item, true, readers(), scope.assert, false, selectedImportEnvironment(selected)),
     async enableRoutine(botId, routineId, item) {
       const routine = (await routineTools.list(botId)).find(item => item.id === routineId); scope.assert();
       if (!routine) throw new CompanionImportError('AUTOMATION_NOT_FOUND');
@@ -318,13 +318,14 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
 }
 
 async function accepted(task: Promise<CompanionImportResult>, root: string, requestId: string): Promise<CompanionImportResult> {
-  // Accept only after the durable receipt exists. Completion keeps running on the host.
+  // An index alone cannot recover the selection. Accept after the checkpoint is
+  // acknowledged; completion keeps running on the host.
   let finished = false;
   void task.then(() => { finished = true; }, () => { finished = true; });
   const receipt = (async () => {
     while (!finished) {
       const value = await readReceipt(root, requestId);
-      if (value) return value.result;
+      if (value && (value.checkpointSaved || value.environmentSaved)) return value.result;
       await new Promise(resolve => setTimeout(resolve, 40));
     }
     return task;

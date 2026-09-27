@@ -157,8 +157,8 @@ it('shows a spinner, not loading text, while an editor loads', async () => {
   await act(async () => finish(home()));
 });
 
-async function renderCreate() {
-  await act(async () => root.render(createElement(CompanionCreateSheet, { visible: true, deviceId: 'host', deviceName: 'Mac', collectionId: 'teammates', online: true, onClose: h.close, onCreated: h.created })));
+async function renderCreate(visible = true, online = true) {
+  await act(async () => root.render(createElement(CompanionCreateSheet, { visible, deviceId: 'host', deviceName: 'Mac', collectionId: 'teammates', online, onClose: h.close, onCreated: h.created })));
   await settle();
 }
 const createPanel = (disabled = false) => ({ resource: { ...resource, ref: { ...ref, id: 'create' } }, panels: [{ id: 'create', values: {}, action: { id: 'create-grant', label: 'Create', disabled,
@@ -177,6 +177,31 @@ it('opens the import source picker after the existing creation sheet closes', as
   expect(byText('Ada · Hermes')).toBeDefined();
   expect(h.close).not.toHaveBeenCalled();
   expect(h.created).not.toHaveBeenCalled();
+});
+
+it('reopens normal creation and starts a fresh import after closing, while preserving an open import on reconnect', async () => {
+  const data = createPanel();
+  h.read.mockResolvedValue({ ...data, resource: { ...data.resource, actions: [{ id: 'open-agent-import', label: 'Import' }] } });
+  const sources = { blocks: [{ primitive: 'companion-import', data: { sources: [{ id: 'source', name: 'Ada', kind: 'hermes' }] } }] };
+  h.invoke.mockResolvedValue(sources);
+  await renderCreate(); await press(byText('devices.companionImport.entry'));
+  await act(async () => h.sheet.onClosed()); await settle();
+  h.invoke.mockResolvedValueOnce({ blocks: [{ primitive: 'companion-import', data: { preview: { id: 'preview', source: { id: 'source', kind: 'hermes', name: 'Ada' }, name: 'Old import draft', entries: [] } } }] });
+  await press(byText('Ada · Hermes'));
+  const name = () => container.querySelector<HTMLInputElement>('input[aria-label="devices.companionProfile.name"]');
+  expect(name()?.value).toBe('Old import draft');
+  await renderCreate(true, false); await renderCreate(true, true);
+  expect(name()?.value).toBe('Old import draft');
+  await act(async () => h.sheet.onClose()); expect(h.close).toHaveBeenCalledOnce();
+  await renderCreate(false); await renderCreate(true);
+  expect(byText('devices.companionImport.entry')).toBeDefined();
+  expect(container.querySelector<HTMLInputElement>('input[aria-label="Name"]')?.value).toBe('');
+  expect(name()).toBeNull();
+  await press(byText('devices.companionImport.entry'));
+  await act(async () => h.sheet.onClosed()); await settle();
+  expect(byText('Ada · Hermes')).toBeDefined();
+  expect(name()).toBeNull();
+  expect(byText('devices.companionImport.submit')).toBeUndefined();
 });
 
 it('gates Create like iOS and offers an explicit Cancel that guards the draft', async () => {
