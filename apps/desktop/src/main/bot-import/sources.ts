@@ -1,8 +1,9 @@
-import { markImportEnvironmentChoices, resolveImportEnvironmentDependencies } from './environmentSelection.js';
+import { markImportEnvironmentChoices, previewImportRedactions, resolveImportEnvironmentDependencies } from './environmentSelection.js';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { importedScriptName, isImportedScriptDependency } from './scripts.js';
 import JSON5 from 'json5';
+import { redactEnvironmentValues } from './process.js';
 import yaml from 'js-yaml';
 import { parse as parseEnv } from 'dotenv';
 import { createImportBudget, fingerprint, optionalText, readImportFile, readImportTree, snapshotFingerprint, type ImportReadBudget } from './files.js';
@@ -24,9 +25,9 @@ function sourcePath(home: string, value: string, relativeTo: string): string {
   return value === '~' ? home : value.startsWith('~/') ? path.join(home, value.slice(2)) : path.resolve(relativeTo, value);
 }
 
-async function config(root: string, file: string, budget = createImportBudget(), ancestors: string[] = []): Promise<Record<string, unknown>> {
+async function config(root: string, file: string, budget = createImportBudget(), ancestors: string[] = [], readText = optionalText): Promise<Record<string, unknown>> {
   if (ancestors.includes(file) || ancestors.length > 8) throw new CompanionImportError('SOURCE_CONFIG_INCLUDE_CYCLE');
-  const text = await optionalText(root, file, budget);
+  const text = await readText(root, file, budget);
   if (text === undefined) return {};
   try {
     const resolve = async (value: unknown): Promise<unknown> => {
@@ -37,7 +38,7 @@ async function config(root: string, file: string, budget = createImportBudget(),
       let result: Record<string, unknown> = {};
       for (const include of includes) {
         if (typeof include !== 'string') throw new Error('Invalid include');
-        result = mergeConfig(result, await config(root, path.resolve(path.dirname(file), include), budget, [...ancestors, file]));
+        result = mergeConfig(result, await config(root, path.resolve(path.dirname(file), include), budget, [...ancestors, file], readText));
       }
       for (const [key, child] of Object.entries(record)) if (key !== '$include' && !['__proto__', 'constructor', 'prototype'].includes(key)) result = mergeConfig(result, { [key]: await resolve(child) });
       return result;
@@ -118,8 +119,8 @@ function scalarEnv(value: unknown): Record<string, string> {
     /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(entry[0]) && !['__proto__', 'prototype', 'constructor'].includes(entry[0]) && typeof entry[1] === 'string'));
 }
 
-async function connections(items: ImportItem[], source: ImportSource, values: Record<string, unknown>, deps: SourceReaderDeps, budget: ImportReadBudget) {
-  const dotenv = parseEnv(await optionalText(source.root, path.join(source.root, '.env'), budget) ?? '');
+async function connections(items: ImportItem[], source: ImportSource, values: Record<string, unknown>, deps: SourceReaderDeps, budget: ImportReadBudget, readText = optionalText) {
+  const dotenv = parseEnv(await readText(source.root, path.join(source.root, '.env'), budget) ?? '');
   const envConfig = object(values.env);
   const env = { ...dotenv, ...scalarEnv(envConfig), ...scalarEnv(envConfig.vars) };
   for (const [name, value] of Object.entries(env)) {
@@ -172,7 +173,7 @@ async function connections(items: ImportItem[], source: ImportSource, values: Re
     }
     if (!token && typeof settings.tokenFile === 'string') {
       const file = sourcePath(deps.home, settings.tokenFile, source.root);
-      token = (await optionalText(path.dirname(file), file, budget))?.trim() ?? '';
+      token = (await readText(path.dirname(file), file, budget))?.trim() ?? '';
     }
     if (token) items.push({ view: { id: entryId('telegram', account), name: `Telegram · ${account}`, category: 'connections', selected: true, dependsOn: references.map(key => entryId('env', key)) }, envDependencies: { names: references, entries: [] }, credential: { format: 'telegram', value: { token, account } } });
   }
@@ -180,7 +181,7 @@ async function connections(items: ImportItem[], source: ImportSource, values: Re
   // API keys have a direct environment equivalent; provider OAuth needs its native refresh adapter.
   const authFiles = source.kind === 'hermes' ? ['auth.json'] : [`agents/${source.agentId}/agent/auth-profiles.json`];
   for (const name of authFiles) {
-    const raw = await optionalText(source.root, path.join(source.root, name), budget);
+    const raw = await readText(source.root, path.join(source.root, name), budget);
     if (!raw) continue;
     let value: Record<string, unknown>;
     try { value = object(JSON.parse(raw)); } catch { throw new CompanionImportError('SOURCE_CREDENTIAL_INVALID'); }
@@ -223,6 +224,48 @@ async function skills(items: ImportItem[], roots: string[], used: Set<string>, b
         sourceDirectory: dir, files: referenced ? [manifest, ...await readImportTree(dir, name => name !== 'SKILL.md', budget)] : [manifest], filesComplete: referenced });
     }
   }
+}
+
+function sourceConfiguration(items: ImportItem[], source: ImportSource, values: Record<string, unknown>) {
+  const row = source.kind === 'openclaw' ? agentRows(values).find(row => row.id === source.agentId) ?? {} : values;
+  const tools = source.kind === 'openclaw' ? { ...(values.tools ? { global: values.tools } : {}), ...(row.tools ? { agent: row.tools } : {}) } : object(values.tools);
+  if (Object.keys(tools).length) items.push({ view: { id: entryId('configuration', 'tools'), name: 'tools', category: 'connections', selected: true, issues: ['SOURCE_TOOL_POLICY_NEEDS_MAPPING'] }, credential: { format: 'source-tools', value: tools } });
+  const nativeModel = source.kind === 'hermes' ? values.model : row.model ?? object(object(values.agents).defaults).model;
+  if (nativeModel) items.push({ view: { id: entryId('configuration', 'model'), name: 'model', category: 'connections', selected: true, issues: ['AUTOMATION_MODEL_NEEDS_MAPPING'] }, credential: { format: 'source-model', value: nativeModel } });
+}
+
+/** One discovery request shares a small metadata budget/cache. Never read cron,
+ * memory, portraits or skill trees until the user chooses a source for preview. */
+export function createImportSourceNameReader(deps: SourceReaderDeps, budget = createImportBudget(4 * 1024 * 1024)) {
+  const texts = new Map<string, Promise<string | undefined>>();
+  const configs = new Map<string, Promise<Record<string, unknown>>>();
+  const readText: typeof optionalText = (root, file) => {
+    // Include the trust root: a cached read must not bypass a narrower root fence.
+    const key = JSON.stringify([root, file]);
+    let pending = texts.get(key);
+    if (!pending) { pending = optionalText(root, file, budget); texts.set(key, pending); }
+    return pending;
+  };
+  return async (source: ImportSource): Promise<string> => {
+    let pending = configs.get(source.configFile);
+    if (!pending) {
+      pending = config(path.dirname(source.configFile), source.configFile, budget, [], readText);
+      configs.set(source.configFile, pending);
+    }
+    const values = await pending;
+    const items: ImportItem[] = [];
+    // Skill credential settings live in config; no manifest/resource read is
+    // needed to recognize their values, including unselected skills/API keys.
+    for (const [slug, raw] of Object.entries(object(object(values.skills).entries))) {
+      const settings = object(raw);
+      items.push({ view: { id: entryId('skill', slug), category: 'skills', name: slug, selected: false },
+        env: scalarEnv(settings.env), ...(typeof settings.apiKey === 'string'
+          ? { credential: { format: 'source-tools', value: { apiKey: settings.apiKey } } } : {}) });
+    }
+    await connections(items, source, values, deps, budget, readText);
+    sourceConfiguration(items, source, values);
+    return redactEnvironmentValues(source.name, previewImportRedactions(items));
+  };
 }
 
 /** Snapshot immutable bytes once, then give the client only a safe selection projection. */
@@ -293,10 +336,7 @@ export async function inspectImportSource(source: ImportSource, deps: SourceRead
     for (const file of await readImportTree(path.join(source.root, 'scripts'), undefined, budget)) items.push({ view: { id: entryId('script', file.name), category: 'connections', name: `scripts/${file.name}`, selected: isImportedScriptDependency(`scripts/${file.name}`, usedScripts) }, asset: { name: `scripts/${file.name}`, bytes: file.bytes } });
   }
   const row = source.kind === 'openclaw' ? agentRows(values).find(row => row.id === source.agentId) ?? {} : values;
-  const tools = source.kind === 'openclaw' ? { ...(values.tools ? { global: values.tools } : {}), ...(row.tools ? { agent: row.tools } : {}) } : object(values.tools);
-  if (Object.keys(tools).length) items.push({ view: { id: entryId('configuration', 'tools'), name: 'tools', category: 'connections', selected: true, issues: ['SOURCE_TOOL_POLICY_NEEDS_MAPPING'] }, credential: { format: 'source-tools', value: tools } });
-  const nativeModel = source.kind === 'hermes' ? values.model : row.model ?? object(object(values.agents).defaults).model;
-  if (nativeModel) items.push({ view: { id: entryId('configuration', 'model'), name: 'model', category: 'connections', selected: true, issues: ['AUTOMATION_MODEL_NEEDS_MAPPING'] }, credential: { format: 'source-model', value: nativeModel } });
+  sourceConfiguration(items, source, values);
   const heartbeat = source.kind === 'openclaw' ? object(row.heartbeat ?? object(object(values.agents).defaults).heartbeat) : object(values.heartbeat);
   if (Object.keys(heartbeat).length) {
     const heartbeatText = await optionalText(workspace, path.join(workspace, 'HEARTBEAT.md'), budget);

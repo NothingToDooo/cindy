@@ -9,11 +9,13 @@ import type { Routine, RoutineInput } from '@cindy/maker-scheduler';
 import { createCompanionEnvironmentStore } from '../environment.js';
 import type { ImportSnapshot } from '../types.js';
 import { CompanionImportError } from '../types.js';
+import { previewImportRedactions } from '../environmentSelection.js';
+import { redactEnvironmentValues } from '../process.js';
 
 const h = vi.hoisted(() => ({ root: '', botId: '', created: false, verified: false, sourceEnabled: true, failReadyWrite: false, boundary: false,
   snapshot: null as unknown as ImportSnapshot, store: null as unknown as ReturnType<typeof createCompanionEnvironmentStore>,
   routines: [] as Routine[], pause: vi.fn(), sourceEnvironment: {} as Record<string, string>,
-  writeProfile: vi.fn(), importDocument: vi.fn(),
+  writeProfile: vi.fn(), importDocument: vi.fn(), readName: vi.fn(),
 }));
 vi.mock('electron', () => ({ app: { getPath: () => h.root } }));
 vi.mock('../../appSessionState.js', () => ({ activeOwnerScopeKey: () => h.root, ownerScopedUserDataPath: () => h.root, getActiveAppSession: () => ({ dataOwnerId: 'fixture-owner' }), isAppSessionBoundaryPending: () => h.boundary }));
@@ -28,7 +30,7 @@ vi.mock('../../maker-ipc/botProfileFolder.js', () => ({ BOT_PROFILE_TEXT_MAX_BYT
   ensureBotWorkspaceDir: async () => { const directory = path.join(h.root, 'bots', h.botId, 'workspace'); await fs.mkdir(directory, { recursive: true }); return directory; },
 }));
 vi.mock('@cindy/mcps', () => ({ resolveLiziMcpSessionContext: () => ({ sessionId: 'chat' }) }));
-vi.mock('../sources.js', () => ({ discoverImportSources: vi.fn(async () => [h.snapshot.source]), inspectImportSource: vi.fn(async () => h.snapshot) }));
+vi.mock('../sources.js', () => ({ createImportSourceNameReader: vi.fn(() => h.readName), discoverImportSources: vi.fn(async () => [h.snapshot.source]), inspectImportSource: vi.fn(async () => h.snapshot) }));
 vi.mock('../openclawCron.js', () => ({ readOpenClawCronDatabase: vi.fn() }));
 vi.mock('../verification.js', () => ({ verifyImportedAutomation: vi.fn(async () => ({ verified: h.verified, reason: 'AUTOMATION_DATA_READ_FAILED' })) }));
 vi.mock('../takeover.js', () => ({ changeSourceAutomationState: async (_source: unknown, _item: unknown, enabled: boolean, _readers: unknown, _owner: unknown, _resume: boolean, env: Record<string, string>) => { h.pause(enabled); h.sourceEnabled = enabled; h.sourceEnvironment = env; } }));
@@ -60,7 +62,7 @@ import { withBotProfileLocks } from '../../maker-ipc/botProfileLock.js';
 import { assertImportedAutomationReady, prepareImportedAutomation } from '../automationRuntime.js';
 import { decodeBotAvatarImage } from '../../localDb/ipc/botAvatarSelection.js';
 import { createCompanionConnectionsProvider } from '../connectionProvider.js';
-import { discoverImportSources, inspectImportSource } from '../sources.js';
+import { createImportSourceNameReader, discoverImportSources, inspectImportSource } from '../sources.js';
 import { verifyImportedAutomation } from '../verification.js';
 
 beforeEach(async () => {
@@ -71,6 +73,8 @@ beforeEach(async () => {
   vi.mocked(decodeBotAvatarImage).mockReset();
   vi.mocked(discoverImportSources).mockReset().mockImplementation(async () => [h.snapshot.source]);
   vi.mocked(inspectImportSource).mockReset().mockImplementation(async () => h.snapshot);
+  vi.mocked(createImportSourceNameReader).mockReset().mockImplementation(() => h.readName);
+  h.readName.mockReset().mockImplementation(async source => redactEnvironmentValues(source.name, previewImportRedactions(h.snapshot.items)));
   const values = new Map<string, string>();
   h.store = createCompanionEnvironmentStore({ read: key => values.get(key) ?? null, write: (key, value) => {
     if (h.failReadyWrite && Object.values<{ handover?: string }>(JSON.parse(value).automations ?? {}).some(binding => binding.handover === 'ready')) { h.failReadyWrite = false; return false; }
@@ -204,7 +208,9 @@ it('lists an unreadable source with an opaque name without hiding healthy source
     if (source === unreadable) throw new Error('SOURCE_CREDENTIAL_INVALID');
     return h.snapshot;
   });
+  h.readName.mockImplementation(async source => { if (source === unreadable) throw new Error('SOURCE_CREDENTIAL_INVALID'); return source.name; });
   const listed = await listCompanionImportSources('fixture');
+  expect(inspectImportSource).not.toHaveBeenCalled();
   expect(listed.map(source => source.name)).toEqual(['Hermes · 1', 'Ada']);
   await expect(previewCompanionImport(listed[0]!.id, 'fixture')).rejects.toThrow('SOURCE_CREDENTIAL_INVALID');
   expect((await previewCompanionImport(listed[1]!.id, 'fixture')).name).toBe('Ada');
@@ -212,13 +218,14 @@ it('lists an unreadable source with an opaque name without hiding healthy source
 });
 
 it('rejects discovery if the account changes while building the name mask', async () => {
-  vi.mocked(inspectImportSource).mockImplementation(async () => { h.boundary = true; return h.snapshot; });
+  h.readName.mockImplementation(async () => { h.boundary = true; return 'Ada'; });
   await expect(listCompanionImportSources('fixture')).rejects.toThrow('OWNER_CHANGED');
 });
 
 it.each(['hermes', 'openclaw'] as const)('masks %s names from real source files before publishing the discovery list', async kind => {
   const actual = await vi.importActual<typeof import('../sources.js')>('../sources.js');
   vi.mocked(discoverImportSources).mockImplementation(deps => actual.discoverImportSources({ ...deps, env: {} }));
+  vi.mocked(createImportSourceNameReader).mockImplementation(deps => actual.createImportSourceNameReader({ ...deps, env: {} }));
   vi.mocked(inspectImportSource).mockImplementation((source, deps) => actual.inspectImportSource(source, { ...deps, env: {} }));
   const root = path.join(h.root, `.${kind}`);
   const secrets = ['fixture-dotenv-secret', 'fixture-header-secret', 'fixture-auth-secret', 'fixture-skill-secret'];

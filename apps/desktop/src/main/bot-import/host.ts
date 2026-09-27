@@ -17,7 +17,7 @@ import { withBotProfileLocks } from '../maker-ipc/botProfileLock.js';
 import { getRoutineEngine, routineTools } from '../routines/service.js';
 import { previewImportRedactions, retainedImportRedactions, resolveImportReferences, selectedImportEnvironment, selectedImportRedactions } from './environmentSelection.js';
 import { redactEnvironmentValues } from './process.js';
-import { discoverImportSources, inspectImportSource, type SourceReaderDeps } from './sources.js';
+import { createImportSourceNameReader, discoverImportSources, inspectImportSource, type SourceReaderDeps } from './sources.js';
 import { readOpenClawCronDatabase } from './openclawCron.js';
 import { companionEnvironmentStore, recoverCompanionEnvironmentRemovals } from './runtime.js';
 import { deserializeImportSnapshotAsync, fingerprint, serializeImportSnapshotAsync } from './files.js';
@@ -56,16 +56,17 @@ function owned<T>(entries: Map<string, Owned<T>>, id: string, controller: string
 
 export async function listCompanionImportSources(controller: string): Promise<CompanionImportSource[]> {
   const scope = owner();
-  const found = await discoverImportSources(readers()); scope.assert();
+  const deps = readers();
+  const found = await discoverImportSources(deps); scope.assert();
+  const readName = createImportSourceNameReader(deps);
   prune(sources);
   const result: CompanionImportSource[] = [];
-  // Inspect sequentially and discard each snapshot: discovery must use the same
-  // complete credential boundary as preview without retaining every source tree.
+  // Only credential metadata contributes to the list; full snapshots are built
+  // for the selected preview. Name masking shares cached config/token reads.
   for (const source of found) {
     let name = `${source.kind === 'hermes' ? 'Hermes' : 'OpenClaw'} · ${result.length + 1}`;
     try {
-      const snapshot = await inspectImportSource(source, readers());
-      name = redactEnvironmentValues(source.name, previewImportRedactions(snapshot.items));
+      name = await readName(source);
     } catch {
       // An unreadable source remains selectable, but its unchecked name is not
       // public. Preview reports the underlying failure through its usual path.

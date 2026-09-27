@@ -3,12 +3,12 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { discoverImportSources, inspectImportSource } from '../sources.js';
-import { changeSourceAutomationState } from '../takeover.js';
+import { changeSourceAutomationState, resolveSourceCli } from '../takeover.js';
 let root: string | undefined;
-afterEach(async () => { vi.unstubAllEnvs(); if (root) await fs.rm(root, { recursive: true, force: true }); });
+afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllEnvs(); if (root) await fs.rm(root, { recursive: true, force: true }); });
 it.skipIf(process.platform === 'win32').each(['hermes', 'openclaw'] as const)('uses native %s pause/resume with only the selected environment', async kind => {
   root = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-import-takeover-test-'));
-  const state = path.join(root, `.${kind}`); const bin = path.join(root, '.local/bin');
+  const state = path.join(root, `.${kind}`); const bin = path.join(root, 'host-bin');
   await fs.mkdir(path.join(state, 'cron'), { recursive: true }); await fs.mkdir(bin, { recursive: true });
   await fs.writeFile(path.join(state, kind === 'hermes' ? 'config.yaml' : 'openclaw.json'), kind === 'hermes' ? 'name: Fixture' : JSON.stringify({ agents: { list: [{ id: 'main', name: 'Fixture', workspace: state }] } }));
   const file = path.join(state, 'cron/jobs.json');
@@ -17,11 +17,15 @@ it.skipIf(process.platform === 'win32').each(['hermes', 'openclaw'] as const)('u
   vi.stubEnv('CINDY_UNRELATED_PAT', 'fake-unrelated-host-token');
   vi.stubEnv('HTTPS_PROXY', 'https://fake-host-proxy-credential.invalid');
   vi.stubEnv('HTTP_PROXY', 'https://fake-unselected-proxy.invalid');
-  const selected = { SOURCE_API_KEY: 'fake-selected-source-key', HTTPS_PROXY: 'https://fake-selected-proxy.invalid' };
+  const sourceBin = path.join(state, 'source-bin');
+  await fs.mkdir(sourceBin);
+  await fs.writeFile(path.join(sourceBin, kind), `#!${process.execPath}\nprocess.exit(99);`, { mode: 0o700 });
+  const selected = { PATH: sourceBin, COMSPEC: path.join(sourceBin, 'fake-cmd.exe'), SOURCE_API_KEY: 'fake-selected-source-key', HTTPS_PROXY: 'https://fake-selected-proxy.invalid' };
   await fs.writeFile(path.join(bin, kind), `#!${process.execPath}
 const fs = require('node:fs'), path = require('node:path');
 if (process.env.CINDY_UNRELATED_PAT || process.env.HTTP_PROXY || process.env.SOURCE_API_KEY !== 'fake-selected-source-key'
-  || process.env.HTTPS_PROXY !== 'https://fake-selected-proxy.invalid' || !process.env.PATH) process.exit(3);
+  || process.env.HTTPS_PROXY !== 'https://fake-selected-proxy.invalid' || process.env.PATH !== ${JSON.stringify(sourceBin)}
+  || process.env.COMSPEC !== ${JSON.stringify(selected.COMSPEC)}) process.exit(3);
 const sourceRoot = process.env.HERMES_HOME || process.env.OPENCLAW_STATE_DIR;
 if (process.env.OPENCLAW_STATE_DIR && process.env.OPENCLAW_CONFIG_PATH !== path.join(sourceRoot, 'openclaw.json')) process.exit(4);
 const file = path.join(sourceRoot, 'cron/jobs.json');
@@ -31,7 +35,7 @@ if (process.argv[2] !== 'cron' || !job) process.exit(2);
 job.enabled = ['resume', 'enable'].includes(process.argv[3]);
 fs.writeFileSync(file, JSON.stringify(data));
 `, { mode: 0o700 });
-  const readers = { home: root, env: {}, readCronDatabase: async () => [] };
+  const readers = { home: root, env: { ...process.env, PATH: bin }, readCronDatabase: async () => [] };
   const [source] = await discoverImportSources(readers);
   const snapshot = await inspectImportSource(source!, readers); const item = snapshot.items.find(item => item.automation)!;
   await changeSourceAutomationState(source!, item, false, readers, () => {}, false, selected);
@@ -77,4 +81,19 @@ setTimeout(() => {
     for (const pid of pids) { try { process.kill(pid, 'SIGKILL'); } catch { /* Already terminated. */ } }
     await result;
   }
+});
+
+it('resolves Windows batch CLIs and their interpreter from case-insensitive host variables', async () => {
+  const source = { kind: 'openclaw' as const, agentId: 'main', name: 'Fixture', root: 'C:\\source', workspace: 'C:\\source', configFile: 'C:\\source\\openclaw.json' };
+  const executable = 'C:\\host-bin\\openclaw.cmd';
+  const interpreter = 'C:\\Windows\\System32\\cmd.exe';
+  const stat = vi.spyOn(fs, 'stat').mockImplementation(async file => {
+    if (String(file) === executable) return { isFile: () => true } as Awaited<ReturnType<typeof fs.stat>>;
+    throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+  });
+  const host = { Path: ';relative-bin;C:\\host-bin', ComSpec: interpreter, SystemRoot: 'C:\\Windows' };
+  expect(await resolveSourceCli(source, 'C:\\Users\\fixture', host, 'win32')).toEqual({ executable, interpreter });
+  expect(await resolveSourceCli(source, 'C:\\Users\\fixture', { ...host, ComSpec: undefined }, 'win32')).toEqual({ executable, interpreter });
+  await expect(resolveSourceCli(source, 'C:\\Users\\fixture', { ...host, ComSpec: 'cmd.exe' }, 'win32')).rejects.toThrow('SOURCE_COMMAND_UNAVAILABLE');
+  expect(stat.mock.calls.every(([file]) => path.win32.isAbsolute(String(file)))).toBe(true);
 });

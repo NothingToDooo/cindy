@@ -8,10 +8,12 @@ metadata, never source paths, environment values or credential contents.
 Preview names and descriptions mask known credentials from the entire snapshot,
 including unselected or conflicting accounts. Only the public projection changes;
 private originals, stable selection IDs and dependency links remain intact.
-Source discovery applies the same snapshot-wide mask before publishing names.
-It inspects sources sequentially without retaining their resource trees; if a
-source cannot be inspected, discovery uses an opaque numbered source label and
-preview retains its normal error path. Discovery performs no import writes.
+Source discovery masks names from configuration, environment, connection and native
+auth metadata, including skill credential settings. Name masking shares a 4 MiB
+metadata budget and request-local file/config cache across sources; it never reads
+cron databases, memory, portraits or skill resources. Unreadable/over-budget metadata
+uses an opaque numbered source label without preventing selection. The selected
+preview retains its full snapshot and normal error path. Discovery performs no writes.
 All command operations use the existing per-call approval policy. Discovery never
 persists a native tool/server grant that could authorize a later `start` operation.
 Auto still reviews the actual invocation; Full Access retains its normal behavior.
@@ -260,7 +262,10 @@ source's native CLI pauses its task; only then is the target enabled. Source
 configuration changes invalidate handover. In-flight source execution is allowed
 to finish before enabling the target. Lost acknowledgements are reconciled from
 actual state; an ambiguous target enable never resumes the source as well.
-Pause/resume CLI calls receive only OS basics, selected source variables and the
+Pause/resume first resolves the native CLI from absolute host PATH entries and
+existing host installation locations; Windows batch launch resolves its interpreter
+from host COMSPEC/SystemRoot. Selected PATH/COMSPEC cannot choose either executable.
+The chosen child still receives OS basics, selected source variables and the
 captured source directory/configuration. The shared child runner checks ownership
 throughout execution and terminates the process tree on owner loss. An interrupted
 pause retains its durable phase for reconciliation when the original owner returns;
@@ -324,9 +329,11 @@ from these fixture results.
 
 Large-data tests exercise multi-megabyte fixtures, bounded crypto calls, event-loop
 progress, worker conversion, legacy read/upgrade, interrupted atomic writes and
-owner loss. They use a test cipher, not the user's OS keychain. Source discovery
-still inspects bounded source trees sequentially for complete credential masking;
-large real-source discovery latency and peak memory are not claimed as benchmarked.
+owner loss. They use a test cipher, not the user's OS keychain. Discovery tests
+verify shared metadata is read once during name masking and SQLite/resource reads
+are absent even for multiple agents with an unavailable database. Native CLI tests
+exercise fake imported PATH entries and host-only Windows interpreter resolution.
+Large real-source latency and peak memory are not claimed as benchmarked.
 Downgrading to a build predating chunked companion storage cannot read the new
 private format; hand automations back before downgrade and retain the current
 build/data for recovery.

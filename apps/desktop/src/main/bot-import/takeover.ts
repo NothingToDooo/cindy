@@ -14,13 +14,27 @@ function definition(job: Record<string, unknown>): string {
   return fingerprint(rest);
 }
 
-async function binary(source: ImportSource, home: string, env: Record<string, string>): Promise<string> {
+/** Resolve executable/interpreter only from the host, before adding source env. */
+export async function resolveSourceCli(source: ImportSource, home: string, host: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform): Promise<{ executable: string; interpreter?: string }> {
   const name = source.kind === 'hermes' ? 'hermes' : 'openclaw';
-  const folders = [path.join(home, '.local', 'bin'), ...(env.PATH ?? '').split(path.delimiter), '/opt/homebrew/bin', '/usr/local/bin'];
+  const paths = platform === 'win32' ? path.win32 : path.posix;
+  const env = importedProcessEnvironment({}, host, platform);
+  const folders = [paths.join(home, '.local', 'bin'), ...(env.PATH ?? '').split(paths.delimiter),
+    ...(platform === 'win32' ? [] : ['/opt/homebrew/bin', '/usr/local/bin'])];
   for (const dir of folders) {
-    for (const suffix of process.platform === 'win32' ? ['.exe', '.cmd', '.bat', ''] : ['']) {
-      const file = path.join(dir, `${name}${suffix}`);
-      try { if ((await fs.stat(file)).isFile()) return file; } catch { /* Continue the existing executable search path. */ }
+    // Relative/empty entries would be reinterpreted against the source cwd.
+    if (!paths.isAbsolute(dir)) continue;
+    for (const suffix of platform === 'win32' ? ['.exe', '.cmd', '.bat', ''] : ['']) {
+      const executable = paths.join(dir, `${name}${suffix}`);
+      let exists = false;
+      try { exists = (await fs.stat(executable)).isFile(); } catch { /* Continue the host executable search path. */ }
+      if (!exists) continue;
+      if (platform !== 'win32' || !/\.(cmd|bat)$/i.test(executable)) return { executable };
+      const systemRoot = env.SYSTEMROOT || env.WINDIR;
+      const interpreter = env.COMSPEC || (systemRoot ? paths.join(systemRoot, 'System32', 'cmd.exe') : '');
+      if (!paths.isAbsolute(interpreter)) throw new CompanionImportError('SOURCE_COMMAND_UNAVAILABLE');
+      return { executable, interpreter };
     }
   }
   throw new CompanionImportError('SOURCE_COMMAND_UNAVAILABLE');
@@ -44,17 +58,16 @@ export async function changeSourceAutomationState(source: ImportSource, item: Im
     if (enabled || resumeInterruptedPause) return;
     throw new CompanionImportError('SOURCE_AUTOMATION_CHANGED');
   }
+  const cli = await resolveSourceCli(source, readers.home, readers.env); assertOwner();
   const env = importedProcessEnvironment({ ...selectedEnvironment,
-    ...(source.kind === 'hermes' ? { HERMES_HOME: source.root } : { OPENCLAW_STATE_DIR: source.root, OPENCLAW_CONFIG_PATH: source.configFile }) });
-  const command = await binary(source, readers.home, env); assertOwner();
+    ...(source.kind === 'hermes' ? { HERMES_HOME: source.root } : { OPENCLAW_STATE_DIR: source.root, OPENCLAW_CONFIG_PATH: source.configFile }) }, readers.env);
   const args = ['cron', source.kind === 'hermes' ? enabled ? 'resume' : 'pause' : enabled ? 'enable' : 'disable', original.sourceId];
   let commandFailed = false;
   try {
-    const batch = process.platform === 'win32' && /\.(cmd|bat)$/i.test(command);
     // The shared runner terminates the entire child tree when ownership changes.
     // The persisted pausing-source phase remains for same-owner reconciliation.
-    const result = await runImportedProcess({ command: batch ? env.COMSPEC || 'cmd.exe' : command,
-      args: batch ? ['/d', '/s', '/c', `""${command}" ${args.join(' ')}"`] : args,
+    const result = await runImportedProcess({ command: cli.interpreter ?? cli.executable,
+      args: cli.interpreter ? ['/d', '/s', '/c', `""${cli.executable}" ${args.join(' ')}"`] : args,
       cwd: source.root, env, timeoutMs: 30_000, signal: new AbortController().signal, assertOwner });
     commandFailed = result.exitCode !== 0;
   } catch { commandFailed = true; }

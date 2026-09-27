@@ -2,14 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { discoverImportSources, inspectImportSource } from '../sources.js';
+import { createImportSourceNameReader, discoverImportSources, inspectImportSource } from '../sources.js';
 import { validateImportSelection } from '../transfer.js';
 import { selectedImportEnvironment } from '../environmentSelection.js';
 import { createImportBudget } from '../files.js';
 
 let home: string;
 beforeEach(async () => { home = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-import-source-test-')); });
-afterEach(async () => { await fs.rm(home, { recursive: true, force: true }); });
+afterEach(async () => { vi.restoreAllMocks(); await fs.rm(home, { recursive: true, force: true }); });
 async function write(name: string, text: string) { const file = path.join(home, name); await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, text); }
 const deps = () => ({ home, env: {}, readCronDatabase: vi.fn(async () => []) });
 
@@ -188,7 +188,6 @@ it.each(['daily-report', 'Daily report'])('matches a skill reference %s against 
   expect(skill.files?.find(file => file.name === 'scripts/query.py')).toBeDefined();
 });
 
-
 it('requires an explicit credential account and binds variables to the chosen profile, including MCP references', async () => {
   await write('.openclaw/openclaw.json', JSON.stringify({ mcpServers: { data: { url: 'https://example.invalid/mcp', headers: { Authorization: 'Bearer ${OPENAI_API_KEY}' } } } }));
   await write('.openclaw/agents/main/agent/auth-profiles.json', JSON.stringify({ profiles: {
@@ -218,4 +217,54 @@ it('requires an explicit credential account and binds variables to the chosen pr
   expect(missing.view.dependsOn?.some(id => !defaults.includes(id))).toBe(true);
   expect(JSON.stringify(snapshot.items.map(item => item.view))).not.toContain('fixture-work-key');
   expect(JSON.stringify(snapshot.items.map(item => item.view))).not.toContain('fixture-personal-key');
+});
+
+it('discovers masked names from cached credential metadata without reading SQLite, memory or skill resources', async () => {
+  const secrets = ['fixture-env-token', 'fixture-header-token', 'fixture-skill-token', 'fixture-primary-key',
+    'fixture-telegram-token', 'fixture-path-token', 'fixture-tool-key'];
+  const agents = ['alpha', 'beta', 'gamma'].map(id => ({ id, name: `DEBUG true PORT 3000 ${secrets.join(' ')} fixture-auth-${id}` }));
+  await write('.openclaw/openclaw.json', JSON.stringify({ $include: 'shared.json', agents: { list: agents } }));
+  await write('.openclaw/shared.json', JSON.stringify({
+    mcpServers: { data: { url: `https://example.invalid/mcp/${secrets[5]}`, headers: { Authorization: `Bearer ${secrets[1]}` } } },
+    skills: { entries: { report: { env: { REPORT_TOKEN: secrets[2] }, apiKey: secrets[3] } } },
+    channels: { telegram: { tokenFile: 'telegram-token.txt' } }, tools: { apiKey: secrets[6] },
+  }));
+  await write('.openclaw/.env', `KEY=${secrets[0]}\nDEBUG=true\nPORT=3000`);
+  await write('.openclaw/telegram-token.txt', secrets[4]!);
+  await write('.openclaw/state/openclaw.sqlite', 'locked database fixture');
+  await write('.openclaw/workspace/MEMORY.md', 'memory must not be read');
+  await write('.openclaw/skills/report/SKILL.md', '# report');
+  await write('.openclaw/skills/report/data.txt', 'resource must not be read');
+  for (const { id } of agents) await write(`.openclaw/agents/${id}/agent/auth-profiles.json`,
+    JSON.stringify({ profiles: { openai: { type: 'api_key', key: `fixture-auth-${id}` } } }));
+  const reader = deps();
+  reader.readCronDatabase.mockRejectedValue(new Error('locked database'));
+  const sources = await discoverImportSources(reader);
+  const open = vi.spyOn(fs, 'open');
+  const readName = createImportSourceNameReader(reader);
+  for (const source of sources) {
+    const name = await readName(source);
+    expect(name).toContain('DEBUG true PORT 3000');
+    for (const secret of [...secrets, `fixture-auth-${source.agentId}`]) expect(name).not.toContain(secret);
+  }
+  expect(reader.readCronDatabase).not.toHaveBeenCalled();
+  const realHome = await fs.realpath(home);
+  const opened = open.mock.calls.map(([file]) => path.relative(realHome, String(file)).split(path.sep).join('/'));
+  expect(opened.sort()).toEqual([
+    '.openclaw/.env', '.openclaw/openclaw.json', '.openclaw/shared.json', '.openclaw/telegram-token.txt',
+    ...agents.map(({ id }) => `.openclaw/agents/${id}/agent/auth-profiles.json`),
+  ].sort());
+  // Cache belongs to this discovery request; later requests see changed keys.
+  await write('.openclaw/.env', 'KEY=fixture-replaced-token');
+  expect(await createImportSourceNameReader(reader)({ ...sources[0]!, name: 'Ada fixture-replaced-token' })).not.toContain('fixture-replaced-token');
+});
+
+it('bounds cumulative discovery metadata and refuses to publish a partially checked name', async () => {
+  await write('.hermes/config.yaml', 'name: Ada');
+  await write('.hermes/.env', `KEY=${'x'.repeat(70)}`);
+  await write('.hermes/auth.json', JSON.stringify({ providers: { openai: { type: 'api_key', key: 'y'.repeat(70) } } }));
+  const reader = deps(); const [source] = await discoverImportSources(reader);
+  const readName = createImportSourceNameReader(reader, createImportBudget(128));
+  await expect(readName(source!)).rejects.toThrow('SOURCE_SNAPSHOT_TOO_LARGE');
+  await expect(readName(source!)).rejects.toThrow('SOURCE_SNAPSHOT_TOO_LARGE');
 });
