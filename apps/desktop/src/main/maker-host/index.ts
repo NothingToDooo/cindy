@@ -404,7 +404,7 @@ const requestAutoReviewText = createAutoReviewModelRouter({
   logger: desktopMakerLogger,
 });
 
-const reviewAutoPermissionAction = createAutoPermissionReviewer({
+export const reviewAutoPermissionAction = createAutoPermissionReviewer({
   logger: desktopMakerLogger,
   managesRetries: true,
   resolveRequestTimeoutMs: () => AUTO_REVIEW_ROUTER_GUARD_TIMEOUT_MS,

@@ -74,11 +74,11 @@ export async function withImportedConnection<T>(
   environment: Record<string, string>,
   assertOwner: () => void,
   run: (client: Client) => Promise<T>,
-  scope?: { identity: string; signal: AbortSignal },
+  scope?: { identity?: string; signal: AbortSignal },
 ): Promise<T> {
   assertOwner();
   scope?.signal.throwIfAborted();
-  const key = scope ? fingerprint([scope.identity, server]) : undefined;
+  const key = scope?.identity ? fingerprint([scope.identity, server]) : undefined;
   let cached = key ? connections.get(key) : undefined;
   let pending: Promise<Connection>;
   if (cached && !cached.inUse) {

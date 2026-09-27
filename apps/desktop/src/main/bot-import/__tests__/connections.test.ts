@@ -28,7 +28,7 @@ readline.createInterface({input:process.stdin}).on('line', line => {
  const r = JSON.parse(line); if (!('id' in r)) return;
  const result = r.method === 'initialize' ? {protocolVersion:'2024-11-05',capabilities:{tools:{}},serverInfo:{name:'fixture',version:'1'}}
  : r.method === 'tools/list' ? {tools:[{name:'read_data',inputSchema:{type:'object'},annotations:{readOnlyHint:true}}]}
- : {content:[{type:'text',text:JSON.stringify({authenticated:process.env.DATA_TOKEN === 'fixture-mcp-key',isolated:!process.env.CINDY_UNRELATED_TEST_SECRET && !process.env.HTTPS_PROXY,rows:[{id:1}],reads:++reads})}]};
+ : {content:[{type:'text',text:JSON.stringify({pid:process.pid,authenticated:process.env.DATA_TOKEN === 'fixture-mcp-key',isolated:!process.env.CINDY_UNRELATED_TEST_SECRET && !process.env.HTTPS_PROXY,rows:[{id:1}],reads:++reads})}]};
  process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:r.id,result})+'\\n');
 });`);
   const connection = { name: 'fixture', command: process.execPath, args: [file], transport: 'stdio' as const };
@@ -48,6 +48,16 @@ readline.createInterface({input:process.stdin}).on('line', line => {
   expect(payload(second).reads).toBe(2);
   // A failed request discards the cached subprocess and leaves no fixture running.
   await expect(withImportedConnection(connection, {}, () => {}, () => { throw new Error('fixture disconnect'); }, scope)).rejects.toThrow('CONNECTION_FAILED');
+  // Takeover probes have cancellation but deliberately no persistent cache key.
+  const controller = new AbortController();
+  let probePid = 0;
+  await expect(withImportedConnection(connection, {}, () => {}, async client => {
+    probePid = payload(await client.callTool({ name: 'read_data', arguments: {} })).pid;
+    controller.abort();
+    return new Promise<never>(() => {});
+  }, { signal: controller.signal })).rejects.toThrow('CONNECTION_FAILED');
+  expect(probePid).toBeGreaterThan(0);
+  expect(() => process.kill(probePid, 0)).toThrow();
 });
 
 it('terminates an idle credential subprocess after its owner changes and evicts it without affecting another owner', async () => {

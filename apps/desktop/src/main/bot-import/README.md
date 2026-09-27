@@ -123,6 +123,17 @@ uses the teammate's current model to plan bounded read-only probes, then the
 host executes real MCP/HTTP reads and validates response data. The planner sees
 variable names and redacted task/script text, not credential values. HTTP checks
 reject redirects; Telegram checks read identity/destination without test sends.
+The MCP server's `readOnlyHint` only filters planning candidates; it does not
+authorize execution. Each planned MCP call uses the companion's existing
+Auto/Ask/Full Access policy with its exact connection, tool and arguments. Auto
+uses the shared permission reviewer with the host-owned takeover intent; Ask and
+unavailable Auto review use the existing Desktop/Mobile confirmation route.
+Neither remembered grants nor edited arguments are accepted for these probes.
+Fresh companions can confirm before launching a harness. Account, task or
+permission changes cancel pending approval and execution. A denied probe leaves
+the source automation running and the imported routine disabled. This preserves
+normal third-party connection trust; it does not prove a server implements its
+advertised operation honestly or replace imported tools with a fixed allowlist.
 Authenticated HTTP probes bind variables to origins in host code before planning:
 explicit source MCP headers establish their configured origin, and conventional
 service groups (DATA_URL/DATA_TOKEN, OPENAI_BASE_URL/OPENAI_API_KEY, or a single
