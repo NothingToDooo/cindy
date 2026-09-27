@@ -2044,7 +2044,8 @@ export default function SessionScreen() {
     deviceId: deviceId || null,
     sessionId,
     session: currentSession,
-    prefsScope: auth.user?.id ?? null,
+    // 按区域限定的账号键:Global 与中国大陆版同号不同人,记忆(含完全访问)不能串。
+    prefsScope: outboxOwner.accountKey || null,
     connectionEpoch,
     enabled: !isSharedTaskPeer(deviceId) && !sessionManagedByHost,
     sheetView: contextSheetView === 'collab' || contextSheetView === 'collab-create' ? contextSheetView : null,

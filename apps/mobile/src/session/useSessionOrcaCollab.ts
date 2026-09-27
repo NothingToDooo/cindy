@@ -397,7 +397,7 @@ export function useSessionOrcaCollab(params: {
   deviceId: string | null;
   sessionId: string;
   session: RemoteSession | null;
-  /** Worker 创建偏好的记忆范围(登录账号);null = 不记忆。 */
+  /** Worker 创建偏好的记忆范围(按区域限定的账号键 accountKey);null = 不记忆。 */
   prefsScope: string | null;
   /** 隧道重连代次(会话页的 connectionEpoch):重连后补拉团队与 Worker 所属 Lead。 */
   connectionEpoch?: number;
@@ -444,6 +444,7 @@ export function useSessionOrcaCollab(params: {
   }, [sessionId, deviceId]);
 
   // 打开 + 面板时读一次入口状态(能力 + 协同插件开关);Lead 只需确认能力。
+  // 重连后重读:断线时读失败会落成「不可用」,不能让已打开的表单一直卡住。
   useEffect(() => {
     const current = sessionRef.current;
     if (!sheetOpen || !eligible || !current) return undefined;
@@ -452,7 +453,7 @@ export function useSessionOrcaCollab(params: {
     void readOrcaCollabEntryStatus(makerRef.current, current, orcaAgentKindForSession(current))
       .then((status) => { if (!cancelled) setEntryStatus(status); });
     return () => { cancelled = true; };
-  }, [sheetOpen, eligible, sessionId, role]);
+  }, [sheetOpen, eligible, sessionId, role, connectionEpoch]);
 
   // 协同视图展示中时顺带刷新一次团队(推送之外的兜底)。
   const refreshTeam = team.refresh;

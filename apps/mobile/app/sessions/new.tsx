@@ -568,7 +568,8 @@ export default function NewRemoteSessionScreen() {
   const [collabEntryStatus, setCollabEntryStatus] = useState<OrcaCollabEntryStatus>('loading');
   const collabForm = useOrcaWorkerForm({
     maker,
-    prefsScope: auth.user?.id ?? null,
+    // 按区域限定的账号键:Global 与中国大陆版同号不同人,记忆(含完全访问)不能串。
+    prefsScope: outboxOwner.accountKey || null,
     active: contextSheetOpen && contextSheetView === 'collab',
     setSheetOpen: setContextSheetOpen,
   });
@@ -583,6 +584,7 @@ export default function NewRemoteSessionScreen() {
   useEffect(() => {
     setCollabDraft(null);
   }, [selectedDeviceId, draft.workspaceKind, draft.workingDir]);
+  // 读入口状态;重连后重读:断线时读失败会落成「不可用」,不能让表单一直卡住。
   useEffect(() => {
     if (!contextSheetOpen || !collabEligible || !selectedDeviceId) return undefined;
     let cancelled = false;
@@ -590,7 +592,7 @@ export default function NewRemoteSessionScreen() {
     void readOrcaCollabEntryStatus(maker, collabTarget, draft.agentKind)
       .then((status) => { if (!cancelled) setCollabEntryStatus(status); });
     return () => { cancelled = true; };
-  }, [collabEligible, collabTarget, contextSheetOpen, draft.agentKind, maker, selectedDeviceId]);
+  }, [collabEligible, collabTarget, connectionEpoch, contextSheetOpen, draft.agentKind, maker, selectedDeviceId]);
   const openCollabDraftForm = useCallback(() => {
     if (collabDraft) {
       collabForm.restore(collabDraft);

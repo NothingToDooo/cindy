@@ -28,7 +28,7 @@ describe('mobile Orca collaboration wiring', () => {
     expect(source).toContain('testID="session.collabBar"');
     expect(source).toContain('collab.openLead();');
     // 断线期间首次查询失败时,重连后补查 Worker 所属 Lead 与团队。
-    expect(source).toContain("prefsScope: auth.user?.id ?? null,\n    connectionEpoch,");
+    expect(source).toContain("prefsScope: outboxOwner.accountKey || null,\n    connectionEpoch,");
     expect(source).toContain('takeOrcaStartFailure(sessionId)');
     expect(source).toContain('return subscribeOrcaStartFailure((failedSessionId) => {');
   });
@@ -47,5 +47,6 @@ describe('mobile Orca collaboration wiring', () => {
     expect(source.indexOf('await enableOrcaTeam(maker, result.sessionId'))
       .toBeLessThan(source.indexOf('await maker.goal.set({ sessionId: result.sessionId'));
     expect(source).toContain('setCollabDraft(null);');
+    expect(source).toContain('prefsScope: outboxOwner.accountKey || null,');
   });
 });
