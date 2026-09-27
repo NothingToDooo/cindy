@@ -18,6 +18,8 @@ const mocks = vi.hoisted(() => ({
   applyRoute: vi.fn(),
   readPendingRoute: vi.fn(() => undefined as unknown),
   cancelPending: vi.fn(),
+  ownerScopeKey: vi.fn((): string => 'owner-1'),
+  boundaryPending: vi.fn((): boolean => false),
 }));
 
 vi.mock('electron', () => ({
@@ -60,6 +62,11 @@ vi.mock('../../../maker-ipc/register', () => ({
 }));
 vi.mock('../../../maker-ipc/sendToSessionLock', () => ({
   withSendToSessionLock: async <T>(_id: string, run: () => Promise<T>) => run(),
+}));
+vi.mock('../../../appSessionState.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../appSessionState.js')>()),
+  activeOwnerScopeKey: mocks.ownerScopeKey,
+  isAppSessionBoundaryPending: mocks.boundaryPending,
 }));
 
 let db: ReturnType<typeof drizzle>;
@@ -591,6 +598,42 @@ describe('markImSessionManualRouteOverride', () => {
       route: OLD,
       manual: true,
     });
+  });
+
+  it('reads and writes through the client captured at entry (owner boundary)', async () => {
+    // 墓碑读写跨 await, 期间登出/切号会让全局 getDbClient 指向新 owner —— 必须全程
+    // 复用进入时捕获的客户端, 不能在 await 间隙重读全局(PR #5155 review P1)。
+    await insertTask('t1', OLD);
+    const realDb = db;
+    const write = markImSessionManualRouteOverride('t1');
+    // 全局客户端在中途被换成别的 owner(必炸)。
+    db = {
+      select: () => { throw new Error('owner switched'); },
+      update: () => { throw new Error('owner switched'); },
+    } as never;
+    await write;
+    db = realDb;
+
+    expect(parseImDefaultRouteRecord((await rowOf('t1')).imDefaultRoute)?.manual).toBe(true);
+  });
+
+  it('refuses to write the marker when the owner scope changed mid-flight', async () => {
+    // owner 换了还写 = 把 A 的墓碑写进 B 的同 ID 任务; 不写又假装成功 = A 的手动
+    // 选择没有墓碑、会被渠道默认覆盖 —— 写入前复核 owner scope, 变了就抛错让上层
+    // 按选择失败重试(PR #5155 review P1)。
+    await insertTask('t1', OLD);
+    mocks.ownerScopeKey.mockReturnValueOnce('owner-1').mockReturnValueOnce('owner-2');
+
+    await expect(markImSessionManualRouteOverride('t1')).rejects.toThrow(/retry the selection/);
+    expect((await rowOf('t1')).imDefaultRoute).toBe(buildImDefaultRouteRecord('fp-old', OLD));
+  });
+
+  it('refuses to write the marker while an account boundary is in flight', async () => {
+    await insertTask('t1', OLD);
+    mocks.boundaryPending.mockReturnValueOnce(true);
+
+    await expect(markImSessionManualRouteOverride('t1')).rejects.toThrow(/retry the selection/);
+    expect((await rowOf('t1')).imDefaultRoute).toBe(buildImDefaultRouteRecord('fp-old', OLD));
   });
 
   it('does not touch tasks outside the channel follow surface', async () => {

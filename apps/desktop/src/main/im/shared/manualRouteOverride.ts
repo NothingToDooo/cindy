@@ -16,6 +16,7 @@ import {
   IM_DEFAULT_SETTINGS_CHANNELS,
   type ImDefaultSettingsChannel,
 } from '../../../shared/imDefaultSettings.js';
+import { activeOwnerScopeKey, isAppSessionBoundaryPending } from '../../appSessionState.js';
 import { getDbClient } from '../../localDb/client/current';
 import { sessions } from '../../localDb/schema';
 import { createLogger } from '../../logger';
@@ -24,7 +25,14 @@ import { buildImManualRouteOverrideRecord, type ImDefaultRoute } from './channel
 const log = createLogger('im:default-route');
 
 export async function markImSessionManualRouteOverride(sessionId: string): Promise<void> {
-  const [row] = await getDbClient()
+  // owner 边界(PR #5155 review P1): 读写跨 await, 期间登出/切号会让全局 getDbClient
+  // 指向新 owner —— B 有同 ID 任务会被写进 A 的墓碑, 否则更新零行还按成功返回,
+  // A 的手动选择从此没有墓碑、会被渠道默认覆盖。进入时捕获 owner scope 与 DbClient,
+  // 全程复用同一客户端; 写入前复核 scope 未变且无 boundary 在途, 不满足抛错让上层
+  // 按选择失败重试(与设置保存的 owner 边界校验同口径)。
+  const ownerScopeKey = activeOwnerScopeKey();
+  const dbClient = getDbClient();
+  const [row] = await dbClient
     .drizzle.select({
       source: sessions.source,
       status: sessions.status,
@@ -51,7 +59,10 @@ export async function markImSessionManualRouteOverride(sessionId: string): Promi
     providerId: row.providerId?.trim() || null,
     effort: row.effort ?? null,
   };
-  await getDbClient()
+  if (isAppSessionBoundaryPending() || activeOwnerScopeKey() !== ownerScopeKey) {
+    throw new Error('app session owner changed before manual override marker write; retry the selection');
+  }
+  await dbClient
     .drizzle.update(sessions)
     .set({ imDefaultRoute: buildImManualRouteOverrideRecord(route) })
     .where(eq(sessions.id, sessionId));
