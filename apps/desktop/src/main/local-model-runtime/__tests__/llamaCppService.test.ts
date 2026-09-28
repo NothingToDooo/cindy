@@ -69,7 +69,7 @@ beforeEach(async () => {
   mocks.probeOwner.mockResolvedValue('alive');
   mocks.ownerProof.mockImplementation(async () => ({
     identity: { version: 1, port: 12345, token: 'test-owner' },
-    close: vi.fn().mockResolvedValue(undefined),
+    close: vi.fn(async () => { mocks.probeOwner.mockResolvedValue('ended'); }),
   }));
   const proc = await vi.importActual<typeof import('../../scheduler-host/proc-util.js')>(
     '../../scheduler-host/proc-util.js',
@@ -194,6 +194,7 @@ describe('managed llama.cpp model lifecycle', () => {
         release = resolve;
       });
       const close = vi.fn(async () => {
+        mocks.probeOwner.mockResolvedValue('ended');
         closing();
         await gate;
       });
@@ -565,6 +566,31 @@ describe('managed llama.cpp model lifecycle', () => {
       expect(await readdir(path.join(root, 'llamacpp-runtime'))).toEqual(['models']);
     },
   );
+  it('refreshes external runtime status without acquiring ownership or caching a borrow', async () => {
+    const runtime = path.join(root, 'llamacpp-runtime');
+    await mkdir(runtime);
+    const service = createLlamaCppService(root);
+    const fetchHealth = vi.fn(async () => Response.json({ status: 'ok' }));
+    vi.stubGlobal('fetch', fetchHealth);
+    expect(await service.snapshot()).toMatchObject({ running: false, canConfigure: true });
+    await writeFile(path.join(runtime, 'server-owner.json'), JSON.stringify({
+      identity: { version: 1, port: 12345, token: 'external' },
+    }));
+    expect(await service.snapshot()).toMatchObject({ running: true, canConfigure: false, canManageRuntime: false });
+    fetchHealth.mockResolvedValueOnce(new Response('', { status: 503 }));
+    expect(await service.snapshot()).toMatchObject({ running: false, canConfigure: false });
+    fetchHealth.mockRejectedValueOnce(new Error('connection refused'));
+    expect(await service.snapshot()).toMatchObject({ running: false, canConfigure: false });
+    mocks.probeOwner.mockResolvedValue('unknown');
+    expect(await service.snapshot()).toMatchObject({ running: false, canConfigure: false });
+    mocks.probeOwner.mockResolvedValue('ended');
+    expect(await service.snapshot()).toMatchObject({ running: false, canConfigure: true });
+    mocks.probeOwner.mockResolvedValue('alive');
+    expect(await service.snapshot()).toMatchObject({ running: true, canConfigure: false });
+    await rm(path.join(runtime, 'server-owner.json'));
+    expect(await service.snapshot()).toMatchObject({ running: false, canConfigure: true });
+    expect(mocks.spawn).not.toHaveBeenCalled();
+  });
   it('reuses the same profile owner and never stops it from a borrowing instance', async () => {
     const runtime = path.join(root, 'llamacpp-runtime');
     await mkdir(runtime);
@@ -587,6 +613,7 @@ describe('managed llama.cpp model lifecycle', () => {
     const owner = createLlamaCppService(root);
     const borrower = createLlamaCppService(root);
     await owner.start();
+    expect((await borrower.snapshot()).running).toBe(true);
     await Promise.all([owner.start(), borrower.start()]);
     expect(mocks.spawn).toHaveBeenCalledOnce();
     expect((await borrower.snapshot()).running).toBe(true);
@@ -613,6 +640,8 @@ describe('managed llama.cpp model lifecycle', () => {
     await expect(borrower.start()).rejects.toThrow('BUSY');
     expect(mocks.spawn).toHaveBeenCalledOnce();
     expect(child.kill).not.toHaveBeenCalled();
+    mocks.probeOwner.mockResolvedValue('ended');
+    expect(await borrower.snapshot()).toMatchObject({ running: false, canConfigure: true });
     await borrower.dispose();
     expect(child.kill).not.toHaveBeenCalled();
     await owner.dispose();

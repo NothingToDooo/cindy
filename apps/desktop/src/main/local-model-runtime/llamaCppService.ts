@@ -91,7 +91,6 @@ export function createLlamaCppService(
   let wakeDownload: (() => void) | undefined;
   let settled: Promise<void> | undefined;
   let ownerProof: ReviewOwnerLivenessHandle | undefined;
-  let borrowed = false;
   let disposing = false;
   let stopping: Promise<void> | undefined;
 
@@ -141,26 +140,43 @@ export function createLlamaCppService(
   }
   async function snapshot(): Promise<LlamaCppSnapshot> {
     const runtime = await installed();
+    const installedModels = await models();
+    const externalOwner = child ? 'ended' : await externalOwnerStatus();
+    let externalHealthy = false;
+    if (externalOwner === 'alive') {
+      try {
+        const health = await fetch(`${LLAMACPP_MANAGED_ORIGIN}/health`, {
+          signal: AbortSignal.timeout(3000),
+          redirect: 'error',
+        });
+        await health.body?.cancel();
+        externalHealthy = health.ok;
+      } catch {
+        // A live owner still blocks mutation when its model server is unavailable.
+      }
+    }
     return {
       installed: !!runtime,
       supported: !!llamaCppPlatform(process.platform, process.arch),
-      running: ready && (!!child || borrowed),
+      running: child ? ready : externalHealthy,
       canManageRuntime: ready && !!child,
-      canConfigure: !(await hasExternalOwner()),
+      canConfigure: !!child || externalOwner === 'ended',
       canPauseDownload: true,
       version: runtime?.version,
-      models: await models(),
+      models: installedModels,
       ...(operation ? { operation: { ...operation } } : {}),
     };
   }
-  async function hasExternalOwner(): Promise<boolean> {
-    if (child) return false;
+  async function externalOwnerStatus(): Promise<'alive' | 'ended' | 'unknown'> {
     try {
       const owner = JSON.parse(await readFile(path.join(root, 'server-owner.json'), 'utf8'));
-      return (await probeReviewOwnerLiveness(owner.identity)) !== 'ended';
+      return await probeReviewOwnerLiveness(owner.identity);
     } catch (error) {
-      return (error as NodeJS.ErrnoException).code !== 'ENOENT';
+      return (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'ended' : 'unknown';
     }
+  }
+  async function hasExternalOwner(): Promise<boolean> {
+    return !child && (await externalOwnerStatus()) !== 'ended';
   }
   async function mutateConfiguration<T>(signal: AbortSignal, fn: () => Promise<T>): Promise<T> {
     await mkdir(root, { recursive: true });
@@ -220,7 +236,6 @@ export function createLlamaCppService(
   }
   async function stopAndWait(): Promise<void> {
     ready = false;
-    borrowed = false;
     closeOwnerProof();
     const previous = child;
     if (!previous) return;
@@ -437,7 +452,6 @@ export function createLlamaCppService(
               });
               await health.body?.cancel();
               if (!health.ok) throw new Error('BUSY');
-              borrowed = true;
               ready = true;
               return;
             }
@@ -643,7 +657,6 @@ export function createLlamaCppService(
       await stopRequested();
       if (!child) {
         ready = false;
-        borrowed = false;
       }
     },
   };
