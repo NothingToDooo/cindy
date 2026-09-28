@@ -403,13 +403,72 @@ export function createLlamaCppService(
       }
     });
   }
+  async function currentPreset(signal: AbortSignal): Promise<string> {
+    const installedModels = await models();
+    signal.throwIfAborted();
+    const limits = contextLimits();
+    return [
+      'version = 1',
+      '[*]',
+      `ctx-size = ${LLAMACPP_DEFAULT_CONTEXT}`,
+      ...installedModels.flatMap((model) => llamaCppModelPreset(model, limits)),
+      '',
+    ].join('\n');
+  }
+  async function reuseRuntime(
+    preset: string,
+    reload: boolean,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    signal.throwIfAborted();
+    if (child) return ready && !reload && !modelsChanged && preset === activePreset;
+    let owner;
+    try {
+      owner = JSON.parse(await readFile(path.join(root, 'server-owner.json'), 'utf8'));
+    } catch {
+      return false;
+    }
+    if (
+      owner?.identity?.version !== 1 ||
+      !Number.isInteger(owner.identity.port) ||
+      owner.identity.port <= 0 ||
+      owner.identity.port >= 65536 ||
+      typeof owner.identity.token !== 'string' ||
+      (await probeReviewOwnerLiveness(owner.identity)) !== 'alive'
+    )
+      return false;
+    if (reload || owner.preset !== preset) throw new Error('BUSY');
+    const health = await fetch(`${LLAMACPP_MANAGED_ORIGIN}/health`, {
+      signal: AbortSignal.any([signal, AbortSignal.timeout(3000)]),
+      redirect: 'error',
+    });
+    await health.body?.cancel();
+    signal.throwIfAborted();
+    if (!health.ok) throw new Error('BUSY');
+    return true;
+  }
   async function start(reload = false): Promise<void> {
     if (disposing || stopping) throw new Error('BUSY');
+    // A download owns mutation, not inference. This branch may only reuse the
+    // existing child; its operation signal prevents a late read surviving stop.
+    if (operation?.kind === 'download' && child && controller) {
+      const signal = controller.signal;
+      const running = child;
+      const preset = await currentPreset(signal);
+      if (child === running && (await reuseRuntime(preset, reload, signal))) return;
+      throw new Error('BUSY');
+    }
     if (starting) {
       await starting;
       return start(reload);
     }
     starting = exclusive('start', async (signal) => {
+      // Borrowing a matching service is read-only, even while its owner holds
+      // the configuration lock for a large download. All reads remain canceled
+      // by the existing start operation; mutations still recheck under the lock.
+      const preset = await currentPreset(signal);
+      if (await reuseRuntime(preset, reload, signal)) return;
+      signal.throwIfAborted();
       await mkdir(root, { recursive: true });
       return withCrossProcessLock(
         path.join(root, 'server-start.lock'),
@@ -419,45 +478,10 @@ export function createLlamaCppService(
           // Own the entire startup, including its first filesystem read. Stop
           // cancels this same operation; late scans cannot resurrect a runtime.
           signal.throwIfAborted();
-          const installedModels = await models();
-          signal.throwIfAborted();
-          const limits = contextLimits();
-          const preset = [
-            'version = 1',
-            '[*]',
-            `ctx-size = ${LLAMACPP_DEFAULT_CONTEXT}`,
-            ...installedModels.flatMap((model) => llamaCppModelPreset(model, limits)),
-            '',
-          ].join('\n');
-          if (ready && child && !reload && !modelsChanged && preset === activePreset) return;
+          const preset = await currentPreset(signal);
+          if (await reuseRuntime(preset, reload, signal)) return;
           const runtime = await installed();
           if (!runtime) throw new Error('NOT_INSTALLED');
-          if (!child) {
-            let owner;
-            try {
-              owner = JSON.parse(await readFile(path.join(root, 'server-owner.json'), 'utf8'));
-            } catch {
-              /* no published owner */
-            }
-            if (
-              owner?.identity?.version === 1 &&
-              Number.isInteger(owner.identity.port) &&
-              owner.identity.port > 0 &&
-              owner.identity.port < 65536 &&
-              typeof owner.identity.token === 'string' &&
-              (await probeReviewOwnerLiveness(owner.identity)) === 'alive'
-            ) {
-              if (reload || owner.preset !== preset) throw new Error('BUSY');
-              const health = await fetch(`${LLAMACPP_MANAGED_ORIGIN}/health`, {
-                signal: AbortSignal.any([signal, AbortSignal.timeout(3000)]),
-                redirect: 'error',
-              });
-              await health.body?.cancel();
-              if (!health.ok) throw new Error('BUSY');
-              ready = true;
-              return;
-            }
-          }
           // Preference changes apply on demand. Never kill another task's active generation.
           if (ready && child && !reload) {
             const response = await fetch(`${LLAMACPP_MANAGED_ORIGIN}/v1/models`, {

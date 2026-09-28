@@ -704,6 +704,99 @@ describe('managed llama.cpp model lifecycle', () => {
     await owner.dispose();
     expect(child.kill).toHaveBeenCalledWith(process.platform === 'win32' ? 'SIGKILL' : 'SIGTERM');
   });
+  it.each([
+    ['owner', false],
+    ['borrower', false],
+    ['owner', true],
+    ['borrower', true],
+  ] as const)(
+    'serves matching runtime during a download from %s (cancel=%s)',
+    async (who, cancel) => {
+      const runtime = path.join(root, 'llamacpp-runtime');
+      await mkdir(runtime);
+      await writeFile(path.join(runtime, 'server'), 'stub');
+      await writeFile(
+        path.join(runtime, 'current.json'),
+        JSON.stringify({ binary: 'server', version: 'test' }),
+      );
+      const child = Object.assign(new EventEmitter(), {
+        kill: vi.fn(() => {
+          child.emit('exit');
+          return true;
+        }),
+      });
+      mocks.spawn.mockReturnValue(child);
+      const health = vi.fn(async () => Response.json({ status: 'ok' }));
+      vi.stubGlobal('fetch', health);
+      const limits: Record<string, number> = {};
+      const owner = createLlamaCppService(root, () => limits);
+      await owner.download({ repo: 'bartowski/Qwen3.8-Flash-Next-GGUF', file: 'model.gguf' });
+      await owner.start();
+      const service = who === 'owner' ? owner : createLlamaCppService(root, () => limits);
+      let entered!: () => void;
+      const downloading = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      mocks.download.mockImplementationOnce(async (_asset, dest) => {
+        entered();
+        await gate;
+        await writeFile(dest, 'GGUF');
+      });
+      const transfer = owner
+        .download({ repo: 'new/model', file: 'model.gguf' })
+        .catch((error) => error);
+      await downloading;
+      try {
+        await service.start();
+        expect((await owner.snapshot()).operation?.kind).toBe('download');
+        expect(mocks.spawn).toHaveBeenCalledOnce();
+        expect(child.kill).not.toHaveBeenCalled();
+        await expect(service.start(true)).rejects.toThrow('BUSY');
+        const id = (await owner.snapshot()).models[0]!.id;
+        limits[`pi:cindy-local-llamacpp:${id}`] = 1_000_000;
+        await expect(service.start()).rejects.toThrow('BUSY');
+        delete limits[`pi:cindy-local-llamacpp:${id}`];
+        if (who === 'borrower') {
+          health.mockResolvedValueOnce(new Response('', { status: 503 }));
+          await expect(service.start()).rejects.toThrow('BUSY');
+        }
+        if (cancel) {
+          let scanned!: () => void;
+          const scanning = new Promise<void>((resolve) => {
+            scanned = resolve;
+          });
+          let finish!: () => void;
+          mocks.readdir.mockImplementationOnce(
+            () =>
+              new Promise((resolve) => {
+                finish = () => resolve([]);
+                scanned();
+              }),
+          );
+          const pending = service.start().catch((error) => error);
+          await scanning;
+          service.cancel();
+          finish();
+          expect((await pending).name).toBe('AbortError');
+          expect(mocks.spawn).toHaveBeenCalledOnce();
+          expect(child.kill).not.toHaveBeenCalled();
+        }
+      } finally {
+        release();
+        const result = await transfer;
+        if (cancel && who === 'owner') expect(result.name).toBe('AbortError');
+        else expect(result).toBeUndefined();
+      }
+      // Publication requires the existing reload path, never the read-only path.
+      if (who === 'borrower') await expect(service.start()).rejects.toThrow('BUSY');
+      await owner.dispose();
+      if (who === 'borrower') await service.dispose();
+    },
+  );
   it.each(['stop', 'dispose'] as const)(
     'waits for canceled download cleanup before %s resolves',
     async (action) => {
