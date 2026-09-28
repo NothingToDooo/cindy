@@ -890,7 +890,8 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
           {!navigationOnly && !isEditing && !archivePending && (
             <div
               className={cn(
-                'absolute right-[6px] top-[6px] z-10 flex items-center gap-0.5',
+                // peer:标题行按操作钮自身的 focus-within 让位,与其显隐条件一致。
+                'peer/card-actions absolute right-[6px] top-[6px] z-10 flex items-center gap-0.5',
                 menuPos !== null
                   ? 'opacity-100'
                   : 'opacity-0 group-hover/card:opacity-100 focus-within:opacity-100',
@@ -954,13 +955,15 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
             className={cn(
               'relative flex items-start',
               // 右上操作钮浮在内容上方:浮出时标题行右侧让出同宽(最宽为确认胶囊),
-              // 标题让位、紧跟标题的标签色球不被操作钮盖住。
+              // 标题让位、紧跟标题的标签色球不被操作钮盖住。让位条件与操作钮显隐
+              // 同源(卡片 hover / 操作钮自身 focus-within / 菜单 / 确认胶囊);卡片本身
+              // 获得焦点时操作钮不显示,也不让位。
               !navigationOnly &&
                 !isEditing &&
                 !!session.tags?.length &&
                 (menuPos !== null || archivePending
                   ? 'pr-14'
-                  : 'group-hover/card:pr-14 group-focus-within/card:pr-14'),
+                  : 'group-hover/card:pr-14 peer-focus-within/card-actions:pr-14'),
             )}
           >
             <div

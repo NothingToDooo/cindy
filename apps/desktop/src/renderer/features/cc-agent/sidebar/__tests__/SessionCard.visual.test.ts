@@ -1263,7 +1263,13 @@ describe('SessionCard visual cases', () => {
       const { container } = renderVariant('card', { ...baseSession, tags });
       const titleRow = dotsFor(container)!.closest<HTMLElement>('.items-start')!;
       expect(titleRow.className).toContain('group-hover/card:pr-14');
-      expect(titleRow.className).toContain('group-focus-within/card:pr-14');
+      // 让位与操作钮显隐同源:按操作钮自身 focus-within,而非整张卡片获得焦点。
+      expect(titleRow.className).toContain('peer-focus-within/card-actions:pr-14');
+      expect(titleRow.className).not.toContain('group-focus-within/card:pr-14');
+      const actions = container.querySelector<HTMLElement>('.peer\\/card-actions')!;
+      expect(actions.className).toContain('focus-within:opacity-100');
+      expect(actions.compareDocumentPosition(titleRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(actions.parentElement).toBe(titleRow.parentElement);
       cleanup();
       const { container: untagged } = renderVariant('card', { ...baseSession, tags: [] });
       expect(untagged.querySelector('[class*="group-hover/card:pr-14"]')).toBeNull();
