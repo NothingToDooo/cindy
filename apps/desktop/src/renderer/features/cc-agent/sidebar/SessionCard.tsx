@@ -699,10 +699,11 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
               isActive
                 ? 'bg-sidebar-item-active [--task-tag-ring-bg:hsl(var(--sidebar-item-active))] text-sidebar-item-active-foreground shadow-[inset_0_0_0_1px_var(--sidebar-item-active-border)]'
                 : cn(
-                    'hover:bg-sidebar-item-hover hover:[--task-tag-ring-bg:hsl(var(--sidebar-item-hover))]',
+                    // 标签色球描边不随 hover 换色(同 SessionItem):半透明 hover 底
+                    // 用作描边会透出色球本色,描边消失。
+                    'hover:bg-sidebar-item-hover',
                     // 菜单开着时鼠标常会离开行,行底仍保持 hover 色。
-                    menuPos !== null &&
-                      'bg-sidebar-item-hover [--task-tag-ring-bg:hsl(var(--sidebar-item-hover))]',
+                    menuPos !== null && 'bg-sidebar-item-hover',
                   ),
             )
           : cn(
@@ -711,7 +712,7 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
               'rounded-xl bg-[var(--surface-elevated)] border',
               isActive
                 ? 'border-[var(--sidebar-item-active-border)] !bg-sidebar-item-active [--task-tag-ring-bg:hsl(var(--sidebar-item-active))] text-sidebar-item-active-foreground'
-                : 'border-sidebar-border [--task-tag-ring-bg:var(--surface-elevated)] hover:!bg-sidebar-item-hover hover:[--task-tag-ring-bg:hsl(var(--sidebar-item-hover))]',
+                : 'border-sidebar-border [--task-tag-ring-bg:var(--surface-elevated)] hover:!bg-sidebar-item-hover',
             ),
         // 多选选中态(与列表 SessionItem 同款):内描边软高亮,不与 active 互斥。
         isSelected && 'ring-1 ring-inset ring-[var(--focus-ring-soft)]',
@@ -792,6 +793,8 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
                         })
                       : displayTitle}
                   </SidebarTitleMarquee>
+                  {/* 任务标签常显、紧跟标题，不属于任务信息复选。 */}
+                  <TaskTagDots tags={session.tags} />
                   {remoteIconKind && (
                     <RemoteProjectIcon
                       kind={remoteIconKind}
@@ -948,7 +951,7 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
             data-split-group-drag-handle={splitDragHandleActive ? 'true' : undefined}
             data-no-drag={splitDragHandleActive ? 'true' : undefined}
             draggable={splitDragHandleActive}
-            className="relative"
+            className="relative flex items-start"
           >
             <div
               className={cn(
@@ -970,6 +973,12 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
                   })
                 : displayTitle}
             </div>
+            {/* 任务标签常显、紧跟标题首行；标题两行截断时色球不被裁掉。 */}
+            {!isEditing && session.tags?.length ? (
+              <span className="flex h-[1.22em] shrink-0 items-center text-12">
+                <TaskTagDots tags={session.tags} />
+              </span>
+            ) : null}
             {isEditing && (
               <SessionRenameInput
                 sessionId={session.id}
@@ -1158,11 +1167,6 @@ function TimeActionsSlot({
   const { t } = useTranslation();
   return (
     <div className="group/slot relative ml-auto flex h-[22px] shrink-0 items-center justify-end">
-      {pieces.find((piece) => piece.key === 'tags')?.tags?.length ? (
-        <span className="mr-1 inline-flex shrink-0 items-center">
-          <TaskTagDots tags={pieces.find((piece) => piece.key === 'tags')?.tags} />
-        </span>
-      ) : null}
       <div className="grid h-[22px] grid-cols-[max-content] items-center justify-items-end">
         {/* 默认内容:worktree + 信息槽;hover / 菜单打开 / archivePending 时淡出让位给操作钮。 */}
         <div
@@ -1177,7 +1181,7 @@ function TimeActionsSlot({
           )}
         >
           <SessionInfoMeta
-            pieces={pieces.filter((piece) => piece.key !== 'tags')}
+            pieces={pieces}
             prRef={prRef}
             worktree={worktree}
             isActive={isActive}
