@@ -3,9 +3,8 @@ import { describe, expect, it } from 'vitest';
 import { resolveMobileSocialLoginMode } from '@/auth/mobileSocialLoginMode';
 
 describe('resolveMobileSocialLoginMode', () => {
-  it.each(['ios', 'android'])(
-    'uses native WeChat on %s for configured Mainland China builds',
-    (platform) => {
+  it('uses native WeChat only on configured Mainland China iOS builds', () => {
+    for (const platform of ['ios', 'android']) {
       for (const region of ['cn', 'global'] as const) {
         for (const nativeSupported of [true, false]) {
           expect(
@@ -15,11 +14,11 @@ describe('resolveMobileSocialLoginMode', () => {
               platform,
               nativeSupported,
             }),
-          ).toBe(region === 'cn' && nativeSupported ? 'native' : null);
+          ).toBe(platform === 'ios' && region === 'cn' && nativeSupported ? 'native' : null);
         }
       }
-    },
-  );
+    }
+  });
 
   it.each(['ios', 'android'])(
     'hides WeChat on %s when explicitly disabled',

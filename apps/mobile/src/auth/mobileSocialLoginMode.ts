@@ -19,7 +19,8 @@ export function resolveMobileSocialLoginMode(input: {
   if (
     input.provider === 'wechat' &&
     (!(input.wechatLoginEnabled ?? MOBILE_WECHAT_LOGIN_ENABLED) ||
-      input.region !== 'cn')
+      input.region !== 'cn' ||
+      input.platform !== 'ios')
   ) {
     return null;
   }
