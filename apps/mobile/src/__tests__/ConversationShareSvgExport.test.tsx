@@ -198,14 +198,18 @@ afterEach(async () => {
   expect(vi.getTimerCount()).toBe(0);
   vi.useRealTimers();
 });
-function render(width = 390, dark = false) {
+function render(
+  width = 390,
+  dark = false,
+  messages: readonly ConversationShareMessage[] = [message],
+) {
   const colors = dark ? darkColors : lightColors;
   root.render(
     <StrictMode>
       <ConversationShareSvg
         ref={ref}
-        messages={[message]}
-        allShareableIds={["m"]}
+        messages={messages}
+        allShareableIds={messages.map((entry) => entry.clientId)}
         colors={{
           ...colors,
           dark,
@@ -245,15 +249,21 @@ async function start() {
 }
 
 describe("SVG export lifecycle", () => {
-  it("keeps the Android SVG view below the bitmap limit at device density", async () => {
+  it("keeps a tall Android conversation below the physical bitmap limit", async () => {
     native.os = "android";
     native.density = 3;
-    await act(async () => render(2_500));
+    const messages = Array.from({ length: 100 }, (_, index) => ({
+      clientId: `long-${index}`,
+      kind: "assistant" as const,
+      body: "A message in a long conversation",
+    }));
+    await act(async () => render(390, false, messages));
     const svg = host.querySelector<HTMLElement>('[data-svg="true"]')!;
     const width = Number(svg.dataset.width);
     const height = Number(svg.dataset.height);
+    expect(height).toBeGreaterThan(2_500);
+    expect(height).toBeGreaterThan(width * 8);
     expect(width * height * native.density ** 2).toBeLessThanOrEqual(12_000_000);
-    expect(width).toBeLessThan(5_000);
   });
 
   it.each([false, true])(
