@@ -103,6 +103,8 @@ const log = createLogger('SessionCard');
 
 const CARD_TITLE_STATUS_SLOT_CLASS =
   'inline-flex h-[1em] w-3 items-center justify-center align-[-0.08em]';
+/** 卡片归档确认胶囊的尺寸类:胶囊本体与标题行里的隐形占位共用,保证宽度一致。 */
+const CARD_ARCHIVE_CONFIRM_CLASS = 'w-max min-w-14 whitespace-nowrap';
 const CARD_TITLE_META_SLOT_CLASS =
   'ml-1 inline-flex h-[1em] w-3 items-center justify-center align-[-0.08em]';
 
@@ -939,7 +941,7 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
               }}
               onPointerDown={(e) => e.stopPropagation()}
               onDoubleClick={(e) => e.stopPropagation()}
-              className="absolute right-[6px] top-[6px] z-20 w-max min-w-14 whitespace-nowrap"
+              className={cn('absolute right-[6px] top-[6px] z-20', CARD_ARCHIVE_CONFIRM_CLASS)}
               aria-label={t('ccAgent.sidebar.sessionMenu.archived')}
             >
               {t('ccAgent.sidebar.sessionMenu.archived')}
@@ -954,14 +956,16 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
             draggable={splitDragHandleActive}
             className={cn(
               'relative flex items-start',
-              // 右上操作钮浮在内容上方:浮出时标题行右侧让出同宽(最宽为确认胶囊),
-              // 标题让位、紧跟标题的标签色球不被操作钮盖住。让位条件与操作钮显隐
-              // 同源(卡片 hover / 操作钮自身 focus-within / 菜单 / 确认胶囊);卡片本身
-              // 获得焦点时操作钮不显示,也不让位。
+              // 右上操作钮浮在内容上方:浮出时标题行右侧让出操作钮宽度(两枚固定
+              // 24px 图标钮),标题让位、紧跟标题的标签色球不被盖住。让位条件与操作钮
+              // 显隐同源(卡片 hover / 操作钮自身 focus-within / 菜单);卡片本身获得
+              // 焦点时操作钮不显示,也不让位。确认胶囊宽度随语言变化,另由下方同款
+              // 隐形占位按实际宽度让位。
               !navigationOnly &&
                 !isEditing &&
+                !archivePending &&
                 !!session.tags?.length &&
-                (menuPos !== null || archivePending
+                (menuPos !== null
                   ? 'pr-14'
                   : 'group-hover/card:pr-14 peer-focus-within/card-actions:pr-14'),
             )}
@@ -991,6 +995,22 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
               <span className="flex h-[1.22em] shrink-0 items-center text-12">
                 <TaskTagDots tags={session.tags} />
               </span>
+            ) : null}
+            {/* 归档确认胶囊的隐形同款占位:与胶囊同文案同样式,按实际宽度让位。 */}
+            {!isEditing && canQuickArchive && archivePending && session.tags?.length ? (
+              <Button
+                variant="secondary"
+                tone="danger-surface"
+                size="xxs"
+                compact
+                type="button"
+                tabIndex={-1}
+                aria-hidden
+                data-card-archive-confirm-spacer="true"
+                className={cn('invisible pointer-events-none shrink-0', CARD_ARCHIVE_CONFIRM_CLASS)}
+              >
+                {t('ccAgent.sidebar.sessionMenu.archived')}
+              </Button>
             ) : null}
             {isEditing && (
               <SessionRenameInput

@@ -1274,5 +1274,27 @@ describe('SessionCard visual cases', () => {
       const { container: untagged } = renderVariant('card', { ...baseSession, tags: [] });
       expect(untagged.querySelector('[class*="group-hover/card:pr-14"]')).toBeNull();
     });
+
+    it('card: 归档确认胶囊按实际宽度让位(同文案同样式的隐形占位)', () => {
+      const { container } = renderVariant('card', { ...baseSession, tags });
+      expect(container.querySelector('[data-card-archive-confirm-spacer]')).toBeNull();
+      fireEvent.click(within(container).getByRole('button', { name: '归档' }));
+      const pill = within(container).getByRole('button', { name: '归档' });
+      const spacer = container.querySelector<HTMLElement>('[data-card-archive-confirm-spacer="true"]');
+      expect(spacer).not.toBeNull();
+      expect(spacer!.textContent).toBe(pill.textContent);
+      expect(spacer!.getAttribute('aria-hidden')).toBe('true');
+      expect(spacer!.tabIndex).toBe(-1);
+      expect(spacer!.className).toContain('invisible');
+      for (const cls of ['w-max', 'min-w-14', 'whitespace-nowrap']) {
+        expect(pill.className).toContain(cls);
+        expect(spacer!.className).toContain(cls);
+      }
+      // 占位与色球同在标题行,位于色球之后;确认态不再叠加固定 pr-14。
+      const titleRow = dotsFor(container)!.closest<HTMLElement>('.items-start')!;
+      expect(spacer!.parentElement).toBe(titleRow);
+      expect(titleRow.className).not.toMatch(/(?:^|\s)pr-14(?:\s|$)/);
+      expect(titleRow.className).not.toContain('group-hover/card:pr-14');
+    });
   });
 });
