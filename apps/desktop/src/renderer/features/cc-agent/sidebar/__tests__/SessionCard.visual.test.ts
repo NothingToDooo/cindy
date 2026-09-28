@@ -1200,4 +1200,73 @@ describe('SessionCard visual cases', () => {
     );
     expect(sessionRowEl().querySelector('.session-status-breathing')).toBeNull();
   });
+
+  describe('任务标签紧跟标题常显', () => {
+    const baseSession = sessionCardVisualCases.find((item) => item.id === 'short-idle-cc')!.session;
+    const tags = [
+      { id: 'tag-red', name: 'Red tag', color: 'red' as const, favoriteOrder: 0, revision: 1 },
+      { id: 'tag-blue', name: 'Blue tag', color: 'blue' as const, favoriteOrder: 1, revision: 1 },
+    ];
+    const baseProps = {
+      isActive: false,
+      isRunning: false,
+      isAttached: false,
+      hasAttentionNotification: false,
+      isSelected: false,
+      onClick: vi.fn(),
+      onAction: vi.fn(),
+      onRename: vi.fn(),
+      onTogglePin: vi.fn(),
+      projectOptions: [],
+    };
+    const variants = ['text', 'list', 'card'] as const;
+    const renderVariant = (variant: (typeof variants)[number], session: typeof baseSession) =>
+      render(
+        variant === 'text'
+          ? createElement(SessionItem, { ...baseProps, session })
+          : createElement(SessionCard, { ...baseProps, session, variant }),
+      );
+    const dotsFor = (container: HTMLElement) =>
+      container.querySelector<HTMLElement>('[aria-label="Red tag, Blue tag"]');
+    const titleNode = (container: HTMLElement) =>
+      Array.from(container.querySelectorAll<HTMLElement>('span, div')).find(
+        (node) => node.children.length === 0 && node.textContent === baseSession.title,
+      )!;
+
+    it.each(variants)('%s: 色球紧跟标题，不在右侧任务信息槽', (variant) => {
+      const { container } = renderVariant(variant, { ...baseSession, tags });
+      const dots = dotsFor(container);
+      expect(dots).not.toBeNull();
+      expect(dots!.querySelectorAll('[aria-label="Red tag"], [aria-label="Blue tag"]')).toHaveLength(2);
+      // 文档顺序:标题在前、色球紧随其后;右侧信息槽(ml-auto)内不含色球。
+      const title = titleNode(container);
+      expect(title.compareDocumentPosition(dots!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      const infoSlot = container.querySelector<HTMLElement>('.ml-auto');
+      if (infoSlot) expect(infoSlot.contains(dots!)).toBe(false);
+    });
+
+    it.each(variants)('%s: 无标签时不渲染色球、不占位', (variant) => {
+      const { container } = renderVariant(variant, { ...baseSession, tags: [] });
+      expect(container.querySelector('[aria-label="Red tag"]')).toBeNull();
+      expect(container.querySelector('.h-\\[1\\.22em\\]')).toBeNull();
+    });
+
+    it.each(variants)('%s: 悬停与菜单态不改写色球外圈颜色', (variant) => {
+      const { container } = renderVariant(variant, { ...baseSession, tags });
+      const row = container.querySelector<HTMLElement>('[data-sidebar-session-row="true"]');
+      expect(row).not.toBeNull();
+      // CINDY 的 hover 底是半透明叠加色,用作外圈会透出色球本色、描边消失。
+      expect(row!.className).not.toMatch(/--task-tag-ring-bg:hsl\(var\(--sidebar-item-hover\)\)/);
+    });
+
+    it('card: 操作钮浮出时标题行右侧让位，色球不被遮挡', () => {
+      const { container } = renderVariant('card', { ...baseSession, tags });
+      const titleRow = dotsFor(container)!.closest<HTMLElement>('.items-start')!;
+      expect(titleRow.className).toContain('group-hover/card:pr-14');
+      expect(titleRow.className).toContain('group-focus-within/card:pr-14');
+      cleanup();
+      const { container: untagged } = renderVariant('card', { ...baseSession, tags: [] });
+      expect(untagged.querySelector('[class*="group-hover/card:pr-14"]')).toBeNull();
+    });
+  });
 });

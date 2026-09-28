@@ -951,7 +951,17 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
             data-split-group-drag-handle={splitDragHandleActive ? 'true' : undefined}
             data-no-drag={splitDragHandleActive ? 'true' : undefined}
             draggable={splitDragHandleActive}
-            className="relative flex items-start"
+            className={cn(
+              'relative flex items-start',
+              // 右上操作钮浮在内容上方:浮出时标题行右侧让出同宽(最宽为确认胶囊),
+              // 标题让位、紧跟标题的标签色球不被操作钮盖住。
+              !navigationOnly &&
+                !isEditing &&
+                !!session.tags?.length &&
+                (menuPos !== null || archivePending
+                  ? 'pr-14'
+                  : 'group-hover/card:pr-14 group-focus-within/card:pr-14'),
+            )}
           >
             <div
               className={cn(
