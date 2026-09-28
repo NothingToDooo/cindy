@@ -104,6 +104,7 @@ export function BotGroupChatView() {
 function BotGroupChatContent({ groupId }: { groupId: string }) {
   const { t, i18n } = useTranslation();
   const controlledBy = useControlledBy();
+  const hasControlledBanner = controlledBy.length > 0;
   const navigate = useNavigate();
   const location = useLocation();
   const [state, setState] = useState<GroupViewState>({ kind: 'loading' });
@@ -233,7 +234,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
   }, [group?.name, headerMembers, openSettings, separator, settingsLabel]);
   useRegisterContentHeader(header);
 
-  // Follow new messages only while the reader is already at the bottom.
+  // Follow new messages and banner viewport changes only while the reader is at the bottom.
   const lastSequence = messages[messages.length - 1]?.sequence ?? 0;
   // Several Bots think at once in a broadcast round's first circle; the key follows the set.
   const speakingKey =
@@ -248,7 +249,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
       return;
     }
     if (stickToBottomRef.current) element.scrollTop = element.scrollHeight;
-  }, [lastSequence, speakingKey, messages.length]);
+  }, [lastSequence, speakingKey, messages.length, hasControlledBanner]);
 
   // Markdown, code blocks and avatars finish layout after the first paint; keep a reader
   // who is at the bottom pinned there while the content grows.
@@ -517,7 +518,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
           ))}
         </div>
       </div>
-      {controlledBy.length > 0 && (
+      {hasControlledBanner && (
         // Match the chat composer notice; mounting inline also suppresses the global fallback.
         <div className="shrink-0 px-5 pt-2">
           <div className="mx-auto w-full max-w-[760px]">

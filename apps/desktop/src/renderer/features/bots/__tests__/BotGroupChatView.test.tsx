@@ -258,6 +258,34 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('BotGroupChatView', () => {
+  it.each([true, false])('preserves the reader position when the notice changes (pinned=%s)', async (pinned) => {
+    const view = renderView();
+    await screen.findByRole('textbox');
+    const scroller = view.container.querySelector('main > div') as HTMLDivElement;
+    const main = scroller.parentElement!;
+    let top = 0;
+    // jsdom has no layout. Model a fixed content height and the viewport consumed
+    // by the mounted notice; scrollTop follows the browser's clamping behavior.
+    Object.defineProperties(scroller, {
+      scrollHeight: { configurable: true, get: () => 1600 },
+      clientHeight: {
+        configurable: true,
+        get: () => main.querySelector('[data-controlled-banner-chip]') ? 564 : 600,
+      },
+      scrollTop: {
+        configurable: true,
+        get: () => top,
+        set: (value: number) => { top = Math.min(value, scroller.scrollHeight - scroller.clientHeight); },
+      },
+    });
+    scroller.scrollTop = pinned ? 1000 : 180;
+    fireEvent.scroll(scroller);
+    act(() => mocks.controlledPush?.({ controllers: [{ deviceId: 'studio', name: 'Mac Studio' }] }));
+    expect(scroller.scrollTop).toBe(pinned ? 1036 : 180);
+    act(() => mocks.controlledPush?.({ controllers: [] }));
+    expect(scroller.scrollTop).toBe(pinned ? 1000 : 180);
+  });
+
   it('hosts the connection notice before the composer and restores the global fallback on exit', async () => {
     mocks.getControlledState.mockResolvedValue({
       controlledBy: [{ deviceId: 'studio', name: 'Mac Studio' }],
