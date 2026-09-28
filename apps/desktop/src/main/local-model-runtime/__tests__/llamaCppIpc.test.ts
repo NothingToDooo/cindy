@@ -1,10 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { IpcHandler } from '../../maker-ipc/ipcHandlerRegistry.js';
 import { MAKER_INVOKE } from '../../maker-ipc/channels.js';
-const mocks = vi.hoisted(() => ({ ensure: vi.fn(), resolve: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  ensure: vi.fn(),
+  resolve: vi.fn(),
+  exists: vi.fn(),
+  catalog: vi.fn(),
+}));
 vi.mock('../../lifecycle.js', () => ({ onQuit: vi.fn() }));
 vi.mock('../../maker-host/active-catalog.js', () => ({
   getActiveLocalModelCatalog: () => undefined,
+  getActiveCatalog: mocks.catalog,
+}));
+vi.mock('../../maker-host/custom-provider-store.js', () => ({
+  customProviderExists: mocks.exists,
 }));
 vi.mock('../managedLlamaCppProvider.js', () => ({ ensureManagedLlamaCppProvider: mocks.ensure }));
 vi.mock('../llamaCppDownloads.js', async (original) => ({
@@ -55,7 +64,11 @@ function harness() {
     },
   };
 }
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  mocks.exists.mockResolvedValue(true);
+  mocks.catalog.mockReturnValue({ providers: [{ id: 'cindy-local-llamacpp' }] });
+});
 describe('managed llama.cpp IPC boundary', () => {
   it.each([
     MAKER_INVOKE.LLAMACPP_STATUS,
@@ -89,6 +102,42 @@ describe('managed llama.cpp IPC boundary', () => {
     expect(h.deps.broadcastChanged).toHaveBeenCalledOnce();
     expect(h.service.start).not.toHaveBeenCalled();
   });
+  it('recovers a cleared catalog after persistence without a pending-refresh flag', async () => {
+    const h = harness();
+    mocks.ensure.mockResolvedValueOnce(true).mockResolvedValue(false);
+    h.deps.refreshCatalog
+      .mockImplementationOnce(async () => {
+        mocks.catalog.mockReturnValue({ providers: [] });
+      })
+      .mockImplementationOnce(async () => {}) // another swallowed read failure
+      .mockImplementationOnce(async () => {
+        mocks.catalog.mockReturnValue({
+          providers: [{ id: 'cindy-local-llamacpp' }, { id: 'other' }],
+        });
+      });
+    for (let poll = 0; poll < 4; poll++) await h.invoke(MAKER_INVOKE.LLAMACPP_STATUS);
+    expect(h.deps.refreshCatalog).toHaveBeenCalledTimes(3);
+    expect(h.deps.broadcastChanged).toHaveBeenCalledTimes(3);
+    expect(mocks.exists).toHaveBeenCalledTimes(2);
+    expect(h.service.start).not.toHaveBeenCalled();
+  });
+  it.each(['deleted', 'owner-changed'] as const)(
+    'does not repair an absent catalog for %s connection',
+    async (outcome) => {
+      const h = harness();
+      mocks.ensure.mockResolvedValue(false);
+      mocks.catalog.mockReturnValue({ providers: [] });
+      mocks.exists.mockImplementationOnce(async () => {
+        if (outcome === 'owner-changed') h.changeOwner();
+        return outcome !== 'deleted';
+      });
+      const poll = h.invoke(MAKER_INVOKE.LLAMACPP_STATUS);
+      if (outcome === 'owner-changed') await expect(poll).rejects.toThrow('OWNER_CHANGED');
+      else await poll;
+      expect(h.deps.refreshCatalog).not.toHaveBeenCalled();
+      expect(h.deps.broadcastChanged).not.toHaveBeenCalled();
+    },
+  );
   it('validates pause/resume controls and totals every shard for the manual picker', async () => {
     const h = harness();
     await h.invoke(MAKER_INVOKE.LLAMACPP_CANCEL, 'pause');

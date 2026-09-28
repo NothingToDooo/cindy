@@ -1,5 +1,9 @@
 import os from 'node:os';
-import { validLlamaCppFile, validLlamaCppRepo } from '../../shared/llamaCpp.js';
+import {
+  MANAGED_LLAMACPP_PROVIDER_ID,
+  validLlamaCppFile,
+  validLlamaCppRepo,
+} from '../../shared/llamaCpp.js';
 import type { IpcHandlerRegistry } from '../maker-ipc/ipcHandlerRegistry.js';
 import { MAKER_INVOKE } from '../maker-ipc/channels.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
@@ -9,7 +13,8 @@ import { getManagedLlamaCppService, type LlamaCppService } from './llamaCppServi
 import { resolveHfRepository, selectGgufShards } from './llamaCppDownloads.js';
 import { ensureManagedLlamaCppProvider } from './managedLlamaCppProvider.js';
 import { resolveLlamaCppCatalog, resolveLlamaCppModelLists } from '../../shared/llamaCppCatalog.js';
-import { getActiveLocalModelCatalog } from '../maker-host/active-catalog.js';
+import { getActiveCatalog, getActiveLocalModelCatalog } from '../maker-host/active-catalog.js';
+import { customProviderExists } from '../maker-host/custom-provider-store.js';
 
 export function registerLlamaCppHandlers(
   registry: IpcHandlerRegistry,
@@ -80,12 +85,21 @@ export function registerLlamaCppHandlers(
     const snapshot = await service.snapshot();
     // Installed files are device-wide; repair only an existing current-owner
     // connection after account switches or a missed completion notification.
+    const changed = await ensureManagedLlamaCppProvider(
+      snapshot.models,
+      active,
+      resolveLlamaCppCatalog((deps.getLocalCatalog ?? getActiveLocalModelCatalog)()),
+    );
+    if (!active()) throw new Error('OWNER_CHANGED');
+    // A failed catalog refresh clears its in-memory custom providers even when
+    // persistence succeeded. Reconcile that absence on the existing poll, using
+    // current state rather than a separate dirty flag or retry lifecycle.
+    const missingFromCatalog = !getActiveCatalog().providers.some(
+      (provider) => provider.id === MANAGED_LLAMACPP_PROVIDER_ID,
+    );
     if (
-      await ensureManagedLlamaCppProvider(
-        snapshot.models,
-        active,
-        resolveLlamaCppCatalog((deps.getLocalCatalog ?? getActiveLocalModelCatalog)()),
-      )
+      changed ||
+      (missingFromCatalog && (await customProviderExists(MANAGED_LLAMACPP_PROVIDER_ID)))
     ) {
       if (!active()) throw new Error('OWNER_CHANGED');
       await deps.refreshCatalog();
