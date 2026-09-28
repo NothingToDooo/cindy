@@ -8473,6 +8473,8 @@ function initGlobalListeners(options: GlobalListenerOptions = {}): void {
     const isLiveToolEcho =
       existing?.role === mapped.role &&
       (mapped.role === 'tool_use' || mapped.role === 'tool_result');
+    const userAwaitsHistoryView =
+      mapped.role === 'user' && isAwaitingHistoryView(sessionId, mapped.clientId);
     // Stop 会乐观置 Idle，但真正的 interrupt 可能还在 IPC 队列里；此时旧 turn 继续喷出的
     // live tool + DB echo 仍必须走批通知，否则按钮一按下就退化回事故中的逐行 React fan-out。
     const deferNotification =
@@ -8506,7 +8508,10 @@ function initGlobalListeners(options: GlobalListenerOptions = {}): void {
             isFirstMessage: mapped.role === 'user' ? false : s.isFirstMessage,
           };
         }
-        const nextMessages = mergeMessages([mapped], s.messages, hydrateOptions);
+        const merged = mergeMessages([mapped], s.messages, hydrateOptions);
+        const nextMessages = userAwaitsHistoryView
+          ? reserveEchoedLocalUser(sessionId, s, merged, mapped.clientId)
+          : merged;
         const pendingQueue = s.pendingQueue.filter((item) => item.clientId !== mapped.clientId);
         if (nextMessages === s.messages && pendingQueue.length === s.pendingQueue.length) return s;
         return {
@@ -11161,6 +11166,42 @@ export function getRemoteHistoryView(sessionId: string) {
     return undefined;
   }
   return entry?.view;
+}
+/** 历史视图已接管渲染、但它的快照里还没有这一行。 */
+function isAwaitingHistoryView(sessionId: string, clientId: string): boolean {
+  const view = getRemoteHistoryView(sessionId);
+  if (!view) return false;
+  const snapshot = view.getSnapshot();
+  const inPage = historyViewLeaves(snapshot.items).some((item) =>
+    item.type === 'messages' && item.messages.some((row) => row.clientId === clientId));
+  if (inPage) return false;
+  for (const detail of snapshot.details.values()) {
+    if (detail.messages.some((row) => row.clientId === clientId)) return false;
+  }
+  return true;
+}
+/**
+ * 本端发出的 user 行(乐观气泡、排队项、插话)落库回声时，历史视图通常还没重读到它：
+ * 回声去掉 isPendingPersist 后它既不在快照里、也不再算本地行，气泡会消失到下一次
+ * 防抖重读才回来。沿用远程发送的位置预留，等历史视图确认(confirmRemoteUsers)再撤。
+ */
+function reserveEchoedLocalUser(
+  sessionId: string,
+  before: SessionChatState,
+  messages: ChatMessage[],
+  clientId: string,
+): ChatMessage[] {
+  const index = messages.findIndex((message) => message.clientId === clientId);
+  const row = index >= 0 ? messages[index] : undefined;
+  if (!row || row.role !== 'user' || row.localSendPrecedingClientIds) return messages;
+  const sentHere =
+    before.messages.some((message) => message.clientId === clientId && message.isPendingPersist) ||
+    before.pendingQueue.some((item) => item.clientId === clientId) ||
+    isLocalSentUserMessage(sessionId, clientId);
+  if (!sentHere) return messages;
+  const next = messages.slice();
+  next[index] = reserveRemoteUser(row, messages.slice(0, index));
+  return next;
 }
 function createRemoteHistoryView(sessionId: string) {
   const existing = getRemoteHistoryView(sessionId);
