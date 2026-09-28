@@ -1072,7 +1072,9 @@ export default function SettingsScreen() {
                     {t(
                       IS_TESTFLIGHT_BUILD
                         ? 'settings.version.testFlightContentUpdateUnavailable'
-                        : 'settings.version.devNoOta',
+                        : playManagedUpdates
+                          ? 'settings.version.googlePlayContentUpdateUnavailable'
+                          : 'settings.version.devNoOta',
                     )}
                   </Text>
                 ) : null}
