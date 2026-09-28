@@ -241,6 +241,18 @@ it('does not present a usable desktop when the host refuses initial control', as
   expect(snapshot).toMatchObject({ ready: false, controlling: false, error: 'controlUnavailable' });
 });
 
+it('shows a reconnectable error when host input is busy during control acquisition', async () => {
+  const firstControl = Promise.reject(new Error('[PRECONDITION_FAILED] DESKTOP_INPUT_BUSY'));
+  const f = await fixture(firstControl);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(snapshot).toMatchObject({ ready: false, controlling: false, error: 'controlUnavailable' });
+  controller.retry();
+  await vi.advanceTimersByTimeAsync(0);
+  present();
+  expect(f.control).toHaveBeenCalledTimes(2);
+  expect(snapshot).toMatchObject({ ready: true, controlling: true, error: null });
+});
+
 it('stops input and viewing after input queue overflow', async () => {
   await fixture();
   present();
