@@ -996,21 +996,24 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
                 <TaskTagDots tags={session.tags} />
               </span>
             ) : null}
-            {/* 归档确认胶囊的隐形同款占位:与胶囊同文案同样式,按实际宽度让位。 */}
+            {/* 归档确认胶囊的隐形同款占位:与胶囊同文案同样式,按实际宽度让位。
+                外包零高度容器只取宽度,不撑高单行标题,确认态卡片高度与瀑布流不动。 */}
             {!isEditing && canQuickArchive && archivePending && session.tags?.length ? (
-              <Button
-                variant="secondary"
-                tone="danger-surface"
-                size="xxs"
-                compact
-                type="button"
-                tabIndex={-1}
-                aria-hidden
-                data-card-archive-confirm-spacer="true"
-                className={cn('invisible pointer-events-none shrink-0', CARD_ARCHIVE_CONFIRM_CLASS)}
-              >
-                {t('ccAgent.sidebar.sessionMenu.archived')}
-              </Button>
+              <span aria-hidden className="h-0 shrink-0 overflow-hidden">
+                <Button
+                  variant="secondary"
+                  tone="danger-surface"
+                  size="xxs"
+                  compact
+                  type="button"
+                  tabIndex={-1}
+                  aria-hidden
+                  data-card-archive-confirm-spacer="true"
+                  className={cn('invisible pointer-events-none shrink-0', CARD_ARCHIVE_CONFIRM_CLASS)}
+                >
+                  {t('ccAgent.sidebar.sessionMenu.archived')}
+                </Button>
+              </span>
             ) : null}
             {isEditing && (
               <SessionRenameInput

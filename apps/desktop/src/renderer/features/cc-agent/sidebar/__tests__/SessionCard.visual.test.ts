@@ -1291,8 +1291,13 @@ describe('SessionCard visual cases', () => {
         expect(spacer!.className).toContain(cls);
       }
       // 占位与色球同在标题行,位于色球之后;确认态不再叠加固定 pr-14。
+      // 占位外包零高度容器:只贡献宽度,不撑高单行标题(卡片高度与瀑布流不动)。
       const titleRow = dotsFor(container)!.closest<HTMLElement>('.items-start')!;
-      expect(spacer!.parentElement).toBe(titleRow);
+      const spacerBox = spacer!.parentElement!;
+      expect(spacerBox.parentElement).toBe(titleRow);
+      expect(spacerBox.className).toContain('h-0');
+      expect(spacerBox.className).toContain('overflow-hidden');
+      expect(spacerBox.className).toContain('shrink-0');
       expect(titleRow.className).not.toMatch(/(?:^|\s)pr-14(?:\s|$)/);
       expect(titleRow.className).not.toContain('group-hover/card:pr-14');
     });
