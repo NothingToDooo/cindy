@@ -22,6 +22,12 @@
 
 按 [治理合同 §6](../../design-rules/design-governance.md#6-证据合同)，栅格文件只保留在 Git 忽略的临时目录，不提交到仓库。本 PR 尚未上传公开图片附件；下列命令可重建四张供审阅的 PNG，均带 fixture 标记。上传附件后可将对应 PR 评论链接追加到本索引。
 
+### PR 内的 HTML 效果证据
+
+[效果证据回复](https://github.com/makecindy/cindy/pull/5174#issuecomment-5865336542)：PR 描述「UI 变化」已附完整、可离线打开的静态 HTML 代码块，包含 Light/Dark 展开和收起四种效果。
+2026-09-28 从 `3f11d66a` 的生产组件 fixture DOM 与 computed styles 导出，重新渲染后已目检，并另存 PNG；无脚本、无网络请求，按钮仅供静态展示。
+这份导出补充视觉效果展示，不冒充真实 Electron 或交互验收；交互由上述浏览器回归独立覆盖。没有将 HTML 或 PNG 生成物提交到仓库。
+
 ```sh
 node apps/desktop/scripts/check-group-control-layout.mjs /path/to/chromium tmp/group-control-evidence/review-screenshots
 ```
