@@ -38,6 +38,7 @@ import {
 } from './llamaCppDownloads.js';
 import { windowsTarBin } from './ollamaInstall.js';
 import { readModelContextLimits } from '../maker-host/model-context-limit-store.js';
+import { assertManagedLlamaCppProvider } from './managedLlamaCppProvider.js';
 import { killProcessTree } from '../scheduler-host/proc-util.js';
 import { withCrossProcessLock } from '../device-link/crossProcessLock.js';
 import {
@@ -77,6 +78,7 @@ export async function findLlamaServer(root: string, depth = 0): Promise<string |
 export function createLlamaCppService(
   userDataDir: string,
   contextLimits: () => Record<string, number> = () => ({}),
+  validateStart: () => Promise<void> = async () => {},
 ) {
   const root = path.join(userDataDir, 'llamacpp-runtime');
   const modelsRoot = path.join(root, 'models');
@@ -478,6 +480,10 @@ export function createLlamaCppService(
           // Own the entire startup, including its first filesystem read. Stop
           // cancels this same operation; late scans cannot resurrect a runtime.
           signal.throwIfAborted();
+          // A different instance may have deleted the connection while this
+          // start waited. Read the provider again under the same lock as delete.
+          await validateStart();
+          signal.throwIfAborted();
           const preset = await currentPreset(signal);
           if (await reuseRuntime(preset, reload, signal)) return;
           const runtime = await installed();
@@ -694,7 +700,11 @@ export function createLlamaCppService(
 export type LlamaCppService = ReturnType<typeof createLlamaCppService>;
 let current: LlamaCppService | undefined;
 export function getManagedLlamaCppService(userDataDir: string): LlamaCppService {
-  return (current ??= createLlamaCppService(userDataDir, readModelContextLimits));
+  return (current ??= createLlamaCppService(
+    userDataDir,
+    readModelContextLimits,
+    assertManagedLlamaCppProvider,
+  ));
 }
 /** Deletion must not create a runtime merely to stop it. */
 export async function stopManagedLlamaCppService(

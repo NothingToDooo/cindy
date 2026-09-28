@@ -34,6 +34,9 @@ vi.mock('../../reviewer/reviewOwnerLiveness.js', () => ({
 vi.mock('../../maker-host/model-context-limit-store.js', () => ({
   readModelContextLimits: () => ({}),
 }));
+vi.mock('../managedLlamaCppProvider.js', () => ({
+  assertManagedLlamaCppProvider: vi.fn(),
+}));
 vi.mock('node:child_process', async (original) => ({
   ...(await original<typeof import('node:child_process')>()),
   spawn: mocks.spawn,
@@ -448,6 +451,71 @@ describe('managed llama.cpp model lifecycle', () => {
       if (fail) expect(result.message).toBe('delete failed');
       else expect(result).toBeUndefined();
       await service.download({ repo: 'owner/repo', file: 'model.gguf' });
+    },
+  );
+  it.each([false, true])(
+    'revalidates a queued start after another instance deletes the connection (reload=%s)',
+    async (reload) => {
+      const runtime = path.join(root, 'llamacpp-runtime');
+      await mkdir(runtime);
+      await writeFile(path.join(runtime, 'server'), 'stub');
+      await writeFile(
+        path.join(runtime, 'current.json'),
+        JSON.stringify({ binary: 'server', version: 'test' }),
+      );
+      let present = true;
+      const validate = vi.fn(async () => {
+        if (!present) throw new Error('LOCAL_LLAMACPP_NOT_READY');
+      });
+      const starter = createLlamaCppService(root, () => ({}), validate);
+      const remover = createLlamaCppService(root);
+      let entered!: () => void;
+      const deleting = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const removal = remover.remove(async () => {
+        entered();
+        await gate;
+        present = false;
+      });
+      await deleting;
+      let scanned!: () => void;
+      const scanning = new Promise<void>((resolve) => {
+        scanned = resolve;
+      });
+      mocks.readdir.mockImplementationOnce(async () => {
+        scanned();
+        return [];
+      });
+      const pending = starter.start(reload).catch((error) => error);
+      await scanning;
+      expect(validate).not.toHaveBeenCalled();
+      release();
+      await removal;
+      expect((await pending).message).toBe('LOCAL_LLAMACPP_NOT_READY');
+      expect(validate).toHaveBeenCalledOnce();
+      expect(mocks.spawn).not.toHaveBeenCalled();
+      expect(mocks.ownerProof).not.toHaveBeenCalled();
+      // A later explicit re-add permits normal startup without a tombstone.
+      present = true;
+      const child = Object.assign(new EventEmitter(), {
+        kill: vi.fn(() => {
+          child.emit('exit');
+          return true;
+        }),
+      });
+      mocks.spawn.mockReturnValue(child);
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => Response.json({ status: 'ok' })),
+      );
+      await starter.start(reload);
+      expect(mocks.spawn).toHaveBeenCalledOnce();
+      await starter.dispose();
     },
   );
   it.each(['stop', 'dispose', 'remove'] as const)(

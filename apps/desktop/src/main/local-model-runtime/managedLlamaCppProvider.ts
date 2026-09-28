@@ -24,6 +24,12 @@ export function isManagedLlamaCppProvider(config: CustomProviderConfig): boolean
     )
   );
 }
+export async function assertManagedLlamaCppProvider(): Promise<void> {
+  const config = await getCustomProvider(MANAGED_LLAMACPP_PROVIDER_ID);
+  if (!config || !isManagedLlamaCppProvider(config)) {
+    throw new Error('[LOCAL_LLAMACPP_NOT_READY] Reconnect llama.cpp in Settings → Model Providers.');
+  }
+}
 export function buildManagedLlamaCppProvider(
   models: LlamaCppModel[],
   existing?: CustomProviderConfig,

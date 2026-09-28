@@ -10,9 +10,21 @@ import {
   buildManagedLlamaCppProvider,
   ensureManagedLlamaCppProvider,
   isManagedLlamaCppProvider,
+  assertManagedLlamaCppProvider,
 } from '../managedLlamaCppProvider.js';
 
 describe('managed llama.cpp provider', () => {
+  it('rechecks the current stored connection and rejects missing or customized providers', async () => {
+    const config = buildManagedLlamaCppProvider([]);
+    store.getCustomProvider.mockResolvedValue(config);
+    await expect(assertManagedLlamaCppProvider()).resolves.toBeUndefined();
+    store.getCustomProvider.mockResolvedValue(null);
+    await expect(assertManagedLlamaCppProvider()).rejects.toThrow('LOCAL_LLAMACPP_NOT_READY');
+    config.runtimes.pi!.baseUrl = 'http://example.test/v1';
+    store.getCustomProvider.mockResolvedValue(config);
+    await expect(assertManagedLlamaCppProvider()).rejects.toThrow('LOCAL_LLAMACPP_NOT_READY');
+    vi.resetAllMocks();
+  });
   it.each(['published', 'deleted', 'changed', 'owner-changed'] as const)(
     'settles overlapping reconciliation after the winning write: %s',
     async (outcome) => {
