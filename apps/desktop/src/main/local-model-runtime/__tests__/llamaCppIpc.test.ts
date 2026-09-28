@@ -197,6 +197,18 @@ describe('managed llama.cpp IPC boundary', () => {
     ).rejects.toThrow('OWNER_CHANGED');
     expect(h.deps.broadcastChanged).not.toHaveBeenCalled();
   });
+  it('reports transfer timeout through the existing visible failure path', async () => {
+    const h = harness();
+    h.service.download.mockRejectedValueOnce(new Error('DOWNLOAD_TIMEOUT'));
+    await expect(
+      h.invoke(MAKER_INVOKE.LLAMACPP_DOWNLOAD, {
+        repo: 'owner/repo',
+        file: 'a.gguf',
+      }),
+    ).rejects.toThrow('LLAMACPP_OPERATION_FAILED');
+    expect(mocks.ensure).not.toHaveBeenCalled();
+    expect(h.deps.broadcastChanged).not.toHaveBeenCalled();
+  });
   it('checks sender before installing or downloading', async () => {
     const h = harness();
     h.deps.assertTrustedSender.mockImplementation(() => {

@@ -30,6 +30,64 @@ beforeEach(async () => {
 });
 afterEach(() => vi.unstubAllGlobals());
 describe('managed llama.cpp downloads', () => {
+  it.each(['timeout', 'cancel'] as const)(
+    'distinguishes a stalled body from %s and cleans partial bytes',
+    async (reason) => {
+      const dir = await mkdtemp(path.join(os.tmpdir(), 'cindy-download-timeout-'));
+      const dest = path.join(dir, 'model.gguf');
+      const controller = new AbortController();
+      let stall!: () => void;
+      const original = globalThis.setTimeout;
+      const timer = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((
+        ...args: Parameters<typeof setTimeout>
+      ) => {
+        const [fn, ms] = args;
+        if (ms === 120_000) stall = fn as () => void;
+        return original(...args);
+      }) as typeof setTimeout);
+      try {
+        vi.stubGlobal(
+          'fetch',
+          vi.fn(
+            async () =>
+              new Response(
+                new ReadableStream({
+                  start(c) {
+                    c.enqueue(new Uint8Array([1]));
+                  },
+                }),
+              ),
+          ),
+        );
+        const result = downloadLlamaCppAsset(
+          {
+            url: 'https://huggingface.co/owner/repo/resolve/main/model.gguf',
+            size: 2,
+            sha256: '',
+          },
+          dest,
+          'hf',
+          controller.signal,
+          () => {},
+        ).catch((error) => error);
+        await vi.waitFor(async () =>
+          expect(await readFile(`${dest}.partial`)).toEqual(Buffer.from([1])),
+        );
+        if (reason === 'cancel') controller.abort();
+        stall(); // A later timeout must not replace the user's earlier cancellation.
+        const error = await result;
+        if (reason === 'timeout') {
+          expect(error.message).toBe('DOWNLOAD_TIMEOUT');
+          expect(error.name).not.toBe('AbortError');
+        } else expect(error.name).toBe('AbortError');
+        expect(await readdir(dir)).toEqual([]);
+      } finally {
+        controller.abort();
+        timer.mockRestore();
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
   it.each(['EACCES', 'EPERM', 'EIO', 'READ_EIO'])(
     'retains a paused prefix when stat fails with %s',
     async (code) => {

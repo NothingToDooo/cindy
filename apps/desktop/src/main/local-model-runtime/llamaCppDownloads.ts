@@ -212,6 +212,10 @@ export async function downloadLlamaCppAsset(
     await rename(partial, destination);
   } catch (error) {
     preservePrefix = error instanceof LlamaCppResumeReadError;
+    // Node pipeline wraps any abort as AbortError. Keep the winning timeout
+    // reason so callers do not mistake a stalled transfer for user cancellation.
+    if (stalled.signal.aborted && signal.reason === stalled.signal.reason)
+      throw stalled.signal.reason;
     throw error;
   } finally {
     clearTimeout(idleTimer);
