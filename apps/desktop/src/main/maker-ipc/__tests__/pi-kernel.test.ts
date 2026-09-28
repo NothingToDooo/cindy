@@ -40,5 +40,8 @@ describe('Pi version IPC boundary', () => {
     manager.install.mockRejectedValueOnce(new PiKernelError('busy'));
     await expect(handlers.install({}, { source: 'upstream', version: '0.87.1' })).rejects.toMatchObject({ code: 'INTERNAL' });
     expect(logError).not.toHaveBeenCalled();
+    manager.state.mockRejectedValueOnce(new Error('state unavailable'));
+    await expect(handlers.install({}, { source: 'upstream', version: '0.87.1' })).rejects.toMatchObject({ code: 'INTERNAL' });
+    expect(logError).not.toHaveBeenCalled();
   });
 });

@@ -30,18 +30,22 @@ export function createPiKernelIpc<Event>(deps: {
         throwIpcError('INVALID_PARAMS', 'Invalid Pi install target');
       }
       try {
-        await deps.manager().install({ source: body.source, version: body.version });
+        try {
+          await deps.manager().install({ source: body.source, version: body.version });
+        } catch (error) {
+          if (!(error instanceof PiKernelError)) {
+            // The renderer only sees a generic failure; keep the stage and errno here
+            // (never the message, which may carry local paths).
+            log.error('Pi kernel installation failed', {
+              source: body.source,
+              stage: piBinaryUpdateFailureStage(error) ?? 'unknown',
+              code: (error as NodeJS.ErrnoException)?.code ?? 'none',
+            });
+          }
+          throw error;
+        }
         return await deps.manager().state();
       } catch (error) {
-        if (!(error instanceof PiKernelError)) {
-          // The renderer only sees a generic failure; keep the stage and errno here
-          // (never the message, which may carry local paths).
-          log.error('Pi kernel installation failed', {
-            source: body.source,
-            stage: piBinaryUpdateFailureStage(error) ?? 'unknown',
-            code: (error as NodeJS.ErrnoException)?.code ?? 'none',
-          });
-        }
         const code = error instanceof PiKernelError && error.reason === 'version-changed' ? 'PRECONDITION_FAILED' : 'INTERNAL';
         throwIpcError(code, error instanceof PiKernelError ? error.reason : 'Pi kernel installation failed');
       }

@@ -108,9 +108,11 @@ export async function renameWithTransientRetry(
   }
 }
 
-function logCleanupFailure(error: unknown): void {
-  // Code only: the path carries the user's profile directory.
-  log.warn('Pi install cleanup failed; leftover temporary directory', { code: (error as NodeJS.ErrnoException)?.code ?? 'unknown' });
+function logCleanupFailure(target: 'staging' | 'unpublished-destination') {
+  // Target label and code only: the path carries the user's profile directory.
+  return (error: unknown): void => log.warn('Pi install cleanup failed; leftover directory', {
+    target, code: (error as NodeJS.ErrnoException)?.code ?? 'unknown',
+  });
 }
 
 /** Both Cindy release and upstream installs publish immutable, version-named directories. */
@@ -158,8 +160,8 @@ export async function installPiBinaryRelease(
       published = true;
       return { binaryPath: finalBinary, version: release.version };
     } finally {
-      await fs.rm(stage, { recursive: true, force: true }).catch(logCleanupFailure);
-      if (!published) await fs.rm(destination, { recursive: true, force: true }).catch(logCleanupFailure);
+      await fs.rm(stage, { recursive: true, force: true }).catch(logCleanupFailure('staging'));
+      if (!published) await fs.rm(destination, { recursive: true, force: true }).catch(logCleanupFailure('unpublished-destination'));
     }
   } catch (error) {
     const failure = error instanceof Error ? error : new Error('Pi installation failed');
