@@ -14,6 +14,7 @@ import type {
 } from '../../../../shared/botGroupChat';
 
 const mocks = vi.hoisted(() => ({
+  groupId: 'g1',
   navigate: vi.fn(),
   getBotGroup: vi.fn(),
   sendBotGroupMessage: vi.fn(),
@@ -42,7 +43,7 @@ vi.mock('react-i18next', () => ({
 vi.mock('react-router-dom', () => ({
   useLocation: () => ({ pathname: '/bots/groups/g1', search: '' }),
   useNavigate: () => mocks.navigate,
-  useParams: () => ({ groupId: 'g1' }),
+  useParams: () => ({ groupId: mocks.groupId }),
 }));
 vi.mock('@/contexts/dataOwnerGeneration', () => ({
   getDataOwnerGeneration: () => 1,
@@ -204,6 +205,7 @@ function renderView() {
 }
 
 beforeEach(() => {
+  mocks.groupId = 'g1';
   __resetControlledBannerForTests();
   mocks.controlledPush = null;
   mocks.getControlledState.mockReset().mockResolvedValue({ controlledBy: [] });
@@ -270,7 +272,8 @@ describe('BotGroupChatView', () => {
       scrollHeight: { configurable: true, get: () => 1600 },
       clientHeight: {
         configurable: true,
-        get: () => main.querySelector('[data-controlled-banner-chip]') ? 564 : 600,
+        get: () => main.querySelector('[data-controlled-banner-chip]') ? 564
+          : main.querySelector('[data-controlled-banner="collapsed"]') ? 572 : 600,
       },
       scrollTop: {
         configurable: true,
@@ -282,8 +285,47 @@ describe('BotGroupChatView', () => {
     fireEvent.scroll(scroller);
     act(() => mocks.controlledPush?.({ controllers: [{ deviceId: 'studio', name: 'Mac Studio' }] }));
     expect(scroller.scrollTop).toBe(pinned ? 1036 : 180);
+    fireEvent.click(screen.getByRole('button', { name: 'remoteDevice.collapseControlledNotice' }));
+    expect(scroller.scrollTop).toBe(pinned ? 1028 : 180);
+    fireEvent.click(screen.getByRole('button', { name: 'remoteDevice.expandControlledNotice' }));
+    expect(scroller.scrollTop).toBe(pinned ? 1036 : 180);
     act(() => mocks.controlledPush?.({ controllers: [] }));
     expect(scroller.scrollTop).toBe(pinned ? 1000 : 180);
+  });
+
+  it('reuses the composer close and restore controls with independent group state', async () => {
+    mocks.getBotGroup.mockImplementation(async () => ({ ok: true, group: detail({ id: mocks.groupId }) }));
+    mocks.getControlledState.mockResolvedValue({
+      controlledBy: [{ deviceId: 'studio', name: 'Mac Studio' }],
+    });
+    const fallback = render(<ControlledBanner />);
+    let groupView = renderView();
+    fireEvent.click(await screen.findByRole('button', { name: 'remoteDevice.collapseControlledNotice' }));
+    expect(groupView.container.querySelector('[data-controlled-banner-chip]')).toBeNull();
+    expect(screen.getByRole('button', { name: 'remoteDevice.expandControlledNotice' })).toBeTruthy();
+    expect(fallback.container.childElementCount).toBe(0);
+    expect(mocks.revoke).not.toHaveBeenCalled();
+    expect(mocks.sendBotGroupMessage).not.toHaveBeenCalled();
+    groupView.unmount();
+
+    // A task with the same raw ID must not inherit the group's collapse state.
+    const task = render(<ControlledBanner placement="composer" sessionId="g1" />);
+    expect(task.container.querySelector('[data-controlled-banner-chip]')).toBeTruthy();
+    task.unmount();
+    mocks.groupId = 'g2';
+    groupView = renderView();
+    await screen.findByRole('textbox');
+    expect(groupView.container.querySelector('[data-controlled-banner-chip]')).toBeTruthy();
+    groupView.unmount();
+
+    mocks.groupId = 'g1';
+    groupView = renderView();
+    await screen.findByRole('textbox');
+    expect(groupView.container.querySelector('[data-controlled-banner-chip]')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'remoteDevice.expandControlledNotice' }));
+    expect(groupView.container.querySelector('[data-controlled-banner-chip]')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'remoteDevice.revokeAccess' })).toBeTruthy();
+    expect(fallback.container.childElementCount).toBe(0);
   });
 
   it('hosts the connection notice before the composer and restores the global fallback on exit', async () => {

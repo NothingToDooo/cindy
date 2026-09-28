@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Isolated production-component layout regression; no Electron or device connections.
-// Run: node apps/desktop/scripts/check-group-control-layout.mjs [Chromium executable]
+// Run: node apps/desktop/scripts/check-group-control-layout.mjs [Chromium executable] [screenshot directory]
 import assert from 'node:assert/strict';
-import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { readFileSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,6 +15,8 @@ import { chromium } from 'playwright-core';
 const desktop = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const renderer = path.join(desktop, 'src/renderer');
 const temp = mkdtempSync(path.join(os.tmpdir(), 'cindy-group-control-'));
+const screenshots = process.argv[3];
+if (screenshots) mkdirSync(screenshots, { recursive: true });
 // Stub only host-facing/unrendered dependencies. The page, composer, banner,
 // theme tokens and CSS are production implementations.
 const stubs = {
@@ -127,6 +129,15 @@ try {
       .locator('main > div')
       .first()
       .evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop);
+  const collapse = async () => {
+    await page.locator('[data-controlled-banner-collapse]').click();
+    await page.locator('[data-controlled-banner="collapsed"]').waitFor();
+    assert.equal(await page.locator('[data-controlled-banner-chip]').count(), 0);
+  };
+  const expand = async () => {
+    await page.locator('[data-controlled-banner="collapsed"]').click();
+    await page.locator('[data-controlled-banner-chip]').waitFor();
+  };
   let layouts = 0;
   for (const theme of ['light', 'dark']) {
     for (const width of [720, 800, 1280])
@@ -158,7 +169,12 @@ try {
             return {
               centerDelta: Math.abs(cr.x + cr.width / 2 - card.x - card.width / 2),
               noticeAbove: cr.bottom <= card.y,
-              actionsAccessible: [input, send, revoke].every(accessible),
+              actionsAccessible: [
+                input,
+                send,
+                revoke,
+                chip.querySelector('[data-controlled-banner-collapse]'),
+              ].every(accessible),
               overflow: document.documentElement.scrollWidth > innerWidth,
             };
           });
@@ -167,6 +183,33 @@ try {
             result.noticeAbove && result.actionsAccessible && !result.overflow,
             `Overlap/overflow: ${scenario}`,
           );
+          const capture =
+            screenshots &&
+            sidebar === 280 &&
+            ((theme === 'light' && width === 1280 && lines === 1) ||
+              (theme === 'dark' && width === 720 && lines === 8));
+          const imageName = `group-control-${theme}-${width === 1280 ? 'wide' : 'narrow'}`;
+          if (capture) await page.screenshot({ path: path.join(screenshots, `${imageName}.png`) });
+          await collapse();
+          const collapsed = await page.evaluate(() => {
+            const dot = document.querySelector('[data-controlled-banner="collapsed"]');
+            const r = dot.getBoundingClientRect();
+            const card = document.querySelector('textarea').parentElement.getBoundingClientRect();
+            return {
+              centerDelta: Math.abs(r.x + r.width / 2 - card.x - card.width / 2),
+              above: r.bottom <= card.y,
+              accessible: dot.contains(
+                document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2),
+              ),
+            };
+          });
+          assert(
+            collapsed.centerDelta < 1 && collapsed.above && collapsed.accessible,
+            `Collapsed indicator misplaced or blocked: ${scenario}`,
+          );
+          if (capture)
+            await page.screenshot({ path: path.join(screenshots, `${imageName}-collapsed.png`) });
+          await expand();
           layouts++;
         }
     // A real long thread: connecting changes only the scroller viewport, not content.
@@ -183,6 +226,10 @@ try {
     });
     await connect();
     assert((await bottomGap()) < 1, `Connection lost bottom pin (${theme})`);
+    await collapse();
+    assert((await bottomGap()) < 1, `Collapse lost bottom pin (${theme})`);
+    await expand();
+    assert((await bottomGap()) < 1, `Expand lost bottom pin (${theme})`);
     await connect(false);
     assert((await bottomGap()) < 1, `Disconnection lost bottom pin (${theme})`);
     const scroller = page.locator('main > div').first();
@@ -197,6 +244,18 @@ try {
       before,
       `Connection jumped away from history (${theme})`,
     );
+    await collapse();
+    assert.equal(
+      await scroller.evaluate((element) => element.scrollTop),
+      before,
+      `Collapse jumped away from history (${theme})`,
+    );
+    await expand();
+    assert.equal(
+      await scroller.evaluate((element) => element.scrollTop),
+      before,
+      `Expand jumped away from history (${theme})`,
+    );
     await connect(false);
     assert.equal(
       await scroller.evaluate((element) => element.scrollTop),
@@ -206,7 +265,7 @@ try {
   }
   assert.deepEqual(errors, []);
   console.log(
-    `PASS: ${layouts} layouts; bottom pin and history position survive connection changes in both themes.`,
+    `PASS: ${layouts} expanded/collapsed layouts; bottom pin and history position survive connection and collapse changes in both themes.`,
   );
 } finally {
   await browser?.close();
