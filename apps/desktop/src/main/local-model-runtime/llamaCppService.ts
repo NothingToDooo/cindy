@@ -314,6 +314,11 @@ export function createLlamaCppService(
             binary: path.relative(root, path.join(destination, relative)),
           }),
         );
+        // installed() already rejected this manifest under the configuration
+        // lock. Discard only that unusable pointer before publishing, so Windows
+        // never has to rename over an existing file. A failed repair stays
+        // uninstalled; there is no healthy installation to back up or restore.
+        await rm(manifest, { force: true });
         await rename(path.join(staging, 'current.json'), manifest);
         unpublished = undefined;
       } finally {

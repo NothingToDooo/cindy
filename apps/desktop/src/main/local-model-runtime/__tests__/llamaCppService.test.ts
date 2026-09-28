@@ -92,9 +92,13 @@ afterEach(async () => {
 });
 
 describe('managed llama.cpp model lifecycle', () => {
-  it.each(['write', 'rename', 'success'])(
-    'cleans only unpublished installation after %s',
-    async (stage) => {
+  it.each(
+    ['write', 'rename', 'success'].flatMap((stage) =>
+      ['absent', 'invalid-json', 'missing-binary'].map((previous) => ({ stage, previous })),
+    ),
+  )(
+    'cleans only unpublished installation after $stage with $previous manifest',
+    async ({ stage, previous }) => {
       const fs = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
       const source = path.join(root, 'archive-source');
       await mkdir(source);
@@ -119,11 +123,28 @@ describe('managed llama.cpp model lifecycle', () => {
       });
       mocks.rename.mockImplementation(async (from, to) => {
         if (stage === 'rename' && String(to).endsWith('current.json')) throw error;
+        if (String(to).endsWith('current.json')) {
+          const exists = await fs.stat(to).then(
+            () => true,
+            () => false,
+          );
+          if (exists)
+            throw Object.assign(new Error('cannot overwrite'), {
+              code: previous === 'invalid-json' ? 'EPERM' : 'EEXIST',
+            });
+        }
         return fs.rename(from, to);
       });
       const runtime = path.join(root, 'llamacpp-runtime');
       await mkdir(runtime);
       await mkdir(path.join(runtime, 'unrelated-installation'));
+      if (previous !== 'absent')
+        await fs.writeFile(
+          path.join(runtime, 'current.json'),
+          previous === 'invalid-json'
+            ? '{'
+            : JSON.stringify({ binary: 'missing-server', version: 'old' }),
+        );
       const service = createLlamaCppService(root);
       if (stage === 'success') {
         await service.install();
@@ -133,7 +154,11 @@ describe('managed llama.cpp model lifecycle', () => {
         );
       } else {
         await expect(service.install()).rejects.toBe(error);
-        expect(await readdir(runtime)).toEqual(['unrelated-installation']);
+        expect((await readdir(runtime)).sort()).toEqual(
+          stage === 'write' && previous !== 'absent'
+            ? ['current.json', 'unrelated-installation']
+            : ['unrelated-installation'],
+        );
       }
       expect((await readdir(runtime)).some((name) => name.startsWith('install-'))).toBe(false);
     },
