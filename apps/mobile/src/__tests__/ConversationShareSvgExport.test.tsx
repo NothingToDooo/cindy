@@ -18,6 +18,7 @@ import { lightColors, darkColors } from "@/theme/tokens";
 
 const native = vi.hoisted(() => ({
   os: "ios",
+  density: 1,
   nextId: 0,
   svgLoads: new Map<number, () => void>(),
   imageLoads: new Map<string, () => void>(),
@@ -56,6 +57,7 @@ vi.mock("react-native", async () => {
   );
   return {
     Image,
+    PixelRatio: { get: () => native.density },
     Platform: {
       get OS() {
         return native.os;
@@ -91,9 +93,9 @@ vi.mock("react-native-svg", async () => {
     createElement("span", null, children);
   return {
     default: forwardRef(
-      ({ children }: { children?: import("react").ReactNode }, ref) => {
+      ({ children, height, width }: { children?: import("react").ReactNode; height: number; width: number }, ref) => {
         useImperativeHandle(ref, () => ({ toDataURL: native.capture }), []);
-        return createElement("section", { "data-svg": "true" }, children);
+        return createElement("section", { "data-svg": "true", "data-height": height, "data-width": width }, children);
       },
     ),
     ClipPath: element,
@@ -174,6 +176,7 @@ beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   native.os = "ios";
+  native.density = 1;
   native.svgLoads.clear();
   native.imageLoads.clear();
   native.imageErrors.clear();
@@ -242,6 +245,17 @@ async function start() {
 }
 
 describe("SVG export lifecycle", () => {
+  it("keeps the Android SVG view below the bitmap limit at device density", async () => {
+    native.os = "android";
+    native.density = 3;
+    await act(async () => render(2_500));
+    const svg = host.querySelector<HTMLElement>('[data-svg="true"]')!;
+    const width = Number(svg.dataset.width);
+    const height = Number(svg.dataset.height);
+    expect(width * height * native.density ** 2).toBeLessThanOrEqual(12_000_000);
+    expect(width).toBeLessThan(5_000);
+  });
+
   it.each([false, true])(
     "waits for each cold iOS occurrence, then captures once after native layout (dark=%s)",
     async (dark) => {
