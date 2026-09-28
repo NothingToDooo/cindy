@@ -6036,7 +6036,7 @@ describe('Bot Session task end-to-end runtime', () => {
     await seedPair();
     const runtime = createDelegationRuntime({ collectArtifacts: async () => [{ path: 'report.pdf', absolutePath: '/reports/report.pdf', status: 'added' }] });
     try {
-      const first = await runtime.delegation.startSessionTask({ callerSessionId: 'session-1', objective: 'First report' });
+      const first = await runtime.delegation.startSessionTask({ callerSessionId: 'session-1', objective: 'First report instructions', title: 'First report' });
       const second = await runtime.delegation.startSessionTask({ callerSessionId: 'session-1', objective: 'Second report' });
       if (!first.ok || !second.ok) throw new Error('Tasks did not start');
       h.sqlite!.prepare('UPDATE sessions SET working_dir = ? WHERE id IN (?, ?)').run('/child-task', first.childSessionId, second.childSessionId);
@@ -6049,6 +6049,7 @@ describe('Bot Session task end-to-end runtime', () => {
         .all('session-1', 'bot-delegation-result:%') as { agent_meta: string }[];
       expect(results).toHaveLength(2);
       expect(results.every(row => JSON.parse(row.agent_meta).botCollaboration.result.workingDir === '/child-task')).toBe(true);
+      expect(results.map(row => JSON.parse(row.agent_meta).botCollaboration.result.title).sort()).toEqual(['First report', 'Second report']);
       expect(results.map(row => JSON.parse(row.agent_meta).botCollaboration.result.text).sort()).toEqual([
         '![chart](https://example.com/chart.png)', '[Report](https://example.com/report.pdf)',
       ].sort());

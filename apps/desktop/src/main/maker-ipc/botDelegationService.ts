@@ -890,7 +890,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
       }
       let receiptSessionId: string = initialReceiptSessionId;
       const child = params.childSessionId ? await getDbClient().drizzle
-        .select({ workingDir: sessions.workingDir }).from(sessions)
+        .select({ workingDir: sessions.workingDir, title: sessions.title }).from(sessions)
         .where(eq(sessions.id, params.childSessionId)).get() : undefined;
       // Durable, per-execution receipt: retries reuse the same message identity.
       // Publish before waking the teammate so queued/hidden model work cannot hide results.
@@ -905,6 +905,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
             ...await collaborationMeta(params, 'delegation-result'),
             parentSessionId: sessionId,
             result: {
+              ...(child?.title?.trim() ? { title: child.title.trim() } : {}),
               workingDir: child?.workingDir ?? '',
               runSequence: params.runSequence,
               status: sessionTaskViewStatus({ status: params.status, lastError: params.lastError ?? null }),
