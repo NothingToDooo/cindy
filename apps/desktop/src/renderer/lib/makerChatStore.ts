@@ -11194,10 +11194,18 @@ function reserveEchoedLocalUser(
   const index = messages.findIndex((message) => message.clientId === clientId);
   const row = index >= 0 ? messages[index] : undefined;
   if (!row || row.role !== 'user' || row.localSendPrecedingClientIds) return messages;
+  // 「本端发送」只认明确证据(Codex review P2)：仅在 pendingQueue 里不足以证明归属——
+  // IM / 手机 / 定时任务注入的 user 项同样经 pendingQueue 派发，且不登记
+  // localSentUserMessageIds；误判会把 DB 回声当本地 user 尾项提前插入或重排。
+  // 排队项要作为证据必须自证归属：isPendingEnqueue 只由本端发送/插话的乐观入队
+  // 记录打上(sendMessageCore / steerMessageCore / 本端 remote 乐观发送)，外部注入项
+  // 从 main 投影回来时没有它。
   const sentHere =
     before.messages.some((message) => message.clientId === clientId && message.isPendingPersist) ||
-    before.pendingQueue.some((item) => item.clientId === clientId) ||
-    isLocalSentUserMessage(sessionId, clientId);
+    isLocalSentUserMessage(sessionId, clientId) ||
+    before.pendingQueue.some(
+      (item) => item.clientId === clientId && item.isPendingEnqueue === true,
+    );
   if (!sentHere) return messages;
   const next = messages.slice();
   next[index] = reserveRemoteUser(row, messages.slice(0, index));

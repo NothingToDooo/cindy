@@ -265,4 +265,67 @@ describe('local history view keeps user rows through the DB echo', () => {
     expect(renderedClientIds(s)).toEqual(['old-user', 'old-answer', 'from-im', item.clientId]);
     makerChatStore.purgeSession(s);
   });
+
+  // Codex review P2：排队项本身不构成本端发送证据。IM 通道、手机端、定时任务
+  // 注入的 user 项也会经 pendingQueue 派发，且不登记 localSentUserMessageIds；
+  // 它们的落库回声不得被附上 localSendPrecedingClientIds（否则历史视图会把它
+  // 当本地 user 尾项提前插入/重排，刷新后才纠正）。
+  it.each<[string, (item: AgentInputQueuedMessage) => AgentInputQueuedMessage]>([
+    ['IM 通道', (item) => item],
+    ['手机端', (item) => ({ ...item, fromMobileClient: true })],
+    ['定时任务', (item) => ({
+      ...item,
+      origin: { kind: 'scheduler', scheduleId: 'sch-1', scheduleName: 'nightly' },
+    })],
+  ])('不把%s注入的排队项当成本端发送', async (source, decorate) => {
+    const s = sid();
+    await openSession(s);
+    const externalItem = decorate({
+      clientId: `from-queue-${source}`,
+      text: `${source} injected`,
+      persistedContent: JSON.stringify({ text: `${source} injected`, images: [], files: [] }),
+      model: 'claude',
+      effort: '',
+      permissionMode: 'default',
+      workingDir: WD,
+      chatMessage: {
+        clientId: `from-queue-${source}`,
+        role: 'user',
+        content: `${source} injected`,
+        isStreaming: false,
+        createdAt: '2026-09-28T00:00:02.000Z',
+      },
+      createOpts: {
+        agentKind: 'claude-code',
+        workingDir: WD,
+        model: 'claude',
+        effort: '',
+        permissionMode: 'default',
+        userPrompt: `${source} injected`,
+      },
+    } satisfies AgentInputQueuedMessage);
+    // 外部入口把 user 项注入 pendingQueue，回声先于派发投影到达。
+    onProjectionCb?.(emptyProjection(s, { pendingQueue: [externalItem] }), OWNER_STAMP);
+    expect(makerChatStore.getSnapshot(s).pendingQueue.map((queued) => queued.clientId))
+      .toEqual([externalItem.clientId]);
+    expect(makerChatStore.isLocalSentUserMessage(s, externalItem.clientId)).toBe(false);
+
+    persistQueued(s, externalItem, '2026-09-28T00:00:03.000Z');
+    const echoed = makerChatStore.getSnapshot(s).messages.find(
+      (row) => row.clientId === externalItem.clientId,
+    );
+    expect(echoed?.localSendPrecedingClientIds).toBeUndefined();
+    expect(makerChatStore.getSnapshot(s).pendingQueue).toEqual([]);
+    // 不被当成本端 user 尾项提前插入：回声不进本地气泡通道，历史视图读到才出现，
+    // 不会出现“提前插入/重排、刷新后又纠正”。
+    expect(renderedClientIds(s)).toEqual(['old-user', 'old-answer']);
+    await getRemoteHistoryView(s)!.refresh();
+    expect(renderedClientIds(s)).toEqual(['old-user', 'old-answer', externalItem.clientId]);
+    const final = makerChatStore.getSnapshot(s).messages.filter(
+      (row) => row.clientId === externalItem.clientId,
+    );
+    expect(final).toHaveLength(1);
+    expect(final[0].localSendPrecedingClientIds).toBeUndefined();
+    makerChatStore.purgeSession(s);
+  });
 });
