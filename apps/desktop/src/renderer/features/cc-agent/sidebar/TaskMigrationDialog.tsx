@@ -40,6 +40,7 @@ export function TaskMigrationDialog({
   const [estimateError, setEstimateError] = useState(false);
   const pending = useRef(false);
   const observingCopy = useRef(!destination);
+  const previousCopy = useRef<string | undefined>(undefined);
   const mutationEpoch = useRef(0);
   const owner = useRef(getDataOwnerGeneration()).current;
   const live = useRef(true);
@@ -61,8 +62,18 @@ export function TaskMigrationDialog({
       try {
         const next = await request({ action: 'status', sessionId: session.id });
         if (!disposed && current() && epoch === mutationEpoch.current && !pending.current) {
-          if (next.stage && !['complete', 'active', 'cancelled'].includes(next.stage))
-            observingCopy.current = true;
+          if (!observingCopy.current) {
+            if (epoch === 0) previousCopy.current = next.targetSessionId;
+            const newCopy =
+              epoch > 0 && next.targetSessionId && next.targetSessionId !== previousCopy.current;
+            const unfinished =
+              next.stage && !['complete', 'active', 'cancelled'].includes(next.stage);
+            if (newCopy || unfinished) {
+              observingCopy.current = true;
+              // A changed copy ID recovers a lost start acknowledgement, even if already complete.
+              if (newCopy) setError('');
+            }
+          }
           // A fresh menu selection starts a new copy, not the previous success screen.
           setStatus(observingCopy.current ? next : { supported: true, deviceId: next.deviceId });
           setPollError('');
@@ -128,13 +139,13 @@ export function TaskMigrationDialog({
     if (pending.current || !current()) return;
     pending.current = true;
     mutationEpoch.current++;
-    if (command.action === 'start') observingCopy.current = true;
     setStarting(command.action === 'start');
     setBusy(true);
     setError('');
     try {
       const next = await request(command);
       if (current()) {
+        if (command.action === 'start') observingCopy.current = true;
         setStatus(next);
         if (dismissOnSuccess) onDismiss();
       }

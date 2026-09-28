@@ -404,3 +404,65 @@ it.each(['confirm', 'complete'])(
     } else expect(await screen.findByRole('button', { name: 'taskMigration.start' })).toBeTruthy();
   },
 );
+
+it.each(['rejected', 'lost-ack', 'accepted'])(
+  'only shows the current copy after a %s start over an old completion',
+  async (outcome) => {
+    let copyId = 'old-copy';
+    const original = state.request.getMockImplementation()!;
+    state.request.mockImplementation(async (device, command) => {
+      const snapshot = () => ({
+        supported: true,
+        deviceId: 'A',
+        stage: 'complete',
+        running: false,
+        targetSessionId: copyId,
+        targetDeviceId: 'B',
+      });
+      if (command.action === 'status') return snapshot();
+      if (command.action === 'start') {
+        if (outcome !== 'rejected') copyId = 'new-copy';
+        if (outcome !== 'accepted') throw new Error('MIGRATION_START_FAILED');
+        return snapshot();
+      }
+      return original(device, command);
+    });
+    render(
+      <MemoryRouter>
+        <TaskMigrationDialog
+          session={source}
+          onDismiss={state.dismiss}
+          destination={{ deviceId: 'B', deviceName: 'Work Mac', project: null }}
+        />
+      </MemoryRouter>,
+    );
+    const start = await screen.findByRole('button', { name: 'taskMigration.start' });
+    await waitFor(() => expect((start as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(start);
+    if (outcome !== 'accepted')
+      await screen.findByText('taskMigration.errors.MIGRATION_START_FAILED');
+    const polls = state.request.mock.calls.filter(([, c]) => c.action === 'status').length;
+    await waitFor(
+      () =>
+        expect(
+          state.request.mock.calls.filter(([, c]) => c.action === 'status').length,
+        ).toBeGreaterThan(polls),
+      { timeout: 2500 },
+    );
+    if (outcome === 'rejected') {
+      expect(screen.getByText('taskMigration.failureTitle')).toBeTruthy();
+      expect(screen.queryByText('taskMigration.successTitle')).toBeNull();
+      expect(screen.queryByRole('button', { name: 'taskMigration.openTarget' })).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: 'taskMigration.close' }));
+      expect(state.request.mock.calls.some(([, c]) => c.action === 'cancel')).toBe(false);
+    } else {
+      expect(await screen.findByText('taskMigration.successTitle')).toBeTruthy();
+      expect(screen.queryByRole('alert')).toBeNull();
+      state.invoke.mockResolvedValue({ id: 'new-copy', status: 'active' });
+      fireEvent.click(screen.getByRole('button', { name: 'taskMigration.openTarget' }));
+      await waitFor(() =>
+        expect(state.invoke).toHaveBeenCalledWith('B', 'local-db:sessions:get', ['new-copy']),
+      );
+    }
+  },
+);
