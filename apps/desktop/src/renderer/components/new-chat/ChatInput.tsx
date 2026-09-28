@@ -3744,8 +3744,8 @@ export function ChatInput({
       const releaseInFlight = () => {
         window.setTimeout(() => {
           voiceShortcutActionInFlightRef.current = false;
-          // 启动已改为同步 claim,排队的「松开即停」可能落在 claim 置定之后才被
-          // 登记;锁释放时兑底消费一次,避免短按快松后麦克风一直开着。
+          // 启动已改为同步 claim,排队的「松开即停」可能在 claim 完成后才被
+          // 登记;锁释放时兜底消费一次,避免短按快松后麦克风一直开着。
           if (voiceShortcutStopAfterStartRef.current) {
             voiceShortcutStopAfterStartRef.current = false;
             void voiceInputStopRef.current().catch(() => undefined);

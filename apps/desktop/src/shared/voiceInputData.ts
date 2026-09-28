@@ -129,6 +129,20 @@ export interface VoiceInputDataSnapshot {
   history: VoiceInputHistoryEntry[];
 }
 
+/**
+ * settings 写入 patch。两个带 override 语义的开关额外接受 `null`:
+ * **不是**写入「关闭」,而是「恢复默认」—— 删除 override、重新跟随当前版本默认值
+ * (`docs/dev-rules/configuration-and-overrides.md` §4)。传 `undefined` 做不到这件事:
+ * patch 是展开合并的,`undefined` 会被现有值盖掉。main 侧 VoiceInputDataStore
+ * 按同一规则转写成 `*Override = null`。
+ */
+export type VoiceInputSettingsPatch = Partial<
+  Omit<VoiceInputSettings, 'dictionarySyncEnabled' | 'composerLongPressEnabled'>
+> & {
+  dictionarySyncEnabled?: boolean | null;
+  composerLongPressEnabled?: boolean | null;
+};
+
 export type VoiceInputDictionaryLearningEvidence = Pick<
   DictationDictionaryAdviceInput,
   'source' | 'rawTranscriptText' | 'beforeText' | 'afterText' | 'context'
