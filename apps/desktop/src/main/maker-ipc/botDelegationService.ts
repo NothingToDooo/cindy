@@ -1295,7 +1295,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
     timers.set(delegationId, timer);
   };
 
-  const resolveCaller = async (callerSessionId: string) => {
+  const resolveLinkedSession = async (callerSessionId: string) => {
     const db = getDbClient().drizzle;
     const [link] = await db
       .select({
@@ -1315,6 +1315,11 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
       .innerJoin(botProfiles, eq(botProfiles.id, botSessionLinks.botId))
       .where(eq(botSessionLinks.sessionId, callerSessionId))
       .limit(1);
+    return link ?? null;
+  };
+
+  const resolveCaller = async (callerSessionId: string) => {
+    const link = await resolveLinkedSession(callerSessionId);
     if (
       !link
       || link.sessionStatus !== 'active'
@@ -2373,8 +2378,14 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
   const listDelegations = async (
     callerSessionId: string,
   ): Promise<BotDelegationResult<{ delegations: BotDelegationView[] }>> => {
-    const caller = await resolveCaller(callerSessionId);
-    if (!caller) {
+    // History cards need saved titles even when their chat or teammate is inactive.
+    // Only this read path accepts history links; task operations still use resolveCaller.
+    const caller = await resolveLinkedSession(callerSessionId);
+    if (!caller
+      || caller.sessionSource !== 'bot'
+      || (caller.sessionStatus !== 'active' && caller.sessionStatus !== 'archived')
+      || caller.profileStatus === 'deleting'
+      || !['canonical', 'history', 'delegation'].includes(caller.role)) {
       return { ok: false, errorCode: 'NOT_A_BOT_SESSION', message: '当前任务不属于任何伙伴' };
     }
     const db = getDbClient().drizzle;

@@ -4028,6 +4028,58 @@ describe('Bot Session task end-to-end runtime', () => {
     } finally { runtime.delegation.dispose(); }
   });
 
+  it.each(['paused-bot', 'archived-bot', 'archived-parent', 'history-link'] as const)(
+    'reads saved task titles for %s without allowing task operations', async (state) => {
+      await seedPair();
+      const other = await invoke('local-db:bots:create-canonical-session', {
+        botId: 'bot-1', expectedCanonicalSessionId: null, expectedProfileVersion: 1,
+      });
+      const runtime = createDelegationRuntime();
+      try {
+        const started = await runtime.delegation.startSessionTask({
+          callerSessionId: 'session-1', objective: 'A long execution instruction',
+        });
+        if (!started.ok) throw new Error('Task did not start');
+        h.sqlite!.prepare('UPDATE sessions SET title = ? WHERE id = ?').run('Saved task title', started.childSessionId);
+        if (state === 'paused-bot' || state === 'archived-bot') {
+          h.sqlite!.prepare("UPDATE bot_profiles SET status = ? WHERE id = 'bot-a'")
+            .run(state === 'paused-bot' ? 'paused' : 'archived');
+        } else if (state === 'archived-parent') {
+          h.sqlite!.prepare("UPDATE sessions SET status = 'archived' WHERE id = 'session-1'").run();
+        } else {
+          h.sqlite!.prepare("UPDATE bot_session_links SET role = 'history', archived_at = 1 WHERE session_id = 'session-1'").run();
+        }
+        expect(await runtime.delegation.listDelegations('session-1')).toMatchObject({
+          ok: true, delegations: [{ id: started.delegationId, title: 'Saved task title' }],
+        });
+        expect(await runtime.delegation.listDelegations(other.session.id)).toMatchObject({ ok: true, delegations: [] });
+        expect(await runtime.delegation.startSessionTask({ callerSessionId: 'session-1', objective: 'Must not start' }))
+          .toMatchObject({ ok: false, errorCode: 'NOT_A_BOT_SESSION' });
+        expect(await runtime.delegation.cancelDelegation('session-1', started.delegationId))
+          .toMatchObject({ ok: false, errorCode: 'NOT_A_BOT_SESSION' });
+        expect(await runtime.delegation.messageSessionTask('session-1', started.delegationId, { kind: 'message', text: 'Must not continue' }))
+          .toMatchObject({ ok: false, errorCode: 'NOT_A_BOT_SESSION' });
+        expect(runtime.started).toHaveLength(1);
+      } finally { runtime.dispose(); }
+    },
+  );
+
+  it.each(['deleted-parent', 'deleting-bot', 'ordinary-task', 'group-link', 'missing-link'] as const)(
+    'rejects task title list reads from %s', async (state) => {
+      await seedPair();
+      if (state === 'deleted-parent') h.sqlite!.prepare("UPDATE sessions SET status = 'deleted' WHERE id = 'session-1'").run();
+      if (state === 'deleting-bot') h.sqlite!.prepare("UPDATE bot_profiles SET status = 'deleting' WHERE id = 'bot-a'").run();
+      if (state === 'ordinary-task') h.sqlite!.prepare("UPDATE sessions SET source = 'desktop' WHERE id = 'session-1'").run();
+      if (state === 'group-link') h.sqlite!.prepare("UPDATE bot_session_links SET role = 'group' WHERE session_id = 'session-1'").run();
+      if (state === 'missing-link') h.sqlite!.prepare("DELETE FROM bot_session_links WHERE session_id = 'session-1'").run();
+      const runtime = createDelegationRuntime();
+      try {
+        expect(await runtime.delegation.listDelegations('session-1'))
+          .toMatchObject({ ok: false, errorCode: 'NOT_A_BOT_SESSION' });
+      } finally { runtime.dispose(); }
+    },
+  );
+
   it.each(['cc', 'codex'])('starts a child on the actual %s route after its Bot changes engines', async (agentKind) => {
     await seedPair();
     const runtime = createDelegationRuntime({
