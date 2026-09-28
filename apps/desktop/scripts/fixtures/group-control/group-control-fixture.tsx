@@ -67,7 +67,9 @@ const group = {
   hasMoreBefore: false,
   round: { status: 'idle', speakers: [], canContinue: false },
 };
+(window as any).fixtureMutations = [];
 const blocked = () => {
+  (window as any).fixtureMutations.push('forbidden mutation');
   throw Error('Fixture forbids mutations');
 };
 window.electronAPI = {

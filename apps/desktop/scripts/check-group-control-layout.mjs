@@ -138,6 +138,26 @@ try {
     await page.locator('[data-controlled-banner="collapsed"]').click();
     await page.locator('[data-controlled-banner-chip]').waitFor();
   };
+  const activateWithKeyboard = async (selector, key) => {
+    // Reach the notice through normal tab order, not locator.focus().
+    await page.locator('textarea').focus();
+    await page.keyboard.press('Shift+Tab');
+    const target = page.locator(selector);
+    assert(
+      await target.evaluate((element) => element === document.activeElement),
+      `Keyboard cannot reach ${selector}`,
+    );
+    assert(
+      await target.evaluate(
+        (element) =>
+          Boolean(element.getAttribute('aria-label')) &&
+          element.matches(':focus-visible') &&
+          getComputedStyle(element).boxShadow !== 'none',
+      ),
+      `Missing accessible focus: ${selector}`,
+    );
+    await page.keyboard.press(key);
+  };
   let layouts = 0;
   for (const theme of ['light', 'dark']) {
     for (const width of [720, 800, 1280])
@@ -210,6 +230,32 @@ try {
           if (capture)
             await page.screenshot({ path: path.join(screenshots, `${imageName}-collapsed.png`) });
           await expand();
+          // Both native button activation keys must preserve the full UI-only cycle.
+          for (const key of ['Enter', 'Space']) {
+            await activateWithKeyboard('[data-controlled-banner-collapse]', key);
+            await page.locator('[data-controlled-banner="collapsed"]').waitFor();
+            assert.equal(await page.locator('[data-controlled-banner-chip]').count(), 0);
+            await activateWithKeyboard('[data-controlled-banner="collapsed"]', key);
+            await page.locator('[data-controlled-banner-chip]').waitFor();
+            assert.equal(await page.locator('[data-controlled-banner="collapsed"]').count(), 0);
+          }
+          // Revocation remains a separate button before X in the tab order.
+          await page.locator('textarea').focus();
+          await page.keyboard.press('Shift+Tab');
+          await page.keyboard.press('Shift+Tab');
+          assert(
+            await page
+              .locator('[data-controlled-banner-chip] button')
+              .first()
+              .evaluate((element) => element === document.activeElement),
+            'Revoke is not separately reachable',
+          );
+          assert.deepEqual(
+            await page.evaluate(() => window.fixtureMutations),
+            [],
+            `Folding/restoring invoked a host mutation: ${scenario}`,
+          );
+          assert.equal(await page.getByRole('dialog').count(), 0);
           layouts++;
         }
     // A real long thread: connecting changes only the scroller viewport, not content.
@@ -265,7 +311,7 @@ try {
   }
   assert.deepEqual(errors, []);
   console.log(
-    `PASS: ${layouts} expanded/collapsed layouts; bottom pin and history position survive connection and collapse changes in both themes.`,
+    `PASS: ${layouts} expanded/collapsed layouts with click, Tab, Enter and Space; no host mutations; bottom pin and history position survive connection and collapse changes in both themes.`,
   );
 } finally {
   await browser?.close();
