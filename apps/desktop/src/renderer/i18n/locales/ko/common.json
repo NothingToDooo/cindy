@@ -54,7 +54,7 @@
     "failureTitle": "복사 실패",
     "failureDescription": "창을 닫은 후 작업 메뉴에서 새로 복사할 수 있습니다.",
     "finishing": "{{name}}에서 수신, 검증 및 작업 생성 중…",
-    "transferProgress": "전송됨 {{sent}} / {{total}} · 평균 {{speed}}/s",
+    "transferProgress": "업로드 {{sent}} / {{total}} · 평균 {{speed}}/s (수신 미완료)",
     "thisComputer": "이 컴퓨터",
     "selectedComputer": "선택한 컴퓨터",
     "estimating": "파일 수와 크기 계산 중…",

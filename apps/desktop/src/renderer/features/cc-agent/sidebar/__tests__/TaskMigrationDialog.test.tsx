@@ -369,3 +369,38 @@ it('does not copy when the source does not support inventory', async () => {
   ).toBe(true);
   expect(state.request.mock.calls.some(([, c]) => c.action === 'estimate')).toBe(false);
 });
+
+it.each(['confirm', 'complete'])(
+  'clears recovered status errors on %s without erasing action errors',
+  async (stage) => {
+    let fail = true;
+    const original = state.request.getMockImplementation()!;
+    state.request.mockImplementation((device, command) => {
+      if (command.action !== 'status') return original(device, command);
+      if (fail) return Promise.reject(new Error('MIGRATION_DISCONNECTED'));
+      return Promise.resolve(
+        stage === 'complete'
+          ? { stage: 'complete', running: false, targetSessionId: 'copy', targetDeviceId: 'B' }
+          : { supported: true, deviceId: 'A' },
+      );
+    });
+    mount();
+    await screen.findByText('taskMigration.errors.MIGRATION_DISCONNECTED');
+    fail = false;
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull(), { timeout: 2500 });
+    if (stage === 'complete') {
+      state.openLink.mockRejectedValueOnce(new Error('MIGRATION_OPEN_FAILED'));
+      fireEvent.click(screen.getByRole('button', { name: 'taskMigration.openTarget' }));
+      await screen.findByText('taskMigration.errors.MIGRATION_OPEN_FAILED');
+      const count = state.request.mock.calls.filter(([, c]) => c.action === 'status').length;
+      await waitFor(
+        () =>
+          expect(
+            state.request.mock.calls.filter(([, c]) => c.action === 'status').length,
+          ).toBeGreaterThan(count),
+        { timeout: 2500 },
+      );
+      expect(screen.getByText('taskMigration.errors.MIGRATION_OPEN_FAILED')).toBeTruthy();
+    } else expect(await screen.findByRole('button', { name: 'taskMigration.start' })).toBeTruthy();
+  },
+);

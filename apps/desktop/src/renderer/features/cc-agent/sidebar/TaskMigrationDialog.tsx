@@ -34,6 +34,7 @@ export function TaskMigrationDialog({
   const [starting, setStarting] = useState(false);
   const [readyTarget, setReadyTarget] = useState('');
   const [error, setError] = useState('');
+  const [pollError, setPollError] = useState('');
   const [self, setSelf] = useState('');
   const [estimate, setEstimate] = useState<TaskMigrationView['estimate']>();
   const [estimateError, setEstimateError] = useState(false);
@@ -45,12 +46,11 @@ export function TaskMigrationDialog({
   const current = () => live.current && isDataOwnerGenerationCurrent(owner);
   const request = (command: TaskMigrationRequest) =>
     window.electronAPI.deviceLink.taskMigration(session.deviceLinkDeviceId ?? null, command);
+  const errorCode = (e: unknown) =>
+    /\bMIGRATION_[A-Z_]+\b/.exec(e instanceof Error ? e.message : String(e))?.[0] ??
+    'MIGRATION_FAILED';
   const showError = (e: unknown) => {
-    if (current())
-      setError(
-        /\bMIGRATION_[A-Z_]+\b/.exec(e instanceof Error ? e.message : String(e))?.[0] ??
-          'MIGRATION_FAILED',
-      );
+    if (current()) setError(errorCode(e));
   };
   useEffect(() => {
     live.current = true;
@@ -65,9 +65,11 @@ export function TaskMigrationDialog({
             observingCopy.current = true;
           // A fresh menu selection starts a new copy, not the previous success screen.
           setStatus(observingCopy.current ? next : { supported: true, deviceId: next.deviceId });
+          setPollError('');
         }
       } catch (e) {
-        if (!disposed) showError(e);
+        if (!disposed && current() && epoch === mutationEpoch.current && !pending.current)
+          setPollError(errorCode(e));
       }
       if (!disposed && current()) timer = setTimeout(() => void poll(), 1000);
     };
@@ -184,7 +186,8 @@ export function TaskMigrationDialog({
   };
   const complete = status?.stage === 'complete' || status?.stage === 'active';
   const copying = starting || !!status?.running;
-  const failure = error || status?.error || (started && !copying ? 'MIGRATION_FAILED' : '');
+  const failure =
+    error || pollError || status?.error || (started && !copying ? 'MIGRATION_FAILED' : '');
   const confirming = !started && !complete && !failure && !busy;
   useEffect(() => {
     if (!confirming) return;

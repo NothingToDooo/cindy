@@ -54,7 +54,7 @@
     "failureTitle": "Copy failed",
     "failureDescription": "Close this window and start a new copy from the task menu.",
     "finishing": "{{name}} is receiving, checking and creating the task…",
-    "transferProgress": "Sent {{sent}} / {{total}} · Average {{speed}}/s",
+    "transferProgress": "Upload progress {{sent}} / {{total}} · Average {{speed}}/s (reception not yet complete)",
     "thisComputer": "this computer",
     "selectedComputer": "selected computer",
     "estimating": "Counting files and calculating size…",

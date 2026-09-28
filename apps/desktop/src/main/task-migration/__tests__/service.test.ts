@@ -480,6 +480,14 @@ describe('resumable cross-computer copy', () => {
     expect(state.exported).not.toHaveBeenCalled();
     expect(state.files.size).toBe(0);
   });
+  it('acknowledges start and retry with the registered running state', async () => {
+    state.noSpace = true;
+    expect((await start()).running).toBe(true);
+    expect((await settled()).error).toBe('MIGRATION_NO_SPACE');
+    const retry = await requestTaskMigration({ action: 'retry', sessionId: 'fork' });
+    expect(retry.running).toBe(true);
+    await settled();
+  });
   it('reports actual upload bytes across files, then drops live telemetry on completion', async () => {
     let sent = 0;
     state.uploadedProgress.mockImplementation(async (size: number) => {
@@ -505,9 +513,13 @@ describe('resumable cross-computer copy', () => {
     const target = state.rows.get('B')!.get(result.targetSessionId!)!;
     const targetFile = path.join(target.workingDir as string, 'draft');
     expect(await fs.readFile(targetFile, 'utf8')).toBe('original');
+    const uploadedKeys = [...state.files.keys()];
+    expect(uploadedKeys.length).toBeGreaterThan(0);
+    state.remove.mockClear();
     expect((await requestTaskMigration({ action: 'cancel', sessionId: 'fork' })).stage).toBe(
       'cancelled',
     );
+    expect(state.remove.mock.calls.map(([key]) => key)).toEqual(uploadedKeys);
     await expect(
       fs.stat(path.join(state.root, 'A', 'task-copies', 'outgoing', result.targetSessionId!)),
     ).rejects.toMatchObject({ code: 'ENOENT' });

@@ -562,6 +562,20 @@ async function transfer(scope: Scope, record: MigrationHandoff) {
   if (result.stage !== 'active') throw new Error('MIGRATION_TARGET_NOT_READY');
 }
 
+async function cleanupOutgoing(scope: Scope, record: MigrationHandoff) {
+  const directory = path.join(scope.root, 'outgoing', record.id);
+  const keys = JSON.parse(
+    readAtomicFileSync(path.join(directory, 'transfer-keys.json')) ?? '[]',
+  ) as string[];
+  for (const key of keys) {
+    scope.assertCurrent();
+    // Reuse the existing best-effort deletion and OSS lifecycle backstop.
+    await removeRemote(key);
+  }
+  scope.assertCurrent();
+  await fs.rm(directory, { recursive: true, force: true });
+}
+
 function launch(scope: Scope, record: MigrationHandoff & { kind: 'outgoing' }) {
   const key = `${scope.root}:${record.sessionId}`;
   if (running.has(key)) return;
@@ -578,19 +592,7 @@ function launch(scope: Scope, record: MigrationHandoff & { kind: 'outgoing' }) {
         save: async (next) => scope.save({ ...next, kind: 'outgoing' }),
         prepare: (r) => prepare(scope, r),
         import: (r) => transfer(scope, r),
-        cleanup: async (r) => {
-          const directory = path.join(scope.root, 'outgoing', r.id);
-          const keys = JSON.parse(
-            readAtomicFileSync(path.join(directory, 'transfer-keys.json')) ?? '[]',
-          ) as string[];
-          for (const key of keys) {
-            scope.assertCurrent();
-            // Existing OSS lifecycle rules backstop best-effort remote deletion.
-            await removeRemote(key);
-          }
-          scope.assertCurrent();
-          await fs.rm(directory, { recursive: true, force: true });
-        },
+        cleanup: (r) => cleanupOutgoing(scope, r),
       });
     },
   )
@@ -972,10 +974,7 @@ export async function requestTaskMigration(raw: unknown): Promise<TaskMigrationV
               throw new Error('MIGRATION_CANNOT_CANCEL');
             const cancelled = { ...record, stage: 'cancelled' as const, error: undefined };
             // Keep the journal retryable until its staging data is gone.
-            await fs.rm(path.join(scope.root, 'outgoing', record.id), {
-              recursive: true,
-              force: true,
-            });
+            await cleanupOutgoing(scope, record);
             scope.assertCurrent();
             scope.save(cancelled);
             return view(scope, cancelled);
@@ -1034,7 +1033,11 @@ export async function requestTaskMigration(raw: unknown): Promise<TaskMigrationV
       ),
   );
   // Release admission before starting the background operation on the same lock.
-  if (nextCopy) launch(scope, nextCopy);
+  if (nextCopy) {
+    launch(scope, nextCopy);
+    // Start/retry acknowledgements must include the operation just registered by launch.
+    return view(scope, nextCopy);
+  }
   return result;
 }
 
