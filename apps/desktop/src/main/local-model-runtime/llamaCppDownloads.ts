@@ -4,6 +4,7 @@ import { mkdir, rename, rm, stat } from 'node:fs/promises';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import path from 'node:path';
+import { outboundFetch } from '../maker-host/outbound-fetch.js';
 import { validLlamaCppFile, validLlamaCppRepo, type LlamaCppFile } from '../../shared/llamaCpp.js';
 
 const RELEASES = 'https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=10';
@@ -82,7 +83,7 @@ export function pickLlamaCppRelease(
 }
 
 export async function resolveLlamaCppRelease(signal: AbortSignal): Promise<LlamaCppRelease> {
-  const res = await fetch(RELEASES, {
+  const res = await outboundFetch(RELEASES, {
     signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
     redirect: 'error',
     headers: { 'User-Agent': 'Cindy-Desktop', Accept: 'application/vnd.github+json' },
@@ -159,7 +160,7 @@ export async function downloadLlamaCppAsset(
     for (let hop = 0; hop < 6; hop++) {
       signal.throwIfAborted();
       if (!allowedDownloadUrl(url, source)) throw new Error('DOWNLOAD_BLOCKED');
-      const next = await fetch(url, {
+      const next = await outboundFetch(url, {
         signal,
         redirect: 'manual',
         headers: offset ? { Range: `bytes=${offset}-` } : undefined,
@@ -251,7 +252,7 @@ export async function resolveHfRepository(
       !parsed.pathname.startsWith('/api/models/')
     )
       throw new Error('DOWNLOAD_BLOCKED');
-    const next = await fetch(url, { signal: timeout, redirect: 'manual' });
+    const next = await outboundFetch(url, { signal: timeout, redirect: 'manual' });
     if (next.status >= 300 && next.status < 400) {
       const location = next.headers.get('location');
       await next.body?.cancel();
