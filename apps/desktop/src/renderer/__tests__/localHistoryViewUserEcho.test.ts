@@ -116,8 +116,10 @@ function installElectronApi(): void {
             return () => { onCreatedCb = null; };
           },
           historyView: vi.fn(async (sessionId: string) => {
-            const items = projectHistoryView(rowsBySession.get(sessionId) ?? [], false).slice(-20);
-            return { version: 1, items, hasMore: false, nextCursor: null };
+            // 最新一页：按行截尾再投影（prose 行会合成单个 messages 叶子，
+            // 直接 slice items 截不掉旧行，测试就无法把旧行挤出快照）。
+            const rows = (rowsBySession.get(sessionId) ?? []).slice(-20);
+            return { version: 1, items: projectHistoryView(rows, false), hasMore: false, nextCursor: null };
           }),
           workDetails: vi.fn(async () => ({ version: 1, messages: [], hasMore: false, nextCursor: null })),
         },
@@ -326,6 +328,37 @@ describe('local history view keeps user rows through the DB echo', () => {
     );
     expect(final).toHaveLength(1);
     expect(final[0].localSendPrecedingClientIds).toBeUndefined();
+    makerChatStore.purgeSession(s);
+  });
+
+  // Codex review P2（第二轮）：session.treeRehydrate 等会把活动路径的历史行重播成
+  // messages:created；仍留在 localSentUserMessageIds 的旧 user 行不得被当成新回声
+  // 再次预留——否则旧气泡被长期挪到历史尾部，后续刷新读不到这些较老的 id，
+  // confirmRemoteUsers 永远撤不掉预留。
+  it('历史行重播（treeRehydrate）不再次预留旧的本端发送行', async () => {
+    const s = sid();
+    await openSession(s);
+    await makerChatStore.sendMessage(s, 'old local send', 'claude', '', 'default', WD);
+    const item = enqueue.mock.calls[0][1];
+    persistQueued(s, item, '2026-09-28T00:00:02.000Z');
+    await getRemoteHistoryView(s)!.refresh();
+    const findEchoed = () => makerChatStore.getSnapshot(s).messages.find(
+      (row) => row.clientId === item.clientId,
+    );
+    expect(findEchoed()?.localSendPrecedingClientIds).toBeUndefined();
+    // 新行把旧 user 行挤出历史视图最新分页（mock 只回最新 20 行）：
+    // isAwaitingHistoryView 对它重新为真，具备被误判成新回声的条件。
+    for (let i = 0; i < 25; i++) {
+      persist(dbMessage(s, `newer-${i}`, 'newer answer',
+        `2026-09-28T01:${String(i).padStart(2, '0')}:00.000Z`, 'assistant'));
+    }
+    await getRemoteHistoryView(s)!.refresh();
+    // treeRehydrate 重播旧 user 行的 messages:created（本端发送账本仍盖着它）。
+    onCreatedCb?.({
+      sessionId: s,
+      message: rowsBySession.get(s)!.find((row) => row.clientId === item.clientId),
+    }, OWNER_STAMP);
+    expect(findEchoed()?.localSendPrecedingClientIds).toBeUndefined();
     makerChatStore.purgeSession(s);
   });
 });
