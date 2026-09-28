@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createServer } from 'node:net';
 import { llamaCppProcessCommand } from './llamaCppProcess.js';
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
@@ -608,11 +608,21 @@ export function createLlamaCppService(
                 try {
                   signal.throwIfAborted();
                   if (failed || child !== running) throw new Error('START_FAILED');
-                  await writeFile(
-                    path.join(root, 'server-owner.json'),
-                    JSON.stringify({ identity: proof.identity, preset }),
-                    { mode: 0o600 },
-                  );
+                  const ownerFile = path.join(root, 'server-owner.json');
+                  const temporary = `${ownerFile}.${randomUUID()}.tmp`;
+                  try {
+                    await writeFile(temporary, JSON.stringify({ identity: proof.identity, preset }), {
+                      mode: 0o600,
+                      flag: 'wx',
+                    });
+                    signal.throwIfAborted();
+                    if (failed || child !== running) throw new Error('START_FAILED');
+                    // Never truncate the last probeable identity. A failed
+                    // replacement leaves it intact; there is no delete fallback.
+                    await rename(temporary, ownerFile);
+                  } finally {
+                    await rm(temporary, { force: true });
+                  }
                   signal.throwIfAborted();
                   if (failed || child !== running) throw new Error('START_FAILED');
                   ownerProof = proof;

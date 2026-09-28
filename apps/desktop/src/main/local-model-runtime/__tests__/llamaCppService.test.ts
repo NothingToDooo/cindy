@@ -193,7 +193,10 @@ describe('managed llama.cpp model lifecycle', () => {
       }
     },
   );
-  it.each(['EACCES', 'ENOSPC', 'cancel-proof', 'exit-proof', 'cancel-write', 'exit-write'])(
+  it.each([
+    'EACCES', 'ENOSPC', 'EPERM', 'EEXIST',
+    'cancel-proof', 'exit-proof', 'cancel-write', 'exit-write',
+  ])(
     'closes unpublished owner proof without retrying after %s',
     async (failure) => {
       const runtime = path.join(root, 'llamacpp-runtime');
@@ -213,6 +216,12 @@ describe('managed llama.cpp model lifecycle', () => {
       const fetchHealth = vi.fn(async () => Response.json({ status: 'ok' }));
       vi.stubGlobal('fetch', fetchHealth);
       const service = createLlamaCppService(root);
+      const ownerFile = path.join(runtime, 'server-owner.json');
+      const previous = JSON.stringify({
+        identity: { version: 1, port: 12344, token: 'old-owner' }, preset: '',
+      });
+      await writeFile(ownerFile, previous);
+      mocks.probeOwner.mockResolvedValue('ended');
       let release!: () => void;
       let closing!: () => void;
       const entered = new Promise<void>((resolve) => {
@@ -237,11 +246,18 @@ describe('managed llama.cpp model lifecycle', () => {
       const fs = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
       const ioError = Object.assign(new Error('publication failed'), { code: failure });
       mocks.writeFile.mockImplementation(async (file, data, options) => {
-        if (String(file).endsWith('server-owner.json')) {
-          if (failure === 'EACCES' || failure === 'ENOSPC') throw ioError;
+        if (String(file).includes('server-owner.json.') && String(file).endsWith('.tmp')) {
+          if (failure === 'EACCES' || failure === 'ENOSPC') {
+            await fs.writeFile(file, '{', options);
+            throw ioError;
+          }
           fail();
         }
         return fs.writeFile(file, data, options);
+      });
+      mocks.rename.mockImplementation(async (from, to) => {
+        if (String(to) === ownerFile && ['EPERM', 'EEXIST'].includes(failure)) throw ioError;
+        return fs.rename(from, to);
       });
       let settled = false;
       const starting = service
@@ -259,7 +275,9 @@ describe('managed llama.cpp model lifecycle', () => {
       }
       const error = await starting;
       expect(error).toBeInstanceOf(Error);
-      if (failure === 'EACCES' || failure === 'ENOSPC') expect(error).toBe(ioError);
+      if (['EACCES', 'ENOSPC', 'EPERM', 'EEXIST'].includes(failure)) expect(error).toBe(ioError);
+      expect(await readFile(ownerFile, 'utf8')).toBe(previous);
+      expect((await readdir(runtime)).filter((name) => name.startsWith('server-owner.json.'))).toEqual([]);
       expect(mocks.ownerProof).toHaveBeenCalledOnce();
       expect(fetchHealth).toHaveBeenCalledOnce();
       expect(close).toHaveBeenCalledOnce();
