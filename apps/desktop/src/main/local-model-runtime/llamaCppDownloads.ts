@@ -112,7 +112,7 @@ export async function downloadLlamaCppAsset(
   const stalled = new AbortController();
   const parentSignal = signal;
   signal = AbortSignal.any([parentSignal, stalled.signal]);
-  let idleTimer = setTimeout(() => stalled.abort(new Error('DOWNLOAD_TIMEOUT')), 120_000);
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
   const resetIdle = () => {
     clearTimeout(idleTimer);
     idleTimer = setTimeout(() => stalled.abort(new Error('DOWNLOAD_TIMEOUT')), 120_000);
@@ -137,7 +137,6 @@ export async function downloadLlamaCppAsset(
       try {
         for await (const chunk of createReadStream(partial)) {
           signal.throwIfAborted();
-          resetIdle();
           hash.update(chunk);
         }
       } catch (error) {
@@ -154,6 +153,9 @@ export async function downloadLlamaCppAsset(
     }
     let url = asset.url;
     let response: Response | undefined;
+    // Only network inactivity expires. Local prefix stat/hash may take longer
+    // on slow disks and must not discard already downloaded data.
+    resetIdle();
     for (let hop = 0; hop < 6; hop++) {
       signal.throwIfAborted();
       if (!allowedDownloadUrl(url, source)) throw new Error('DOWNLOAD_BLOCKED');

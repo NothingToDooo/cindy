@@ -30,6 +30,58 @@ beforeEach(async () => {
 });
 afterEach(() => vi.unstubAllGlobals());
 describe('managed llama.cpp downloads', () => {
+  it.each([true, false])(
+    'does not time out local resume verification (complete: %s)',
+    async (complete) => {
+      const dir = await mkdtemp(path.join(os.tmpdir(), 'cindy-local-verify-'));
+      const dest = path.join(dir, 'model.gguf');
+      const bytes = Buffer.from('GGUF');
+      const timer = vi.spyOn(globalThis, 'setTimeout');
+      const hasNetworkTimer = () => timer.mock.calls.some((call) => call[1] === 120_000);
+      const fs = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+      try {
+        await writeFile(`${dest}.partial`, complete ? bytes : bytes.subarray(0, 2));
+        fsMocks.stat.mockImplementationOnce(async (file) => {
+          expect(hasNetworkTimer()).toBe(false);
+          return fs.stat(file);
+        });
+        fsMocks.readStream.mockImplementationOnce(() =>
+          Readable.from(
+            (async function* () {
+              expect(hasNetworkTimer()).toBe(false);
+              yield complete ? bytes : bytes.subarray(0, 2);
+              expect(hasNetworkTimer()).toBe(false);
+            })(),
+          ),
+        );
+        const fetchMock = vi.fn(async () => {
+          expect(hasNetworkTimer()).toBe(true);
+          return new Response(bytes.subarray(2), {
+            status: 206,
+            headers: { 'content-range': 'bytes 2-3/4' },
+          });
+        });
+        vi.stubGlobal('fetch', fetchMock);
+        await downloadLlamaCppAsset(
+          {
+            url: 'https://huggingface.co/owner/repo/resolve/main/model.gguf',
+            size: 4,
+            sha256: createHash('sha256').update(bytes).digest('hex'),
+          },
+          dest,
+          'hf',
+          new AbortController().signal,
+          () => {},
+          true,
+        );
+        expect(fetchMock).toHaveBeenCalledTimes(complete ? 0 : 1);
+        expect(await readFile(dest)).toEqual(bytes);
+      } finally {
+        timer.mockRestore();
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
   it.each(['timeout', 'cancel'] as const)(
     'distinguishes a stalled body from %s and cleans partial bytes',
     async (reason) => {
