@@ -6298,6 +6298,7 @@ describe('Bot Session task end-to-end runtime', () => {
       expect(runtime.dispatch.mock.calls.at(-1)?.[0].clientId).toBe(`bot-delegation-start:${started.delegationId}:2`);
       expect(h.sqlite!.prepare('SELECT content FROM messages WHERE session_id = ? AND role = ?').all(started.childSessionId, 'assistant'))
         .toContainEqual({ content: '第一版结果。' });
+      h.sqlite!.prepare('UPDATE sessions SET title = ? WHERE id = ?').run('月报与风险清单', continued.childSessionId);
       await runtime.settleChild(continued.childSessionId, '第二版结果，含风险清单。');
 
       const receipts = h.sqlite!.prepare(
@@ -6322,8 +6323,8 @@ describe('Bot Session task end-to-end runtime', () => {
       ).all('session-1', `bot-delegation-result:${started.delegationId}:%`) as Array<{ client_id: string; agent_meta: string }>;
       const workingDir = h.sqlite!.prepare('SELECT working_dir FROM sessions WHERE id = ?').pluck().get(started.childSessionId);
       expect(resultCards.map(row => JSON.parse(row.agent_meta).botCollaboration.result)).toEqual([
-        { workingDir, runSequence: 1, status: 'completed', text: '第一版结果。', artifacts: [] },
-        { workingDir, runSequence: 2, status: 'completed', text: '第二版结果，含风险清单。', artifacts: [] },
+        { title: '月报', workingDir, runSequence: 1, status: 'completed', text: '第一版结果。', artifacts: [] },
+        { title: '月报与风险清单', workingDir, runSequence: 2, status: 'completed', text: '第二版结果，含风险清单。', artifacts: [] },
       ]);
       expect(h.sqlite!.prepare('SELECT COUNT(*) AS n FROM messages WHERE client_id = ?')
         .get(`bot-delegation-request:${started.delegationId}`)).toEqual({ n: 1 });
@@ -6331,7 +6332,7 @@ describe('Bot Session task end-to-end runtime', () => {
         runtime.delegation.getSessionTask('session-1', started.delegationId),
       ).resolves.toMatchObject({
         ok: true,
-        task: { title: '月报', status: 'completed', result: '第二版结果，含风险清单。' },
+        task: { title: '月报与风险清单', status: 'completed', result: '第二版结果，含风险清单。' },
       });
     } finally {
       runtime.dispose();
