@@ -2,9 +2,13 @@ import { ipcMain, type IpcMainInvokeEvent } from 'electron';
 import type { PiKernelManager } from '../agent-binaries/pi-kernel-manager.js';
 import { PiKernelError } from '../agent-binaries/pi-kernel-manager.js';
 import { getPiKernelManager } from '../agent-binaries/index.js';
+import { piBinaryUpdateFailureStage } from '../agent-binaries/pi-self-update.js';
+import { createLogger } from '../logger.js';
 import { assertTrustedAppRendererEvent } from '../security/trustedAppRenderer.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
 import { MAKER_INVOKE } from './channels.js';
+
+const log = createLogger('pi-kernel');
 
 export function createPiKernelIpc<Event>(deps: {
   assertSender: (event: Event) => void;
@@ -29,6 +33,15 @@ export function createPiKernelIpc<Event>(deps: {
         await deps.manager().install({ source: body.source, version: body.version });
         return await deps.manager().state();
       } catch (error) {
+        if (!(error instanceof PiKernelError)) {
+          // The renderer only sees a generic failure; keep the stage and errno here
+          // (never the message, which may carry local paths).
+          log.error('Pi kernel installation failed', {
+            source: body.source,
+            stage: piBinaryUpdateFailureStage(error) ?? 'unknown',
+            code: (error as NodeJS.ErrnoException)?.code ?? 'none',
+          });
+        }
         const code = error instanceof PiKernelError && error.reason === 'version-changed' ? 'PRECONDITION_FAILED' : 'INTERNAL';
         throwIpcError(code, error instanceof PiKernelError ? error.reason : 'Pi kernel installation failed');
       }
