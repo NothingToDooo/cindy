@@ -25,6 +25,7 @@ import {
   isDataOwnerPushCurrent,
 } from '@/contexts/dataOwnerGeneration';
 import { toast } from '@/lib/toast';
+import { ControlledBanner, useControlledBy } from '@/features/remote-device/ControlledBanner';
 import { useAgentIslandActivity } from '@/state/agentIslandActivity';
 import type {
   BotGroupDetail,
@@ -102,6 +103,7 @@ export function BotGroupChatView() {
 
 function BotGroupChatContent({ groupId }: { groupId: string }) {
   const { t, i18n } = useTranslation();
+  const controlledBy = useControlledBy();
   const navigate = useNavigate();
   const location = useLocation();
   const [state, setState] = useState<GroupViewState>({ kind: 'loading' });
@@ -515,6 +517,14 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
           ))}
         </div>
       </div>
+      {controlledBy.length > 0 && (
+        // Match the chat composer notice; mounting inline also suppresses the global fallback.
+        <div className="shrink-0 px-5 pt-2">
+          <div className="mx-auto w-full max-w-[760px]">
+            <ControlledBanner placement="inline" />
+          </div>
+        </div>
+      )}
       <BotGroupComposer
         groupId={group.id}
         members={group.members}

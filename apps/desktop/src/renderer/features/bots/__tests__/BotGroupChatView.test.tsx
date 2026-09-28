@@ -5,6 +5,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 
 import { FeatureSidebarSlotProvider, useFeatureContentHeader } from '../../feature-context';
 import { BotGroupChatView } from '../BotGroupChatView';
+import { ControlledBanner, __resetControlledBannerForTests } from '../../remote-device/ControlledBanner';
 import type {
   BotGroupChangedPayload,
   BotGroupDetail,
@@ -26,6 +27,9 @@ const mocks = vi.hoisted(() => ({
   openPath: vi.fn(),
   pushes: [] as Array<(payload: BotGroupChangedPayload, stamp?: unknown) => void>,
   toastError: vi.fn(),
+  controlledPush: null as null | ((payload: { controllers: Array<{ deviceId: string; name: string }> }) => void),
+  getControlledState: vi.fn(),
+  revoke: vi.fn(),
 }));
 
 vi.mock('react-i18next', () => ({
@@ -46,6 +50,9 @@ vi.mock('@/contexts/dataOwnerGeneration', () => ({
   isDataOwnerPushCurrent: () => true,
 }));
 vi.mock('@/lib/toast', () => ({ toast: { error: mocks.toastError } }));
+vi.mock('@/components/ui/confirm-dialog-provider', () => ({
+  useConfirmDialog: () => ({ confirm: vi.fn(async () => false) }),
+}));
 vi.mock('@/components/chat/MarkdownRenderer', () => ({
   MarkdownRenderer: ({ content }: { content: string }) => <div data-markdown>{content}</div>,
 }));
@@ -197,6 +204,10 @@ function renderView() {
 }
 
 beforeEach(() => {
+  __resetControlledBannerForTests();
+  mocks.controlledPush = null;
+  mocks.getControlledState.mockReset().mockResolvedValue({ controlledBy: [] });
+  mocks.revoke.mockReset();
   mocks.navigate.mockReset();
   mocks.toastError.mockReset();
   mocks.pushes = [];
@@ -213,6 +224,14 @@ beforeEach(() => {
   Object.defineProperty(window, 'electronAPI', {
     configurable: true,
     value: {
+      deviceLink: {
+        getState: mocks.getControlledState,
+        onControlledState: (callback: NonNullable<typeof mocks.controlledPush>) => {
+          mocks.controlledPush = callback;
+          return () => {};
+        },
+        revoke: mocks.revoke,
+      },
       openPath: (...args: unknown[]) => mocks.openPath(...args),
       maker: {
         listBotGroups: vi.fn(async () => ({ ok: true, groups: [] })),
@@ -239,6 +258,47 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('BotGroupChatView', () => {
+  it('hosts the connection notice before the composer and restores the global fallback on exit', async () => {
+    mocks.getControlledState.mockResolvedValue({
+      controlledBy: [{ deviceId: 'studio', name: 'Mac Studio' }],
+    });
+    const fallback = render(<ControlledBanner />);
+    const view = renderView();
+    const input = await screen.findByRole('textbox');
+    await waitFor(() => expect(fallback.container.childElementCount).toBe(0));
+    expect(screen.getAllByText('remoteDevice.controlledBy:Mac Studio')).toHaveLength(1);
+    const chip = view.container.querySelector('[data-controlled-banner-chip]')!;
+    expect(chip).toBeTruthy();
+    expect(chip.compareDocumentPosition(input) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(chip.closest('main')).toBe(input.closest('main'));
+    expect(screen.getByRole('button', { name: 'remoteDevice.revokeAccess' })).toBeTruthy();
+
+    fireEvent.change(input, { target: { value: '第一行\n第二行\n第三行' } });
+    expect(view.container.querySelector('[data-controlled-banner-chip]')).toBe(chip);
+    expect(fallback.container.childElementCount).toBe(0);
+    expect(mocks.sendBotGroupMessage).not.toHaveBeenCalled();
+    expect(mocks.revoke).not.toHaveBeenCalled();
+
+    view.unmount();
+    expect(fallback.container.querySelector('[data-controlled-banner-chip]')).toBeTruthy();
+  });
+
+  it('adds and removes the inline notice as connections change without leaving an empty row', async () => {
+    const fallback = render(<ControlledBanner />);
+    const view = renderView();
+    await screen.findByRole('textbox');
+    const main = view.container.querySelector('main')!;
+    const originalRows = main.childElementCount;
+    expect(main.querySelector('[data-controlled-banner-chip]')).toBeNull();
+    act(() => mocks.controlledPush?.({ controllers: [{ deviceId: 'studio', name: 'Mac Studio' }] }));
+    expect(main.childElementCount).toBe(originalRows + 1);
+    expect(main.querySelector('[data-controlled-banner-chip]')).toBeTruthy();
+    expect(fallback.container.childElementCount).toBe(0);
+    act(() => mocks.controlledPush?.({ controllers: [] }));
+    expect(main.childElementCount).toBe(originalRows);
+    expect(document.querySelector('[data-controlled-banner-chip]')).toBeNull();
+  });
+
   it('renders user, teammate, notice and round-end rows with the header lockup', async () => {
     renderView();
     expect(await screen.findByText('周六 8:10 有票')).toBeTruthy();
