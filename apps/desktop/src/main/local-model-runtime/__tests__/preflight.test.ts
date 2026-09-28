@@ -3,8 +3,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const startOfficialOllamaApp = vi.fn();
 const getCustomProvider = vi.fn();
 const startLlamaCpp = vi.fn();
-const getManagedLlamaCppService = vi.fn<(...args: unknown[]) => { start: typeof startLlamaCpp }>(
-  () => ({ start: startLlamaCpp }),
+const snapshotLlamaCpp = vi.fn();
+const getManagedLlamaCppService = vi.fn<(...args: unknown[]) => { start: typeof startLlamaCpp; snapshot: typeof snapshotLlamaCpp }>(
+  () => ({ start: startLlamaCpp, snapshot: snapshotLlamaCpp }),
 );
 
 vi.mock('../llamaCppService.js', () => ({
@@ -34,6 +35,7 @@ describe('ensureManagedOllamaReadyForSession', () => {
     startOfficialOllamaApp.mockReset();
     getCustomProvider.mockReset();
     startLlamaCpp.mockReset();
+    snapshotLlamaCpp.mockReset().mockResolvedValue({ running: false });
     getManagedLlamaCppService.mockClear();
     startOfficialOllamaApp.mockResolvedValue({ kind: 'ready', runtime: 'ollama' });
     getCustomProvider.mockResolvedValue(buildEmptyManagedOllamaProvider());
@@ -48,6 +50,19 @@ describe('ensureManagedOllamaReadyForSession', () => {
     expect(getManagedLlamaCppService).toHaveBeenCalledWith('/tmp/llamacpp-session');
     expect(startLlamaCpp).toHaveBeenCalledOnce();
     expect(startOfficialOllamaApp).not.toHaveBeenCalled();
+  });
+
+  it('restores a stopped service on later turns without reloading an already running preset', async () => {
+    getCustomProvider.mockResolvedValue(buildManagedLlamaCppProvider([]));
+    const opts = { providerId: MANAGED_LLAMACPP_PROVIDER_ID, onlyIfStopped: true };
+    snapshotLlamaCpp.mockResolvedValue({ running: true });
+    await ensureManagedOllamaReadyForSession(opts);
+    expect(startLlamaCpp).not.toHaveBeenCalled();
+    snapshotLlamaCpp.mockResolvedValue({ running: false });
+    await ensureManagedOllamaReadyForSession(opts);
+    expect(startLlamaCpp).toHaveBeenCalledOnce();
+    startLlamaCpp.mockRejectedValue(new Error('BUSY'));
+    await expect(ensureManagedOllamaReadyForSession(opts)).rejects.toThrow('BUSY');
   });
 
   it('does not start local llama.cpp for SSH sessions or changed endpoints', async () => {

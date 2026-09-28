@@ -23,6 +23,8 @@ export async function ensureManagedOllamaReadyForSession(opts: {
   providerId?: string | null;
   remoteHostId?: string | null;
   userDataDir?: string;
+  /** Existing turns only restore a stopped service; they do not apply pending presets. */
+  onlyIfStopped?: boolean;
 }): Promise<void> {
   if (opts.remoteHostId) return;
   if (opts.providerId === MANAGED_LLAMACPP_PROVIDER_ID) {
@@ -31,7 +33,9 @@ export async function ensureManagedOllamaReadyForSession(opts: {
     if (!root || !config || !isManagedLlamaCppProvider(config)) {
       throw new Error('[LOCAL_LLAMACPP_NOT_READY] Reconnect llama.cpp in Settings → Model Providers.');
     }
-    await getManagedLlamaCppService(root).start();
+    const service = getManagedLlamaCppService(root);
+    if (opts.onlyIfStopped && (await service.snapshot()).running) return;
+    await service.start();
     return;
   }
   if (opts.providerId !== MANAGED_OLLAMA_PROVIDER_ID) return;
