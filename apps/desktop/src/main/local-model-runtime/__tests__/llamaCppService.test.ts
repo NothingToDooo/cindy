@@ -518,6 +518,13 @@ describe('managed llama.cpp model lifecycle', () => {
       );
       const service = createLlamaCppService(root);
       await service.start();
+      const proof = await mocks.ownerProof.mock.results.at(-1)!.value;
+      let finishProof!: () => void;
+      const proofClosed = new Promise<void>((resolve) => { finishProof = resolve; });
+      proof.close.mockImplementation(async () => {
+        await proofClosed;
+        mocks.probeOwner.mockResolvedValue('ended');
+      });
       vi.stubGlobal(
         'process',
         new Proxy(process, {
@@ -539,13 +546,63 @@ describe('managed llama.cpp model lifecycle', () => {
       await vi.waitFor(() => expect(mocks.killTree).toHaveBeenCalledOnce());
       expect(child.kill).not.toHaveBeenCalled();
       expect(stopped).toBe(false);
+      expect(proof.close).not.toHaveBeenCalled();
       if (order === 'exit-first') finishTree();
       else child.emit('exit');
+      await Promise.resolve();
+      expect(stopped).toBe(false);
+      finishProof();
       await stopping;
       expect(stopped).toBe(true);
+      expect(proof.close).toHaveBeenCalledOnce();
       expect((await service.snapshot()).running).toBe(false);
     },
   );
+  it.each(['exit-first', 'tree-first', 'both-late'] as const)(
+    'retains the owner proof after STOP_TIMEOUT until both Windows confirmations (%s)',
+    async (order) => {
+      const runtime = path.join(root, 'llamacpp-runtime');
+      await mkdir(runtime);
+      await writeFile(path.join(runtime, 'server'), 'stub');
+      await writeFile(path.join(runtime, 'current.json'), JSON.stringify({ binary: 'server', version: 'test' }));
+      const child = Object.assign(new EventEmitter(), { pid: 1234, kill: vi.fn() });
+      mocks.spawn.mockReturnValue(child);
+      vi.stubGlobal('fetch', vi.fn(async () => Response.json({ status: 'ok' })));
+      const service = createLlamaCppService(root);
+      await service.start();
+      const proof = await mocks.ownerProof.mock.results.at(-1)!.value;
+      vi.stubGlobal('process', new Proxy(process, {
+        get(target, key) { return key === 'platform' ? 'win32' : Reflect.get(target, key); },
+      }));
+      let finishTree!: () => void;
+      mocks.killTree.mockImplementation((_pid, _target, finish) => { finishTree = finish; });
+      vi.useFakeTimers();
+      try {
+        const stopped = service.stop().catch((error: Error) => error.message);
+        await vi.advanceTimersByTimeAsync(0);
+        if (order === 'exit-first') child.emit('exit');
+        if (order === 'tree-first') finishTree();
+        await vi.advanceTimersByTimeAsync(4000);
+        expect(await stopped).toBe('STOP_TIMEOUT');
+        expect(proof.close).not.toHaveBeenCalled();
+        vi.useRealTimers();
+        const other = createLlamaCppService(root);
+        const deleted = vi.fn();
+        await expect(other.configure(async () => {})).rejects.toThrow('RUNTIME_OWNED_ELSEWHERE');
+        await expect(other.remove(deleted)).rejects.toThrow('BUSY');
+        expect(deleted).not.toHaveBeenCalled();
+        if (order !== 'exit-first') child.emit('exit');
+        if (order === 'both-late') expect(proof.close).not.toHaveBeenCalled();
+        if (order !== 'tree-first') finishTree();
+        expect(proof.close).toHaveBeenCalledOnce();
+        await other.remove(deleted);
+        expect(deleted).toHaveBeenCalledOnce();
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it.each(['EEXIST', 'ENOTEMPTY', 'EPERM'])(
     'accepts %s only when another model publication succeeded',
     async (code) => {

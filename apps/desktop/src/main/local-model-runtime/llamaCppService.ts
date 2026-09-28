@@ -232,11 +232,11 @@ export function createLlamaCppService(
   function closeOwnerProof() {
     const proof = ownerProof;
     ownerProof = undefined;
-    void proof?.close().catch(() => {});
+    return proof?.close().catch(() => {});
   }
   async function stopAndWait(): Promise<void> {
     ready = false;
-    closeOwnerProof();
+    const proof = ownerProof;
     const previous = child;
     if (!previous) return;
     await new Promise<void>((resolve, reject) => {
@@ -244,7 +244,8 @@ export function createLlamaCppService(
       let exited = false;
       let treeSettled = !windows;
       const timeout = setTimeout(() => {
-        cleanup();
+        // The caller stops waiting, but late exit/tree completion still owns cleanup.
+        clearTimeout(force);
         reject(new Error('STOP_TIMEOUT'));
       }, 4_000);
       const force = windows
@@ -255,7 +256,8 @@ export function createLlamaCppService(
       const done = () => {
         if (!exited || !treeSettled) return;
         cleanup();
-        resolve();
+        // Removal may immediately probe the proof; finish closing it before returning.
+        void Promise.resolve(ownerProof === proof ? closeOwnerProof() : undefined).then(resolve);
       };
       const onExit = () => {
         exited = true;
@@ -531,16 +533,20 @@ export function createLlamaCppService(
             failed = true;
             if (child === running) {
               child = undefined;
+              // Once stop begins, its exit + tree barrier owns proof cleanup,
+              // including completion after STOP_TIMEOUT.
+              if (ready) closeOwnerProof();
               ready = false;
-              closeOwnerProof();
             }
           });
           running.once('exit', () => {
             failed = true;
             if (child === running) {
               child = undefined;
+              // Once stop begins, its exit + tree barrier owns proof cleanup,
+              // including completion after STOP_TIMEOUT.
+              if (ready) closeOwnerProof();
               ready = false;
-              closeOwnerProof();
             }
           });
           try {
