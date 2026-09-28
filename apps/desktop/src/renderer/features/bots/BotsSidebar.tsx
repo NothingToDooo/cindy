@@ -1,3 +1,4 @@
+import { BotGenerationLabel } from './BotGenerationLabel';
 import { botRosterLabel } from '../../../shared/botCreation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -28,7 +29,11 @@ import {
 import { useAgentIslandActivityMap } from '@/state/agentIslandActivity';
 import { useSessionRunningStatus } from '@/hooks/useSessionRunningStatus';
 import { useActiveMainView } from '@/hooks/useActiveMainView';
-import { sendSessionEventNotification } from '@/lib/sessionEventNotification';
+import {
+  BOT_GROUP_LANE_SESSION,
+  botOwnedSessionNotificationTitle,
+  sendSessionEventNotification,
+} from '@/lib/sessionEventNotification';
 import { useSidebarCollapsedState, useRegisterSidebarUpper } from '../feature-context';
 import { SidebarIconButton } from '@/components/sidebar/SidebarIconButton';
 import { useRemoteBots } from './useRemoteBots';
@@ -40,6 +45,8 @@ import { cindyDeviceKey, cindyDeviceOptions, isCindyDeviceBot } from './cindyDev
 import { BotAvatar } from './BotAvatar';
 import { BotCreateMenu } from './BotCreateMenu';
 import { BotDeleteDialog } from './BotDeleteDialog';
+import { BotGroupSidebarSection } from './BotGroupSidebarSection';
+import { isBotGroupLaneSession, withoutBotGroupLanes } from './botGroupLane';
 import {
   botListSubtitle,
   botListTimestampAt,
@@ -76,7 +83,7 @@ function BotsSidebarContent() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { pathname } = useLocation();
-  const { botId, sessionId, deviceId } = useParams();
+  const { botId, sessionId, deviceId, groupId } = useParams();
   const remoteBots = useRemoteBots();
   const devices = useDeviceLinkDeviceList();
   const self = devices?.find((device) => device.isSelf);
@@ -133,7 +140,8 @@ function BotsSidebarContent() {
     const canonicalSessionId = canonicalBotSessionId(bot);
     const canonicalActivity = canonicalSessionId ? islandActivity.get(canonicalSessionId) : undefined;
     if (canonicalActivity?.phase === 'running') return canonicalActivity;
-    return bot.sessions.map((session) => islandActivity.get(session.id))
+    // 群专线在群聊行上显示运行中,不让这位伙伴自己的行也跟着「正在输入…」。
+    return withoutBotGroupLanes(bot.sessions).map((session) => islandActivity.get(session.id))
       .find((activity) => activity?.phase === 'running');
   };
   const roster = partitionBotRoster(rosterBots, { query, showHidden });
@@ -156,12 +164,16 @@ function BotsSidebarContent() {
   const rosterSize = rosterBots.length + remoteBots.length - (hasMultipleCindys ? cindyOptions.length - 1 : 0);
   const showSearch = rosterSize >= 8 || normalizedQuery.length > 0;
 
-  const sessionOwners = useMemo(() => {
-    const next = new Map<string, { bot: BotProfile; title: string }>();
+  const { sessionOwners, groupLaneSessionIds } = useMemo(() => {
+    const owners = new Map<string, { bot: BotProfile; title: string }>();
+    const lanes = new Set<string>();
     for (const bot of bots) {
-      for (const session of bot.sessions) next.set(session.id, { bot, title: session.title });
+      for (const session of bot.sessions) {
+        if (isBotGroupLaneSession(session)) lanes.add(session.id);
+        else owners.set(session.id, { bot, title: session.title });
+      }
     }
-    return next;
+    return { sessionOwners: owners, groupLaneSessionIds: lanes };
   }, [bots]);
   const activeBotSessionId = useMemo(() => {
     if (sessionId) return sessionId;
@@ -171,6 +183,8 @@ function BotsSidebarContent() {
   }, [botId, bots, deviceId, remoteBots, sessionId]);
   const fireSessionNotification = useCallback(
     (targetSessionId: string, kind: 'done' | 'error' | 'needs-reply') => {
+      // 群专线不进系统通知(docs/product-rules/bot-group-chat.md §3);需要确认的操作在群里提示。
+      if (groupLaneSessionIds.has(targetSessionId)) return;
       const owner = sessionOwners.get(targetSessionId);
       if (owner) {
         const title =
@@ -185,8 +199,15 @@ function BotsSidebarContent() {
       // Resolve their real title lazily instead of exposing an internal id.
       void sessionService
         .get(targetSessionId)
-        .then((session) => {
+        .then(async (session) => {
           if (isOrcaWorkerSession(session)) return;
+          // 伙伴画像可能还没投影到刚建好的群专线,用库里的最新归属再判一次。
+          if (
+            session.source === 'bot' &&
+            (await botOwnedSessionNotificationTitle(targetSessionId)) === BOT_GROUP_LANE_SESSION
+          ) {
+            return;
+          }
           sendSessionEventNotification(
             targetSessionId,
             projectDraftSessionTitle(session.title, t('ccAgent.common.unnamedSession')),
@@ -201,7 +222,7 @@ function BotsSidebarContent() {
           );
         });
     },
-    [sessionOwners, t],
+    [groupLaneSessionIds, sessionOwners, t],
   );
   const handleSessionDone = useCallback(
     (targetSessionId: string) => fireSessionNotification(targetSessionId, 'done'),
@@ -237,7 +258,7 @@ function BotsSidebarContent() {
   useEffect(() => {
     const botSessionIds = new Set<string>();
     for (const bot of bots) {
-      for (const session of bot.sessions) botSessionIds.add(session.id);
+      for (const session of withoutBotGroupLanes(bot.sessions)) botSessionIds.add(session.id);
     }
     if (botSessionIds.size === 0) return;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -367,7 +388,6 @@ function BotsSidebarContent() {
           <SidebarIconButton
             icon={ArrowLeft}
             label={t('sidebar.backToSessions')}
-            variant="rail"
             onClick={() => navigateToView('cc-agent')}
           />
         )}
@@ -429,11 +449,12 @@ function BotsSidebarContent() {
               const selected = Boolean(routeCindy);
               const activity = local ? botRunningActivity(local) : undefined;
               const subtitle = local ? botListSubtitle(local) : null;
-              const subtitleText = activity ? activity.compactDetail?.trim() || t('bots.list.typing')
+              const subtitleText = activity ? <BotGenerationLabel sessionId={activity.sessionId} phase={activity.workingPhase} startedAt={activity.startedAtMs} />
+                : 'deviceId' in bot && bot.online && bot.generation ? <BotGenerationLabel sessionId={bot.sessionId ?? undefined} {...bot.generation} remote={{ deviceId: bot.deviceId, botId: bot.id }} />
                 : subtitle ? subtitle.kind === 'placeholder' ? t('bots.list.startChat') : subtitle.text
                   : 'preview' in bot ? bot.preview || bot.description || t('bots.list.startChat') : '';
               return <CindyDeviceRow key="cindy-devices" current={currentCindy} options={cindyOptions}
-                selected={selected} typing={Boolean(activity)} subtitle={subtitleText}
+                selected={selected} typing={Boolean(activity || ('deviceId' in bot && bot.online && bot.generation))} subtitle={subtitleText}
                 timestamp={formatBotListTimestamp(local
                   ? botListTimestampAt({ lastMessageAt: local.lastMessageAt, working: Boolean(activity) }, now)
                   : 'activityAt' in bot ? bot.activityAt : 0, now)}
@@ -464,11 +485,11 @@ function BotsSidebarContent() {
                   <button key={remoteBotKey(bot)} type="button" aria-current={selected ? 'page' : undefined}
                     onClick={() => navigate(`/bots/remote/${encodeURIComponent(bot.deviceId)}/${encodeURIComponent(bot.id)}`)}
                     className={cn('flex w-full min-w-0 items-center gap-2.5 rounded-xl px-2.5 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring', selected ? 'bg-sidebar-item-active text-sidebar-item-active-foreground' : 'text-[var(--sidebar-nav-text)] hover:bg-sidebar-item-hover')}>
-                    <span className="relative shrink-0"><BotAvatar bot={bot} size="md" /><BotConnectionStatus online={bot.online} deviceName={deviceName} /></span>
+                    <span className="relative shrink-0"><BotAvatar bot={bot} size="md" /><BotConnectionStatus online={bot.connectionKnown === false ? null : bot.online} deviceName={deviceName} /></span>
                     <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                       <span className="truncate text-14 leading-5">{bot.name}</span>
-                      <BotConnectionStatus inline online={bot.online} deviceName={deviceName} className={selected ? 'opacity-70' : 'text-[var(--text-secondary)]'} />
-                      <span className="truncate text-12 leading-4 text-[var(--sidebar-list-muted)]">{bot.preview || bot.description || t('bots.list.startChat')}</span>
+                      <BotConnectionStatus inline online={bot.connectionKnown === false ? null : bot.online} deviceName={deviceName} className={selected ? 'opacity-70' : 'text-[var(--text-secondary)]'} />
+                      <span className="truncate text-12 leading-4 text-[var(--sidebar-list-muted)]">{bot.online && bot.generation ? <BotGenerationLabel sessionId={bot.sessionId ?? undefined} {...bot.generation} remote={{ deviceId: bot.deviceId, botId: bot.id }} /> : bot.preview || bot.description || t('bots.list.startChat')}</span>
                     </span>
                     {!selected && isRemoteBotUnread(bot) ? <span aria-label={t('bots.list.unread', { count: 1 })} className="size-[7px] shrink-0 rounded-full bg-[var(--bot-unread-bg)]" /> : null}
                     <span className="w-10 shrink-0 self-start pt-0.5 text-right text-11 tabular-nums text-[var(--sidebar-list-muted)]">{formatBotListTimestamp(bot.activityAt, now)}</span>
@@ -484,7 +505,7 @@ function BotsSidebarContent() {
               const activity = botRunningActivity(bot);
               const typing = Boolean(activity);
               const subtitleText = typing
-                ? activity?.compactDetail?.trim() || t('bots.list.typing')
+                ? <BotGenerationLabel sessionId={activity?.sessionId} phase={activity?.workingPhase} startedAt={activity?.startedAtMs} />
                 : subtitle.kind === 'placeholder'
                   ? t('bots.list.startChat')
                   : subtitle.text;
@@ -535,7 +556,7 @@ function BotsSidebarContent() {
                     className="flex min-w-0 flex-1 items-center gap-2.5 rounded-xl px-2.5 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                   >
                     {/* Keep the existing avatar size alongside identity and message preview. */}
-                    <span className="relative shrink-0"><BotAvatar bot={bot} size="md" /><BotConnectionStatus activityLabel={typing ? subtitleText : undefined} /></span>
+                    <span className="relative shrink-0"><BotAvatar bot={bot} size="md" /><BotConnectionStatus /></span>
                     <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                       <span className="flex items-baseline gap-2">
                         {bot.pinnedAt ? (
@@ -576,7 +597,7 @@ function BotsSidebarContent() {
                             mutedClass,
                             typing && 'italic',
                           )}
-                          title={subtitleText}
+                          title={typeof subtitleText === 'string' ? subtitleText : undefined}
                         >
                           {subtitleText}
                         </span>
@@ -699,6 +720,15 @@ function BotsSidebarContent() {
             ) : null}
           </div>
         )}
+        {rosterBots.length > 0 ? (
+          <BotGroupSidebarSection
+            bots={bots}
+            islandActivity={islandActivity}
+            now={now}
+            selectedGroupId={groupId}
+            onOpenGroup={(id) => navigate(`/bots/groups/${encodeURIComponent(id)}`)}
+          />
+        ) : null}
       </div>
       <BotDeleteDialog
         bot={deleteTarget}

@@ -101,6 +101,7 @@ import { useAnyGhostUnread } from '@/cindy-brain/ghostUnreadStore';
 import { GhostPanelRestoreEntry } from '@/cindy-brain/GhostPanelRestoreEntry';
 import { GhostMainViewNavEntries } from '@/components/sidebar/GhostMainViewNavEntries';
 import {
+  BOT_GROUP_LANE_SESSION,
   botOwnedSessionNotificationTitle,
   findSessionNotificationSession,
   sendSessionEventNotification,
@@ -1099,6 +1100,8 @@ function ExpandedView({
         return;
       }
       void botOwnedSessionNotificationTitle(sessionId).then((botTitle) => {
+        // 伙伴群专线不发系统通知,确认请求在群聊里提示(docs/product-rules/bot-group-chat.md §3)。
+        if (botTitle === BOT_GROUP_LANE_SESSION) return;
         sendSessionEventNotification(sessionId, botTitle ?? unnamedLabelRef.current, kind);
       });
     },
@@ -4004,7 +4007,6 @@ function CollapsedView({
       <SidebarIconButton
         icon={CirclePlus}
         label={t('ccAgent.layout.new')}
-        variant="rail"
         onClick={handleNewCCS}
       />
       {/* 自动化 rail 入口 —— 仅导航,不再显示未读 dot(与展开态 SidebarTopNav 一致,
@@ -4014,7 +4016,6 @@ function CollapsedView({
         label={t('ccAgent.layout.automations')}
         aria-label={t('ccAgent.layout.automations')}
         aria-current={onScheduleMatch ? 'page' : undefined}
-        variant="rail"
         active={Boolean(onScheduleMatch)}
         onClick={handleNavScheduled}
       />
@@ -4024,7 +4025,6 @@ function CollapsedView({
       <SidebarIconButton
         icon={Plug}
         label={t('sidebar.tabs.plugins')}
-        variant="rail"
         active={activeKey === 'plugins'}
         aria-current={activeKey === 'plugins' ? 'page' : undefined}
         showDot={hasGhostUnread}

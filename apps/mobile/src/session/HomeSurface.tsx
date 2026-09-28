@@ -1,3 +1,4 @@
+import { getMobileAuthOwner, isMobileAuthOwnerCurrent } from '@/auth/authOwnerGeneration';
 import type { HomeMode } from './homeViewPreferenceStore';
 import { TaskTagDots } from '@/session/TaskTags';
 import { ResidentHomeList, useResidentHomeList } from './ResidentHomeList';
@@ -44,6 +45,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  Crown,
   Ellipsis,
   Folder,
   FolderOpen,
@@ -87,7 +89,6 @@ import {
   NativePullDownMenu,
   usesNativePullDownMenu,
   usesNativeStackHeader,
-  usesSystemActionMenu,
 } from '@/platform/chrome';
 import {
   buildHomeDisplayPullDownActions,
@@ -202,7 +203,7 @@ import {
 } from '@/session/homeSections';
 import {
   readHomeViewPreferences,
-  saveHomeViewPreferences,
+  saveHomeViewPreferences as persistHomeViewPreferences,
   type HomeViewPreferences,
 } from '@/session/homeViewPreferenceStore';
 import {
@@ -402,6 +403,14 @@ function HomeScreenContent({ active = true, onModeChange, width, onDismiss, newS
   const styles = useThemedStyles(makeStyles);
   const { colors, mode } = useTheme();
   const { t, i18n: i18nInstance } = useTranslation();
+  const saveHomeViewPreferences = useCallback((patch: Parameters<typeof persistHomeViewPreferences>[0]) => {
+    const owner = getMobileAuthOwner();
+    return persistHomeViewPreferences(patch).catch(() => {
+      if (isMobileAuthOwnerCurrent(owner)) {
+        Alert.alert(t('devices.list.alert.actionFailed'), t('models.unified.saveFailed'));
+      }
+    });
+  }, [t]);
   // 所有前进导航(进会话 / 新建 / 设置 / 组页面)统一走守卫 push:列表卡顿时的
   // 连点会各自触发一次裸 push,把同一页压进栈 N 层(返回也要 N 次)。
   const push = useGuardedPush();
@@ -798,8 +807,8 @@ function HomeScreenContent({ active = true, onModeChange, width, onDismiss, newS
             assertCurrentScope();
             const epoch = remoteSessionStore.captureActiveSessionSnapshotEpoch();
             // Old hosts ignore this optional projection and still return the full snapshot.
-            const active = await invoke<unknown[]>(device.deviceId, 'maker:list-active', [
-              { summary: true },
+            const active = await invoke<unknown>(device.deviceId, 'maker:list-active', [
+              { summary: true, snapshotVersion: 2 },
             ]).catch((err) => {
               if (isOptionalActiveSessionSnapshotError(err)) return null;
               throw err;
@@ -834,7 +843,7 @@ function HomeScreenContent({ active = true, onModeChange, width, onDismiss, newS
           device.name,
           nextSessions,
         );
-        if (Array.isArray(activeSessions)) {
+        if (activeSessions !== null) {
           remoteSessionStore.setActiveSessionSnapshots(
             device.deviceId,
             activeSessions,
@@ -2478,15 +2487,11 @@ function HomeScreenContent({ active = true, onModeChange, width, onDismiss, newS
     windowWidth: screenWidth,
   });
 
+  // 只服务系统下拉(iOS UIMenu / Android PopupMenu):点选即收起,没有自绘菜单的
+  // onClosed 可等,撤权提示直接挂;自绘回退菜单走 DeviceMenuModal 的 onSelect。
   const selectHomeScope = useCallback((item: MobileHomeDeviceFilterItem) => {
     if (item.deviceId && item.state === 'access_revoked') {
-      const deviceId = item.deviceId;
-      if (usesSystemActionMenu()) {
-        setRevokedTipDeviceId(deviceId);
-        return;
-      }
-      pendingMenuActionRef.current = () => setRevokedTipDeviceId(deviceId);
-      setDeviceMenuOpen(false);
+      setRevokedTipDeviceId(item.deviceId);
       return;
     }
     viewPrefsTouchedRef.current = true;
@@ -2619,22 +2624,25 @@ function HomeScreenContent({ active = true, onModeChange, width, onDismiss, newS
             return <Pressable
             key={row.key}
             accessibilityRole="button"
-            accessibilityLabel={row.task.title}
+            accessibilityLabel={row.task.title + ', ' + t('sharedTask.roleHost')}
             onPress={() => guardedPush({ pathname: '/shared-session', params: { sharedTaskId: row.task.sharedTaskId } })}
-            style={({ pressed }) => [styles.sessionListRow, styles.sessionListRowIndented, pressed && styles.pressed]}
+            style={({ pressed }) => [styles.sessionListRow, styles.sessionListRowSingleLine, styles.sessionListRowIndented, pressed && styles.pressed]}
             testID="home.sharedOwnerRow"
           >
-            <View style={styles.sessionIconCell}>
+            <View style={[styles.sessionIconCell, styles.sessionIconCellSingleLine]}>
               <FileText color={colors.textSecondary} size={iconSize.action} strokeWidth={iconStroke.thin} />
+            </View>
+            <View style={[styles.sharedRoleSlot, styles.sharedRoleSlotSingleLine]} testID={`home.sharedRoleSlot.owned.${row.task.sessionId}`}>
+              <Crown
+                accessible={false}
+                color={colors.warningFg}
+                size={iconSize.md}
+                strokeWidth={iconStroke.thin}
+              />
             </View>
             <View style={[styles.sessionListContent, index === sharedRows.length - 1 && styles.sessionListContentNoDivider]}>
               <View style={styles.sessionTitleRow}>
                 <Text style={styles.sessionTitle} numberOfLines={1} ellipsizeMode="tail">{row.task.title}</Text>
-              </View>
-              <View style={[styles.sessionPreviewRow, styles.sharedOwnerRoleCell]}>
-                <View style={styles.sharedRoleBadge} testID="home.sharedOwnerRoleBadge">
-                  <Text style={styles.sharedRoleBadgeText}>{t('sharedTask.roleOwnedBadge')}</Text>
-                </View>
               </View>
             </View>
           </Pressable>; })}
@@ -2833,6 +2841,7 @@ function HomeScreenContent({ active = true, onModeChange, width, onDismiss, newS
           <NativePullDownMenu
             actions={homeScopePullDownActions}
             onAction={handleHomeScopeAction}
+            style={styles.headerTitleSlot}
           >
             <Pressable
               accessibilityLabel={t('devices.list.a11y.selectScope')}
@@ -2943,7 +2952,6 @@ function HomeScreenContent({ active = true, onModeChange, width, onDismiss, newS
       />
       <DeviceMenuModal
         collections={remoteHomeCollections}
-        connectionStates={deviceConnectionStates}
         filters={home.deviceFilters}
         onClose={() => setDeviceMenuOpen(false)}
         onClosed={handleDeviceMenuClosed}
@@ -3110,7 +3118,6 @@ function HomeInitialLoadingState({ style }: { style?: StyleProp<ViewStyle> }) {
 
 function DeviceMenuModal({
   collections,
-  connectionStates,
   filters,
   onClose,
   onClosed,
@@ -3120,7 +3127,6 @@ function DeviceMenuModal({
   visible,
 }: {
   collections: readonly RemoteHomeCollection[];
-  connectionStates: Record<string, HomeDeviceConnectionState>;
   filters: readonly MobileHomeDeviceFilterItem[];
   onClose(): void;
   /** 淡出动画完成、Modal 真正卸载后触发;父级用它把「打开第二个 Modal」延后到菜单卸载之后。 */
@@ -3147,6 +3153,8 @@ function DeviceMenuModal({
   });
   const allFilter = filters.find((item) => item.deviceId === null) ?? null;
   // 离线电脑保留缓存入口；关远控和撤权不由缓存恢复访问权限。
+  // 自绘回退与系统下拉(buildHomeScopePullDownActions)同一组条目与勾选:全部 → 集合 → 设备;
+  // 不画在线点 / 同步脉冲 / 失败圈,连接状态交给顶栏同步指示与连接条。
   const deviceFilters = filters.filter((item) => item.deviceId !== null && canBrowseMobileHomeDevice(item));
   return (
     <HomeMenuScrim
@@ -3184,13 +3192,11 @@ function DeviceMenuModal({
             ))}
             {deviceFilters.map((item) => (
               <DeviceMenuItem
-                connectionState={item.deviceId ? connectionStates[item.deviceId] ?? 'idle' : 'idle'}
                 dimmed={!canBrowseMobileHomeDevice(item)}
                 key={item.id}
                 label={item.label}
                 onPress={() => onSelect(item)}
                 selected={item.selected}
-                status={deviceMenuStatus(item)}
                 testID={item.deviceId ? `home.deviceChip.${sanitizeDeviceChipTestId(item.deviceId)}` : undefined}
               />
             ))}
@@ -3328,23 +3334,19 @@ function HomeDisplaySettingsModal({
 
 function DeviceMenuItem({
   checked = false,
-  connectionState,
   dimmed = false,
   icon,
   label,
   onPress,
   selected,
-  status,
   testID,
 }: {
   checked?: boolean;
-  connectionState?: HomeDeviceConnectionState;
   dimmed?: boolean;
   icon?: ReactNode;
   label: string;
   onPress(): void;
   selected: boolean;
-  status?: 'online' | 'offline';
   testID?: string;
 }) {
   const styles = useThemedStyles(makeStyles);
@@ -3374,12 +3376,6 @@ function DeviceMenuItem({
         ) : null)}
       </View>
       <Text numberOfLines={1} style={styles.deviceMenuItemText}>{label}</Text>
-      {status ? (
-        <View style={styles.deviceMenuStatusSlot}>
-          <StatusDot tone={status === 'online' ? 'ready' : 'off'} pulsing={connectionState === 'syncing'} />
-          {connectionState === 'failed' ? <View style={styles.deviceConnectionFailedRing} /> : null}
-        </View>
-      ) : null}
     </Pressable>
   );
 }
@@ -3444,10 +3440,6 @@ function RevokedAccessTip({
 
 function sanitizeDeviceChipTestId(value: string): string {
   return value.replace(/[^A-Za-z0-9_-]/g, '_');
-}
-
-function deviceMenuStatus(item: MobileHomeDeviceFilterItem): 'online' | 'offline' {
-  return item.available && (item.state === 'ready' || item.state === 'busy') ? 'online' : 'offline';
 }
 
 function projectDragInsertY(drag: ProjectDragSession): number | null {
@@ -4038,7 +4030,7 @@ function HomeSessionRowInner({
   selected?: boolean;
   selectionMarkTestID?: string;
   selectionMode?: boolean;
-  /** Shared-task role shown as a compact, non-interactive badge in the row metadata slot. */
+  /** Shared-group identity mark. Only owners show a crown; joined tasks match ordinary rows. */
   sharedRole?: SharedHomeRole;
   /** 平铺时标题旁的来源标签(项目名 /「对话」);分组模式下不传。 */
   sourceLabel?: string;
@@ -4093,9 +4085,9 @@ function HomeSessionRowInner({
           : { ...item, messagePreview: loadedMessagePreview },
         { running },
       );
-  // 零消息会话没有摘要。此时不要保留双行列表的空白第二行；但定时任务与置顶
-  // 标记和共享角色仍占用右下状态槽，因此继续使用双行布局。
-  const showPreviewLine = !!preview?.trim() || showSchedule || showPinned || !!sharedRole;
+  // 零消息会话没有摘要。此时不要保留双行列表的空白第二行；定时任务与置顶
+  // 标记仍占用右下状态槽，因此继续使用双行布局。共享身份位于标题左侧。
+  const showPreviewLine = !!preview?.trim() || showSchedule || showPinned;
   // 组行点击语义对齐桌面版侧边栏:收起且有需关注内容(未读运行 / 待处理)时,点行直接打开
   // 该看的那条会话(共享层 primary:运行中 > 有未读 > 最新);想展开点行首箭头(独立热区)。
   // 无需关注内容或已展开时,点行仍是展开 / 收起。
@@ -4105,6 +4097,12 @@ function HomeSessionRowInner({
     if (primary) onOpenSession(primary);
   };
   const groupRowOpensPrimary = !!group && (attention || rightStatus === 'error') && !groupExpanded;
+  const accessibilityTitle = sharedRole === 'owned' ? item.title + ', ' + t('sharedTask.roleHost') : item.title;
+  const accessibilityLabel = group
+    ? groupRowOpensPrimary
+      ? t('devices.list.a11y.openAutomationLatest', { title: accessibilityTitle })
+      : t('devices.list.a11y.automationTask', { title: accessibilityTitle })
+    : t('devices.list.a11y.openConversation', { title: accessibilityTitle });
   const handlePress = selectionMode && onPressSelection
     ? onPressSelection
     : group
@@ -4121,9 +4119,7 @@ function HomeSessionRowInner({
     >
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={group
-          ? groupRowOpensPrimary ? t('devices.list.a11y.openAutomationLatest', { title: item.title }) : t('devices.list.a11y.automationTask', { title: item.title })
-          : t('devices.list.a11y.openConversation', { title: item.title })}
+        accessibilityLabel={accessibilityLabel}
         accessibilityState={group ? { expanded: groupExpanded, selected: selected || active } : { selected: selected || active }}
         delayLongPress={400}
         onLongPress={
@@ -4182,6 +4178,19 @@ function HomeSessionRowInner({
             showDraftIndicator={showDraftIndicator}
           />
         </View>
+        {sharedRole === 'owned' ? (
+          <View
+            style={[styles.sharedRoleSlot, !showPreviewLine && styles.sharedRoleSlotSingleLine]}
+            testID={`home.sharedRoleSlot.owned.${item.session.id}`}
+          >
+            <Crown
+              accessible={false}
+              color={colors.warningFg}
+              size={iconSize.md}
+              strokeWidth={iconStroke.thin}
+            />
+          </View>
+        ) : null}
         <View style={[
           styles.sessionListContent,
           (hideDivider || blockMode || (!!group && groupExpanded)) && styles.sessionListContentNoDivider,
@@ -4258,13 +4267,6 @@ function HomeSessionRowInner({
                     />
                   ) : null}
                   {showPinned ? <Pin color={colors.textTertiary} size={iconSize.lg} strokeWidth={iconStroke.thin} /> : null}
-                </View>
-              ) : null}
-              {sharedRole ? (
-                <View style={styles.sharedRoleBadge} testID={`home.sharedRoleBadge.${sharedRole}.${item.session.id}`}>
-                  <Text style={styles.sharedRoleBadgeText}>
-                    {t(sharedRole === 'owned' ? 'sharedTask.roleOwnedBadge' : 'sharedTask.roleJoinedBadge')}
-                  </Text>
                 </View>
               ) : null}
             </View>
@@ -4573,6 +4575,11 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     flexDirection: 'row',
     gap: spacing.xs,
   },
+  // 菜单外层替标题占住顶栏中间的剩余宽度,长设备名在这里截断而不是挤开右侧按钮。
+  headerTitleSlot: {
+    flex: 1,
+    minWidth: 0,
+  },
   headerTitleWrap: {
     alignItems: 'center',
     flex: 1,
@@ -4592,9 +4599,9 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   headerTitle: {
     color: colors.textPrimary,
     flexShrink: 1,
-    fontSize: typeScale.listTitle,
+    fontSize: typeScale.title,
     fontWeight: fontWeight.semibold,
-    lineHeight: lineHeight.listTitleCompact,
+    lineHeight: lineHeight.title,
   },
   deviceMenuPanelCenter: {
     alignSelf: 'center',
@@ -4624,8 +4631,9 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   connectionText: {
     color: colors.textSecondary,
     flexShrink: 1,
-    fontSize: typeScale.caption,
-    fontWeight: fontWeight.medium,
+    fontSize: typeScale.footnote,
+    lineHeight: lineHeight.caption,
+    fontWeight: fontWeight.regular,
     minWidth: 0,
   },
   connectionIconButton: {
@@ -4634,15 +4642,6 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     height: 28,
     justifyContent: 'center',
     width: 28,
-  },
-  deviceConnectionFailedRing: {
-    borderColor: colors.errorBorder,
-    // 16×16 圆环:语义是正圆,用 pill(RN 钳制到半高)而非碰巧同值的 control 档。
-    borderRadius: radius.pill,
-    borderWidth: 1.5,
-    height: 16,
-    position: 'absolute',
-    width: 16,
   },
   deviceMenuBackdrop: {
     backgroundColor: colors.overlay,
@@ -4686,26 +4685,19 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   },
   deviceMenuSectionLabel: {
     color: colors.textTertiary,
-    fontSize: typeScale.caption,
-    fontWeight: fontWeight.medium,
+    fontSize: typeScale.footnote,
+    fontWeight: fontWeight.semibold,
     lineHeight: lineHeight.caption,
     paddingHorizontal: spacing.md,
     paddingTop: spacing.sm,
   },
   deviceMenuHint: {
     color: colors.textTertiary,
-    fontSize: typeScale.caption,
+    fontSize: typeScale.footnote,
     fontWeight: fontWeight.regular,
     lineHeight: lineHeight.caption,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
-  },
-  deviceMenuStatusSlot: {
-    alignItems: 'center',
-    height: 20,
-    justifyContent: 'center',
-    position: 'relative',
-    width: 20,
   },
   deviceMenuDivider: {
     backgroundColor: colors.border,
@@ -4752,8 +4744,8 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   revokedTipTitle: {
     color: colors.textPrimary,
     fontSize: typeScale.title,
-    fontWeight: fontWeight.medium,
-    lineHeight: lineHeight.subtitle,
+    fontWeight: fontWeight.semibold,
+    lineHeight: lineHeight.title,
   },
   revokedTipBody: {
     color: colors.textSecondary,
@@ -4771,7 +4763,8 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   revokedTipRetryText: {
     color: colors.ctaText,
     fontSize: typeScale.body,
-    fontWeight: fontWeight.semibold,
+    lineHeight: lineHeight.body,
+    fontWeight: fontWeight.medium,
   },
   homeList: {
     backgroundColor: colors.surface,
@@ -4792,9 +4785,9 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   },
   initialLoadingText: {
     color: colors.textSecondary,
-    fontSize: typeScale.caption,
-    fontWeight: fontWeight.medium,
-    lineHeight: lineHeight.code,
+    fontSize: typeScale.footnote,
+    fontWeight: fontWeight.regular,
+    lineHeight: lineHeight.caption,
   },
   projectGroup: {
     backgroundColor: colors.surface,
@@ -4926,21 +4919,15 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     minWidth: 0,
   },
 
-  sharedOwnerRoleCell: {
-    justifyContent: 'flex-end',
+  sharedRoleSlot: {
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    paddingTop: 26,
+    width: iconSize.action,
   },
-  sharedRoleBadge: {
-    backgroundColor: colors.surfaceChip,
-    borderColor: colors.border,
-    borderRadius: radius.pill,
-    borderWidth: StyleSheet.hairlineWidth,
-    flexShrink: 0,
-    paddingHorizontal: spacing.xs,
-  },
-  sharedRoleBadgeText: {
-    color: colors.textTertiary,
-    fontSize: typeScale.caption,
-    lineHeight: lineHeight.caption,
+  sharedRoleSlotSingleLine: {
+    justifyContent: 'center',
+    paddingTop: 0,
   },
   selectionMark: {
     alignItems: 'center',
