@@ -3729,18 +3729,18 @@ describe('统一选择器 · 旧偏好与配置变更回归', () => {
     });
   });
 
-  it('编辑收藏的异步 Fast 写入期间，不能再改深度或删除收藏', async () => {
+  it('编辑收藏的异步 Fast 写入期间，改深度与删除收藏排队，落定后按顺序执行', async () => {
     const uid = addModelFavorite({
       providerId: 'xd',
       modelId: 'gpt-5.5',
       agent: 'codex',
       effort: 'low',
     });
-    let finish!: (value: boolean) => void;
+    const fastWrites: Array<(value: boolean) => void> = [];
     const onFastModeChange = vi.fn(
       () =>
         new Promise<boolean>((resolve) => {
-          finish = resolve;
+          fastWrites.push(resolve);
         }),
     );
     const onEffortChange = vi.fn();
@@ -3765,13 +3765,17 @@ describe('统一选择器 · 旧偏好与配置变更回归', () => {
       });
       fireEvent.click(within(favorite).getByRole('button', { name: '取消收藏' }));
     });
+    // 同一时刻只提交一笔:Fast 写入在途时,深度与删除都还没发出。
     expect(onFastModeChange).toHaveBeenCalledTimes(1);
     expect(onEffortChange).not.toHaveBeenCalled();
     expect(listModelFavorites()).toHaveLength(1);
     await act(async () => {
-      finish(true);
+      fastWrites[0]?.(true);
     });
-    expect(listModelFavorites()[0]?.fast).toBe(true);
+    // Fast 落定、收藏副本写入后,才按点击顺序提交排队的深度,最后执行删除;
+    // 全程没有第二笔并发写入。
+    await waitFor(() => expect(listModelFavorites()).toHaveLength(0));
+    expect(onFastModeChange).toHaveBeenCalledTimes(1);
   });
 });
 

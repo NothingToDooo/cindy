@@ -224,9 +224,12 @@
 - 旧控制端 `maker:set-session-model-pref` 与新 `apply-new-maker-draft-pref` 双写桥保留。
 - `pendingRemoteSwitch` 5s 兜底、`remoteSwitchInFlight` 绑 ack、镜像不写控制端本地记忆——原样保留。
   例外:只改深度(模型 / 来源不变)不置 `remoteSwitchInFlight`,靠 `pendingRemoteSwitch` 乐观显示,
-  各笔经该会话的 effort commit lane 按点击顺序提交,调档期间 selector 保持可操作。
-- 面板里深度 / Fast 写入在途时行上先显示目标值(`withOptimisticConfig`),且可继续调:同一行每一维
-  只保留最新一笔,落定后依次提交,失败则丢弃排队项;其它写入超过 400ms 才显示为不可操作。
+  调档期间 selector 保持可操作;远程深度写入不进本机 effort commit lane(该 lane 的已提交值不随
+  远程回流更新),顺序由统一面板的单笔提交保证。
+- 面板里深度 / Fast 写入在途时行上先显示目标值(`withOptimisticConfig`),且可继续调。写入在途时
+  看上去可点的控件一定接得住:点击进队列而非静默丢弃 —— 深度 / Fast 按「行 + 维度」各留最新一笔,
+  其余动作只留最新一个,上一笔落定并重新渲染后按先后提交(用最新闭包),失败则丢弃排队项;
+  非深度 / Fast 写入超过 400ms 才显示为不可操作。
 - SSH:`excludeSubscriptionDirect`/`excludeChatBridgedCodex` 只在 remoteHostId 非空时开;device-link 下 CreateWorkerPopover 外置 Fast 开关不能删。
 - 老被控端 capabilities-only flat fallback(`resolveRemoteModelListStatus`)保留。
 

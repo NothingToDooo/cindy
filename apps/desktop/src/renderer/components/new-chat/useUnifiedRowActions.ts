@@ -163,8 +163,6 @@ export interface UnifiedRowActionsOptions {
   onBeforeRemoveFavorite: (anchor: UnifiedAnchor) => void;
 }
 
-type AdjustmentKind = 'effort' | 'fast';
-
 /** 在途写入的目标值:只覆盖发起那一行(按锚点)的深度或 Fast。 */
 export interface UnifiedOptimisticConfig {
   anchorKey: string;
@@ -243,27 +241,36 @@ export interface UnifiedRowActions {
 }
 
 /**
- * 异步写入超过这个时长才把控件显示为不可操作。本机写入通常几十毫秒就落地,
- * 立即置灰只会造成一闪;锁本身(busy ref)仍从第一刻起生效。
- * 深度 / Fast 调整不走这条:它们在途时可以继续调(见 exclusive 的合并)。
+ * 非深度 / Fast 的异步写入超过这个时长才把控件显示为不可操作。本机写入通常几十毫秒就
+ * 落地,立即置灰只会造成一闪;这段时间里的点击不会被丢掉,而是排队(见 exclusive)。
  */
 export const PENDING_VISIBLE_DELAY_MS = 400;
 
+type ActionName =
+  | 'runExternal'
+  | 'applyEngine'
+  | 'applyEffort'
+  | 'applyFast'
+  | 'resetToRecommended'
+  | 'addFavorite'
+  | 'removeFavorite'
+  | 'selectRow';
+
 export function useUnifiedRowActions(options: UnifiedRowActionsOptions): UnifiedRowActions {
-  // 同一个面板一次只提交一份配置。ref 同步挡住连点，pending 让控件显示不可操作；
-  // 锁覆盖确认、写入、回滚和收藏收尾，避免后发请求先完成再被旧回执覆盖。
+  // 同一个面板一次只提交一份配置,避免后发请求先完成再被旧回执覆盖;锁覆盖确认、写入、
+  // 回滚和收藏收尾。在途时控件看上去可点就一定接得住:新的点击进队列,不静默丢弃 ——
+  // 深度 / Fast 按「行 + 维度」各留最新一笔,其余动作只留最新一个,按先后顺序依次提交。
   const busy = useRef(false);
   const mounted = useRef(true);
   const [pending, setPending] = useState(false);
-  // 深度 / Fast 写入在途时,目标值先画在发起的那一行上:滑杆松手即停在新档,
-  // 不回弹到旧值再等回执。写入结束(成功或失败)即清除,之后以真实状态为准。
+  // 深度 / Fast 写入在途(含排队)时,目标值先画在那一行上:滑杆松手即停在新档,
+  // 不回弹到旧值再等回执。整条写入链空闲(或失败)即清除,之后以真实状态为准。
   const [optimistic, setOptimistic] = useState<UnifiedOptimisticConfig | null>(null);
-  // 在途的深度 / Fast 调整属于哪一行;同一行的后续调整不被锁挡掉,而是每一维只保留最新
-  // 一笔,等当前写入落定再依次提交(远程往返常超过 1 秒,挡掉会让滑杆「拖了没反应」)。
-  // 排队的只是参数:真正提交时走最新一次渲染的动作,不拿旧闭包里的回调与实时值。
-  const adjustingAnchor = useRef<string | null>(null);
-  const queuedAdjustments = useRef(new Map<AdjustmentKind, () => ActionResult>());
-  const latestAdjust = useRef<Partial<Record<AdjustmentKind, (args: unknown[]) => ActionResult>>>({});
+  const queue = useRef(new Map<string, { name: ActionName; args: unknown[] }>());
+  // 排队的只是参数:上一笔落定后等一次渲染再提交,走最新一次渲染的动作,拿到上一笔
+  // 刚写入的实时值,而不是点击那一刻闭包里的旧值。
+  const latestRuns = useRef<Partial<Record<ActionName, (args: unknown[]) => ActionResult>>>({});
+  const [drainSignal, setDrainSignal] = useState(0);
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -274,26 +281,44 @@ export function useUnifiedRowActions(options: UnifiedRowActionsOptions): Unified
     setOptimistic((current) =>
       current?.anchorKey === adjustment.anchorKey ? { ...current, ...adjustment } : adjustment,
     );
+  /** 写入链空闲:清掉排队残留的目标值显示,交回真实状态。 */
+  const settleIdle = () => {
+    busy.current = false;
+    setOptimistic(null);
+  };
+  /** 依次提交排队项,直到遇到一笔异步写入(它落定后会再次触发)或队列清空。 */
+  const drainQueue = () => {
+    for (;;) {
+      const [key] = queue.current.keys();
+      if (key === undefined) return settleIdle();
+      const next = queue.current.get(key)!;
+      queue.current.delete(key);
+      busy.current = false;
+      latestRuns.current[next.name]?.(next.args);
+      if (busy.current) return;
+    }
+  };
+  useEffect(() => {
+    if (drainSignal > 0) drainQueue();
+    // drainQueue 每次渲染都是新函数,但只在落定信号变化时执行一次。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drainSignal]);
   const exclusive = <A extends unknown[]>(
+    name: ActionName,
     action: (...args: A) => ActionResult,
-    adjustment?: { kind: AdjustmentKind; of: (...args: A) => UnifiedOptimisticConfig },
+    adjustmentOf?: (...args: A) => UnifiedOptimisticConfig,
   ) => {
     const run = (...args: A): ActionResult => {
       if (options.interactionDisabled) {
-        queuedAdjustments.current.clear();
+        queue.current.clear();
         return false;
       }
       busy.current = true;
-      const target = adjustment?.of(...args) ?? null;
-      adjustingAnchor.current = target?.anchorKey ?? null;
-      const release = () => {
-        busy.current = false;
-        adjustingAnchor.current = null;
-      };
+      const target = adjustmentOf?.(...args) ?? null;
       try {
         const result = action(...args);
         if (!(result && typeof result === 'object' && 'then' in result)) {
-          release();
+          busy.current = false;
           return result;
         }
         if (target) mergeOptimistic(target);
@@ -306,35 +331,33 @@ export function useUnifiedRowActions(options: UnifiedRowActionsOptions): Unified
           .catch(() => false as const)
           .then((outcome) => {
             if (pendingTimer !== null) clearTimeout(pendingTimer);
-            release();
-            const queue = queuedAdjustments.current;
-            const [nextKind] = queue.keys();
-            const next = nextKind ? queue.get(nextKind) : undefined;
-            if (nextKind) queue.delete(nextKind);
-            // 这笔没写成时丢掉全部排队的调整:调用方已提示失败,不在失败后悄悄再改。
-            if (outcome === false || !mounted.current) queue.clear();
-            if (!mounted.current) return outcome;
+            // 这笔没写成时丢掉排队项:调用方已提示失败,不在失败后悄悄接着改。
+            if (outcome === false || !mounted.current) queue.current.clear();
+            if (!mounted.current) {
+              busy.current = false;
+              return outcome;
+            }
             setPending(false);
-            const followUp = next && outcome !== false ? next() : undefined;
-            const followUpPending =
-              !!followUp && typeof followUp === 'object' && 'then' in followUp;
-            if (target && !followUpPending) setOptimistic(null);
+            // 有排队项时锁不放开(新点击继续进队列,不插到前面),等下一次渲染后提交。
+            if (queue.current.size > 0) setDrainSignal((signal) => signal + 1);
+            else settleIdle();
             return outcome;
           });
       } catch {
-        release();
+        busy.current = false;
         return false;
       }
     };
-    if (adjustment) latestAdjust.current[adjustment.kind] = (queued) => run(...(queued as A));
+    latestRuns.current[name] = (queued) => run(...(queued as A));
     return (...args: A): ActionResult => {
       if (options.interactionDisabled) return false;
       if (!busy.current) return run(...args);
-      const target = adjustment?.of(...args);
-      if (!adjustment || !target || target.anchorKey !== adjustingAnchor.current) return false;
-      const kind = adjustment.kind;
-      queuedAdjustments.current.set(kind, () => latestAdjust.current[kind]?.(args));
-      mergeOptimistic(target);
+      const target = adjustmentOf?.(...args);
+      const key = target
+        ? `${target.effort !== undefined ? 'effort' : 'fast'}:${target.anchorKey}`
+        : 'other';
+      queue.current.set(key, { name, args });
+      if (target) mergeOptimistic(target);
       return undefined;
     };
   };
@@ -1113,19 +1136,19 @@ export function useUnifiedRowActions(options: UnifiedRowActionsOptions): Unified
   return {
     pending,
     optimistic,
-    runExternal: exclusive((action: () => ActionResult) => action()),
-    applyEngine: exclusive(applyEngine),
-    applyEffort: exclusive(applyEffort, {
-      kind: 'effort',
-      of: (anchor, _entry, _config, effort) => ({ anchorKey: anchorKey(anchor), effort }),
-    }),
-    applyFast: exclusive(applyFast, {
-      kind: 'fast',
-      of: (anchor, _entry, _config, enabled) => ({ anchorKey: anchorKey(anchor), fast: enabled }),
-    }),
-    resetToRecommended: exclusive(resetToRecommended),
-    addFavorite: exclusive(addFavorite),
-    removeFavorite: exclusive(removeFavorite),
-    selectRow: exclusive(selectRow),
+    runExternal: exclusive('runExternal', (action: () => ActionResult) => action()),
+    applyEngine: exclusive('applyEngine', applyEngine),
+    applyEffort: exclusive('applyEffort', applyEffort, (anchor, _entry, _config, effort) => ({
+      anchorKey: anchorKey(anchor),
+      effort,
+    })),
+    applyFast: exclusive('applyFast', applyFast, (anchor, _entry, _config, enabled) => ({
+      anchorKey: anchorKey(anchor),
+      fast: enabled,
+    })),
+    resetToRecommended: exclusive('resetToRecommended', resetToRecommended),
+    addFavorite: exclusive('addFavorite', addFavorite),
+    removeFavorite: exclusive('removeFavorite', removeFavorite),
+    selectRow: exclusive('selectRow', selectRow),
   };
 }

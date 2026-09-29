@@ -6,6 +6,7 @@
  */
 
 import { act, renderHook } from '@testing-library/react';
+import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { UnifiedModelEntry } from '@cindy/model-providers';
@@ -165,7 +166,7 @@ describe('useUnifiedRowActions 深度 / Fast 即时反馈', () => {
     expect(result.current.optimistic).toBeNull();
   });
 
-  it('其它写入超过延迟阈值才显示为不可操作,期间深度调整被挡住', async () => {
+  it('其它写入超过延迟阈值才显示为不可操作,期间的深度调整排队而不丢弃', async () => {
     const external = deferred();
     const onEffortChangeLive = vi.fn(() => Promise.resolve(true));
     const { result } = renderActions({ onEffortChangeLive });
@@ -173,20 +174,84 @@ describe('useUnifiedRowActions 深度 / Fast 即时反馈', () => {
     act(() => {
       settled = result.current.runExternal(() => external.promise);
     });
+    act(() => {
+      expect(result.current.applyEffort(anchor, entry, config, 'high')).toBeUndefined();
+    });
+    expect(result.current.optimistic?.effort).toBe('high');
     expect(result.current.pending).toBe(false);
     act(() => {
       vi.advanceTimersByTime(PENDING_VISIBLE_DELAY_MS);
     });
     expect(result.current.pending).toBe(true);
-    act(() => {
-      expect(result.current.applyEffort(anchor, entry, config, 'high')).toBe(false);
-    });
     expect(onEffortChangeLive).not.toHaveBeenCalled();
     await act(async () => {
       external.resolve(true);
       await settled;
     });
+    await act(async () => {});
     expect(result.current.pending).toBe(false);
+    expect(onEffortChangeLive).toHaveBeenCalledWith('high');
+    expect(result.current.optimistic).toBeNull();
+  });
+
+  it('深度在途时点其它行 / 收藏不会被静默丢弃,落定后按顺序执行', async () => {
+    const first = deferred();
+    const order: string[] = [];
+    const { result } = renderActions({
+      onEffortChangeLive: (effort) => {
+        order.push(`effort:${effort}`);
+        return first.promise;
+      },
+    });
+    let settled: unknown;
+    act(() => {
+      settled = result.current.applyEffort(anchor, entry, config, 'high');
+    });
+    act(() => {
+      result.current.runExternal(() => {
+        order.push('external');
+      });
+    });
+    expect(order).toEqual(['effort:high']);
+    await act(async () => {
+      first.resolve(true);
+      await settled;
+    });
+    await act(async () => {});
+    expect(order).toEqual(['effort:high', 'external']);
+  });
+
+  it('排队项在上一笔落定并重新渲染后提交,用的是最新一次渲染的回调', async () => {
+    const staleFast = vi.fn(() => Promise.resolve(true));
+    const freshFast = vi.fn(() => Promise.resolve(true));
+    const { result } = renderHook(() => {
+      const [onFastModeChangeLive, setFastHandler] = useState(() => staleFast);
+      return useUnifiedRowActions({
+        interactionDisabled: false,
+        isLiveRow: () => true,
+        onSelect: vi.fn(),
+        onFavoriteFlash: vi.fn(),
+        onBeforeRemoveFavorite: vi.fn(),
+        // 与 ChatInput 一致:写入成功时先更新调用方状态(新闭包要到下一次渲染才生效),再返回。
+        onEffortChangeLive: () =>
+          Promise.resolve().then(() => {
+            setFastHandler(() => freshFast);
+            return true;
+          }),
+        onFastModeChangeLive,
+      });
+    });
+    let settled: unknown;
+    act(() => {
+      settled = result.current.applyEffort(anchor, entry, config, 'high');
+      result.current.applyFast(anchor, entry, config, true);
+    });
+    await act(async () => {
+      await settled;
+    });
+    await act(async () => {});
+    expect(staleFast).not.toHaveBeenCalled();
+    expect(freshFast).toHaveBeenCalledWith(true);
   });
 
   it('写入失败后撤掉目标值,回到真实配置', async () => {
