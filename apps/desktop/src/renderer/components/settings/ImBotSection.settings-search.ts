@@ -76,7 +76,15 @@ export default {
       targetId: 'personal-im-feishu',
       titleKey: 'settings.feishuBot.title',
       sectionKey: 'settings.imBot.groups.personal',
-      aliases: ['Feishu', '飞书', '飞书机器人', 'Lark'],
+      aliases: ['Feishu', '飞书', '飞书机器人'],
+    },
+    {
+      id: 'imBot.lark',
+      tab: 'im-bot',
+      targetId: 'personal-im-feishu',
+      titleKey: 'settings.feishuBot.services.lark',
+      sectionKey: 'settings.imBot.groups.personal',
+      aliases: ['Lark bot'],
     },
     {
       id: 'imBot.dingtalk',

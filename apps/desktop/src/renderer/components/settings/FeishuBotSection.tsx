@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Eye, EyeOff, Trash2, Check, RefreshCw } from 'lucide-react';
 
@@ -57,9 +57,13 @@ function maskTail(value: string): string {
 export function FeishuBotSection({
   expanded,
   onToggle,
+  preferredService,
+  searchActivation,
 }: {
   expanded: boolean;
   onToggle: () => void;
+  preferredService?: FeishuBotService | null;
+  searchActivation?: number;
 }) {
   const {
     service,
@@ -71,6 +75,7 @@ export function FeishuBotSection({
     status,
     errorMessage,
     hasSavedCreds,
+    hasLoadedState,
     ownerOpenId,
     validationError,
     isSaving,
@@ -85,6 +90,10 @@ export function FeishuBotSection({
   const [routeSummary, setRouteSummary] = useImChannelSettingsSummary('feishu');
   const { confirm } = useConfirmDialog();
   const { t } = useTranslation();
+
+  useEffect(() => {
+    if (hasLoadedState && !hasSavedCreds && preferredService) setService(preferredService);
+  }, [hasLoadedState, hasSavedCreds, preferredService, searchActivation, setService]);
 
   const showSavedCredentialsCard = shouldShowSavedCredentialsCard(hasSavedCreds);
   const canSave = appId.trim().length > 0 && appSecret.trim().length > 0 && !isSaving;

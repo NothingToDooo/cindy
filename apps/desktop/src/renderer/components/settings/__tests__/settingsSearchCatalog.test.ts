@@ -72,6 +72,7 @@ describe('settings search catalog', () => {
     expect(searchSettings(documents, '个人微信').map(({ entry }) => entry.id)).toContain(
       'imBot.wechat',
     );
+    expect(searchSettings(documents, 'Lark')[0]?.entry.id).toBe('imBot.lark');
   });
 
   it('finds common aliases and multi-word queries', () => {
@@ -185,6 +186,7 @@ describe('settings search catalog', () => {
       expect(visible).toContain('imBot.discord');
       expect(visible).toContain('imBot.telegram');
       expect(visible).toContain('imBot.feishu');
+      expect(visible).toContain('imBot.lark');
     }
     expect(ids()).not.toContain('imBot.cindy');
   });
