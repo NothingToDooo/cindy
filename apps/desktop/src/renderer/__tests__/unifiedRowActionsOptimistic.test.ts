@@ -221,6 +221,37 @@ describe('useUnifiedRowActions 深度 / Fast 即时反馈', () => {
     expect(order).toEqual(['effort:high', 'external']);
   });
 
+  it('被替换的排队项移到队尾,提交顺序等于最后一次点击的先后', async () => {
+    const first = deferred();
+    const order: string[] = [];
+    const { result } = renderActions({
+      onEffortChangeLive: (effort) => {
+        order.push(`effort:${effort}`);
+        return order.length === 1 ? first.promise : Promise.resolve(true);
+      },
+    });
+    let settled: unknown;
+    act(() => {
+      settled = result.current.applyEffort(anchor, entry, config, 'high');
+    });
+    act(() => {
+      result.current.runExternal(() => {
+        order.push('external:1');
+      });
+      result.current.applyEffort(anchor, entry, config, 'xhigh');
+      result.current.runExternal(() => {
+        order.push('external:2');
+      });
+    });
+    await act(async () => {
+      first.resolve(true);
+      await settled;
+    });
+    await act(async () => {});
+    await act(async () => {});
+    expect(order).toEqual(['effort:high', 'effort:xhigh', 'external:2']);
+  });
+
   it('排队项在上一笔落定并重新渲染后提交,用的是最新一次渲染的回调', async () => {
     const staleFast = vi.fn(() => Promise.resolve(true));
     const freshFast = vi.fn(() => Promise.resolve(true));

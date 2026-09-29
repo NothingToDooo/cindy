@@ -120,6 +120,7 @@ import {
   ModelSelector,
   resolveRemoteModelListStatus,
   resolveModelSelectorAgentIdentity,
+  type EffortChangeOptions,
   type ModelMemoryAccessors,
 } from './ModelSelector';
 import {
@@ -7609,7 +7610,7 @@ export function ChatInput({
    * handleFastModeChange)。统一面板的「先应用、后清存储」入口按它决定要不要收尾。
    */
   const handleEffortChange = useCallback(
-    async (newEffort: Effort): Promise<boolean> => {
+    async (newEffort: Effort, options?: EffortChangeOptions): Promise<boolean> => {
       if (settingsLocked) return false;
       // 切换意图期:effort 改动 = 更新意图(重登记),不走普通 setEffort 链路。
       if (sessionId && makerChatStore.getAgentSwitchIntent(sessionId)) {
@@ -7633,8 +7634,10 @@ export function ChatInput({
             // 控制端纯镜像:**await** 运行时隧道 setEffort,被控端持久化后广播回流更新分片。
             // New-K:await 而非 fire-and-forget —— 失败时被控端没真改,不能照报成功、污染默认偏好;
             // toast 提示并 return,不跑下方 onEffortDidChange 成功收尾。
-            // 乐观显示目标 effort,等被控端 echo 回流;失败回滚。只改深度(model/provider 不变)
-            // 不置灰 selector:统一面板同一时刻只提交一笔,调档期间的后续点击由面板排队。
+            // 乐观显示目标 effort,等被控端 echo 回流;失败回滚。统一面板发起时不置灰 selector:
+            // 面板同一时刻只提交一笔,调档期间的后续点击由面板排队。平铺选择器 / 快捷键等其它
+            // 入口没有这层串行,仍在隧道 await 期间置灰,防止多笔远程写入交错。
+            const lockSelector = options?.serializedByPanel !== true;
             const optimisticSwitch = {
               model: activeModel,
               effort: newEffort,
@@ -7642,6 +7645,7 @@ export function ChatInput({
               fastMode: fastMode === true,
             };
             setPendingRemoteSwitch(optimisticSwitch);
+            if (lockSelector) setRemoteSwitchInFlight(true);
             try {
               await makerApiForDevice(remoteDeviceId).setEffort(sessionId, newEffort);
             } catch (err) {
@@ -7655,6 +7659,9 @@ export function ChatInput({
                 );
               }
               return false;
+            } finally {
+              if (lockSelector && isSessionScopeCurrent(sessionId, currentSessionIdRef.current))
+                setRemoteSwitchInFlight(false);
             }
             if (activeModel) {
               syncSessionDraftModelPrefs(

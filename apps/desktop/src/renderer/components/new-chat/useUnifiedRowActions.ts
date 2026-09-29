@@ -356,6 +356,8 @@ export function useUnifiedRowActions(options: UnifiedRowActionsOptions): Unified
       const key = target
         ? `${target.effort !== undefined ? 'effort' : 'fast'}:${target.anchorKey}`
         : 'other';
+      // 先删再插:被替换的项移到队尾,排队顺序始终等于最后一次点击的先后。
+      queue.current.delete(key);
       queue.current.set(key, { name, args });
       if (target) mergeOptimistic(target);
       return undefined;
