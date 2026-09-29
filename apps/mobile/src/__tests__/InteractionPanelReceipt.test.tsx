@@ -106,6 +106,19 @@ it.each(['permission', 'ask_user_question', 'plan_review'])('lets a shared guest
   ));
 });
 
+it('submits the host-provided Codex session approval from the shared guest always-allow button', async () => {
+  const suggestions = [{ type: 'codexSessionApproval', destination: 'session' }];
+  remoteSessionStore.setPendingInteractions('s1', [{ request: {
+    kind: 'permission', requestId, toolName: 'Shell', input: { command: 'git status' }, suggestions,
+  } }]);
+  await act(async () => root.render(<Harness deviceId={sharedTaskHostPeer('shared', 'd1')} />));
+  resolveInteraction.mockResolvedValueOnce({ accepted: true });
+  await click('interaction.permission.alwaysAllowButton');
+  expect(resolveInteraction).toHaveBeenCalledExactlyOnceWith(requestId, {
+    kind: 'permission', behavior: 'allow', permissionUpdates: suggestions,
+  });
+});
+
 it.each(['plugin_setup', 'issue_confirm', 'ghost_grant_confirm', 'rename_sessions_confirm'])('keeps shared guest %s confirmation read-only', async (kind) => {
   remoteSessionStore.setPendingInteractions('s1', [{ request: { kind, requestId } }]);
   await act(async () => root.render(<Harness deviceId={sharedTaskHostPeer('shared', 'd1')} />));

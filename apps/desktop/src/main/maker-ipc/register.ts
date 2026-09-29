@@ -14792,7 +14792,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   setSharedTaskInteractionReader((requestId) => {
     const entry = pendingInteractionResolvers.get(requestId);
     const request = entry?.request;
-    if (!entry || !request || (request.kind !== 'permission' && request.kind !== 'ask_user_question' && request.kind !== 'plan_review')) return undefined;
+    if (!entry || entry.migrated || !request || (request.kind !== 'permission' && request.kind !== 'ask_user_question' && request.kind !== 'plan_review')) return undefined;
     return {
       sessionId: entry.sessionId,
       kind: request.kind,

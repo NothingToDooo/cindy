@@ -87,6 +87,34 @@ describe('sharedTask dispatch scope', () => {
       args: ['permission-1', { kind: 'permission', behavior: 'allow', permissionUpdates: [permissionSuggestion] }],
     })).not.toThrow();
   });
+  it.each([{ command: 'different-command' }, {}, null])('rejects guest replacement input %j at admission and consumption', (updatedInput) => {
+    setSharedTaskInteractionReader(() => ({ sessionId: 'task', kind: 'permission', toolName: 'Bash' }));
+    const args = ['permission-1', { kind: 'permission', behavior: 'allow', updatedInput }];
+    expect(() => assertSharedTaskInvoke(capture(), { channel: 'maker:resolve-interaction', args })).toThrow('PERMISSION_DENIED');
+    expect(() => assertSharedTaskInteractionResolveCurrent(capture(), args)).toThrow('PERMISSION_DENIED');
+  });
+  it('accepts the host-provided Codex session approval, but rejects an unsolicited one', () => {
+    const update = { type: 'codexSessionApproval', destination: 'session' };
+    const request: SharedTaskInteractionCapture = { sessionId: 'task', kind: 'permission', toolName: 'Shell', suggestions: [update] };
+    setSharedTaskInteractionReader(() => request);
+    const args = ['permission-1', { kind: 'permission', behavior: 'allow', permissionUpdates: [update] }];
+    expect(() => assertSharedTaskInvoke(capture(), { channel: 'maker:resolve-interaction', args })).not.toThrow();
+    expect(() => assertSharedTaskInteractionResolveCurrent(capture(), args)).not.toThrow();
+    request.suggestions = [];
+    expect(() => assertSharedTaskInvoke(capture(), { channel: 'maker:resolve-interaction', args })).toThrow('PERMISSION_DENIED');
+    expect(() => assertSharedTaskInteractionResolveCurrent(capture(), args)).toThrow('PERMISSION_DENIED');
+  });
+  it.each([
+    { type: 'codexSessionApproval', destination: 'userSettings' },
+    { type: 'codexSessionApproval', destination: 'session', mode: 'bypassPermissions' },
+    { type: 'codexSessionApproval', destination: 'session', rules: [{ toolName: 'Write' }] },
+    { type: 'setMode', destination: 'session', mode: 'bypassPermissions' },
+  ])('rejects unsafe session approval shapes even when suggested: %j', (update) => {
+    setSharedTaskInteractionReader(() => ({ sessionId: 'task', kind: 'permission', toolName: 'Shell', suggestions: [update] }));
+    const args = ['permission-1', { kind: 'permission', behavior: 'allow', permissionUpdates: [update] }];
+    expect(() => assertSharedTaskInvoke(capture(), { channel: 'maker:resolve-interaction', args })).toThrow('PERMISSION_DENIED');
+    expect(() => assertSharedTaskInteractionResolveCurrent(capture(), args)).toThrow('PERMISSION_DENIED');
+  });
   it('rejects a request that disappeared before consumption', () => {
     let active = true;
     setSharedTaskInteractionReader(() => active

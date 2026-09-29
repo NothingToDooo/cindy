@@ -75,8 +75,11 @@ function sameJson(left: unknown, right: unknown): boolean {
 
 function isSafeSessionPermissionUpdate(value: unknown, toolName: string): boolean {
   const update = record(value);
-  if (!update || update.type !== 'addRules' || update.behavior !== 'allow' ||
-      update.destination !== 'session' ||
+  if (!update || update.destination !== 'session') return false;
+  if (update.type === 'codexSessionApproval') {
+    return Object.keys(update).every((key) => key === 'type' || key === 'destination');
+  }
+  if (update.type !== 'addRules' || update.behavior !== 'allow' ||
       Object.keys(update).some((key) => !['type', 'behavior', 'destination', 'rules'].includes(key)) ||
       !Array.isArray(update.rules) || update.rules.length === 0) return false;
   return update.rules.every((rawRule) => {
@@ -112,6 +115,8 @@ function assertSharedTaskInteractionResolve(
   if (phase === 'invoke' && (!interaction || interaction.sessionId !== sessionId)) deny();
   const decision = record(args[1]);
   if (!decision || typeof decision.kind !== 'string' || !interactionDecisionKinds.has(decision.kind)) deny();
+  // Guests approve the host-displayed input, never substitute executable input.
+  if (decision.updatedInput !== undefined) deny();
   if (phase === 'invoke' && interaction?.kind !== decision.kind) deny();
   if (decision.kind === 'permission' || decision.kind === 'plan_review') {
     if (decision.behavior !== 'allow' && decision.behavior !== 'deny') deny();
