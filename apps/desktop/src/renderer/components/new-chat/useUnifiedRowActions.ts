@@ -528,7 +528,7 @@ export function useUnifiedRowActions(options: UnifiedRowActionsOptions): Unified
      */
     favoriteUid: string | null;
     onApplied: () => void | Promise<void>;
-  }): Promise<void> => {
+  }): Promise<void | false> => {
     if (!sessionEngineFilter) return Promise.resolve();
     return runLive(() =>
       (sessionEngineFilter.onCrossEngineConfigure ?? sessionEngineFilter.onCrossEngineSelect)({
@@ -543,11 +543,11 @@ export function useUnifiedRowActions(options: UnifiedRowActionsOptions): Unified
       (applied) => {
         // 只有明确的 false 表示「没切」(见 UnifiedModelPanelProps.onCrossEngineSelect);
         // 返回 void 的调用方视为已切。
-        if (applied === false) return;
+        if (applied === false) return false;
         return args.onApplied();
       },
       // 事务抛错(切换失败)同样按「没应用」处理。
-      () => {},
+      () => false as const,
     );
   };
 
@@ -623,9 +623,10 @@ export function useUnifiedRowActions(options: UnifiedRowActionsOptions): Unified
       }
     };
     if (args.live && isLiveRow(args.entry, args.config)) {
-      return args.live().then((applied) => {
+      return args.live().then(async (applied) => {
         if (applied) return commitOrRestore(async () => { await args.rollback?.(); });
-        if (args.rollback) return args.rollback();
+        await args.rollback?.();
+        return false;
       });
     }
     const wireModelId = args.target.wireModelId ?? args.anchor.modelId;
@@ -658,8 +659,9 @@ export function useUnifiedRowActions(options: UnifiedRowActionsOptions): Unified
         favoriteUid: args.uid,
         rowModelId: args.anchor.modelId,
       }),
-    ).then((applied) => {
-      if (applied) return commitOrRestore(() => (onConfigure ?? onSelect)(
+    ).then((applied): ActionResult => {
+      if (!applied) return false;
+      return commitOrRestore(() => (onConfigure ?? onSelect)(
         args.anchor.providerId, args.config.wireModelId ?? args.anchor.modelId,
         args.config.effort ?? '', {
           engine: args.config.engine, fast: args.config.fast,
@@ -776,7 +778,8 @@ export function useUnifiedRowActions(options: UnifiedRowActionsOptions): Unified
             rowModelId: anchor.modelId,
           }),
         ).then((applied) => {
-          if (applied) setModelEngineOverride(anchor.providerId, anchor.modelId, engine);
+          if (!applied) return false;
+          setModelEngineOverride(anchor.providerId, anchor.modelId, engine);
         });
       }
       return;
@@ -814,7 +817,8 @@ export function useUnifiedRowActions(options: UnifiedRowActionsOptions): Unified
       // (见 clearFavoriteAnchorForLiveRow 的头注)。顺序与本文件其它入口一致:先应用、后落状态。
       if (selectedFavoriteUid && onSelectedFavoriteAnchorClear) {
         return runLive(() => onEffortChangeLive(effort)).then((applied) => {
-          if (applied) return clearFavoriteAnchorForLiveRow(anchor, { ...config, effort });
+          if (!applied) return false;
+          return clearFavoriteAnchorForLiveRow(anchor, { ...config, effort });
         });
       }
       // 选中行的深度是会话实时状态,交给调用方持久化(与旧版 handleEditEffort 同语义)。
@@ -862,7 +866,8 @@ export function useUnifiedRowActions(options: UnifiedRowActionsOptions): Unified
       // 同 applyEffort:改的是**普通模型行**的实时 Fast,而当前选中的是一条收藏 → 写成功后清锚点。
       if (selectedFavoriteUid && onSelectedFavoriteAnchorClear) {
         return runLive(() => onFastModeChangeLive(enabled)).then((applied) => {
-          if (applied) return clearFavoriteAnchorForLiveRow(anchor, { ...config, fast: enabled });
+          if (!applied) return false;
+          return clearFavoriteAnchorForLiveRow(anchor, { ...config, fast: enabled });
         });
       }
       // 选中行的 Fast 必须等调用方持久化成功后再由上层同步草稿;这里绝不预写 modelMemory
@@ -963,7 +968,8 @@ export function useUnifiedRowActions(options: UnifiedRowActionsOptions): Unified
           effort: defaultEffort,
         }),
       ).then((applied) => {
-        if (applied) resetStoredConfig();
+        if (!applied) return false;
+        resetStoredConfig();
       });
     }
 
@@ -977,7 +983,7 @@ export function useUnifiedRowActions(options: UnifiedRowActionsOptions): Unified
       // 反过来先清后写,一旦远程 setEffort / setFastMode 失败,override 与记忆已经没了、
       // 任务还在旧配置上跑 —— 面板显示的推荐态与事实分家,且没有可回滚的原值。
       return applyDefaultsLive(defaultEffort).then((applied) => {
-        if (!applied) return;
+        if (!applied) return false;
         resetStoredConfig();
         return clearFavoriteAnchorForLiveRow(anchor, {
           ...config,
@@ -1065,8 +1071,9 @@ export function useUnifiedRowActions(options: UnifiedRowActionsOptions): Unified
           wireModelId,
           effort: fallback.effort,
         }),
-      ).then((applied) => {
-        if (applied) return commit();
+      ).then((applied): ActionResult => {
+        if (!applied) return false;
+        return commit();
       });
     }
     // 会话内回落:默认引擎 ≠ 正在跑的引擎,或正挂着待发送意图,都走切换事务。
@@ -1088,8 +1095,9 @@ export function useUnifiedRowActions(options: UnifiedRowActionsOptions): Unified
     }
     // 会话 + 默认引擎 == 正在跑的引擎,且没有待发送意图:无损,两个 live 回调把深度 / Fast 复位。
     // 与跨引擎分支同一条顺序:**live 真写成了才**删记录。
-    return applyDefaultsLive(fallback.effort).then((applied) => {
-      if (applied) return commit();
+    return applyDefaultsLive(fallback.effort).then((applied): ActionResult => {
+      if (!applied) return false;
+      return commit();
     });
   };
 

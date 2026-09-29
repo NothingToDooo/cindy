@@ -166,6 +166,29 @@ describe('useUnifiedRowActions 深度 / Fast 即时反馈', () => {
     expect(result.current.optimistic).toBeNull();
   });
 
+  it('「先应用、后收尾」路径失败时同样回报失败,丢掉排队项', async () => {
+    const first = deferred();
+    const onEffortChangeLive = vi.fn(() => first.promise);
+    const { result } = renderActions({
+      onEffortChangeLive,
+      // 选中的是一条收藏、改的是同模型的普通行:成功后才清锚点的那条路径。
+      selectedFavoriteUid: 'fav-1',
+      onSelectedFavoriteAnchorClear: vi.fn(),
+    });
+    let settled: unknown;
+    act(() => {
+      settled = result.current.applyEffort(anchor, entry, config, 'high');
+      result.current.applyEffort(anchor, entry, config, 'xhigh');
+    });
+    await act(async () => {
+      first.resolve(false);
+      expect(await settled).toBe(false);
+    });
+    await act(async () => {});
+    expect(onEffortChangeLive).toHaveBeenCalledTimes(1);
+    expect(result.current.optimistic).toBeNull();
+  });
+
   it('其它写入超过延迟阈值才显示为不可操作,期间的深度调整排队而不丢弃', async () => {
     const external = deferred();
     const onEffortChangeLive = vi.fn(() => Promise.resolve(true));
