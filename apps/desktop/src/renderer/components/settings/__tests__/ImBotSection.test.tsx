@@ -80,6 +80,19 @@ describe('ImBotSection', () => {
     expect(scrollIntoView).not.toHaveBeenCalled();
   });
 
+  it('shows official, Discord, and Telegram bots to personal cloud accounts', () => {
+    authState.membershipKind = 'personal';
+
+    render(<ImBotSection targetGroup="cindy" />);
+
+    expect(screen.getByTestId('official-connections')).toBeTruthy();
+    expect(screen.getByTestId('discord-bot')).toBeTruthy();
+    expect(screen.getByTestId('telegram-bot')).toBeTruthy();
+    expect(scrollIntoView.mock.instances[0]).toBe(
+      screen.getByRole('heading', { name: 'settings.imBot.groups.cindy' }).closest('section'),
+    );
+  });
+
   it('keeps imGroup deep links by scrolling to the requested section', () => {
     render(<ImBotSection targetGroup="personal" />);
 
