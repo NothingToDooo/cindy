@@ -163,8 +163,48 @@ export interface UnifiedRowActionsOptions {
   onBeforeRemoveFavorite: (anchor: UnifiedAnchor) => void;
 }
 
+type AdjustmentKind = 'effort' | 'fast';
+
+/** 在途写入的目标值:只覆盖发起那一行(按锚点)的深度或 Fast。 */
+export interface UnifiedOptimisticConfig {
+  anchorKey: string;
+  effort?: Effort;
+  fast?: boolean;
+}
+
+/**
+ * 把在途目标值叠到该行的解析配置上(只作用于发起写入的那一行)。
+ * 「已自定义」按与选中行 live 覆盖相同的口径补算,恢复推荐入口随之即时出现。
+ */
+export function withOptimisticConfig(
+  anchor: UnifiedAnchor,
+  config: UnifiedRowConfig,
+  optimistic: UnifiedOptimisticConfig | null,
+): UnifiedRowConfig {
+  if (!optimistic || optimistic.anchorKey !== anchorKey(anchor)) return config;
+  const effort =
+    optimistic.effort !== undefined && config.efforts.includes(optimistic.effort)
+      ? optimistic.effort
+      : config.effort;
+  const fast = optimistic.fast !== undefined && config.fastCapable ? optimistic.fast : config.fast;
+  if (effort === config.effort && fast === config.fast) return config;
+  const defaultEffort = config.capability?.defaultEffort;
+  return {
+    ...config,
+    effort,
+    fast,
+    customized:
+      config.customized ||
+      fast ||
+      (effort !== null && defaultEffort != null && effort !== defaultEffort),
+  };
+}
+
 export interface UnifiedRowActions {
+  /** 异步写入已持续超过 PENDING_VISIBLE_DELAY_MS,控件应显示为不可操作。 */
   pending: boolean;
+  /** 在途的深度 / Fast 目标值;渲染该锚点的行配置时覆盖上去。 */
+  optimistic: UnifiedOptimisticConfig | null;
   runExternal: (action: () => ActionResult) => ActionResult;
   applyEngine: (
     anchor: UnifiedAnchor,
@@ -202,41 +242,102 @@ export interface UnifiedRowActions {
   ) => ActionResult;
 }
 
+/**
+ * 异步写入超过这个时长才把控件显示为不可操作。本机写入通常几十毫秒就落地,
+ * 立即置灰只会造成一闪;锁本身(busy ref)仍从第一刻起生效。
+ * 深度 / Fast 调整不走这条:它们在途时可以继续调(见 exclusive 的合并)。
+ */
+export const PENDING_VISIBLE_DELAY_MS = 400;
+
 export function useUnifiedRowActions(options: UnifiedRowActionsOptions): UnifiedRowActions {
   // 同一个面板一次只提交一份配置。ref 同步挡住连点，pending 让控件显示不可操作；
   // 锁覆盖确认、写入、回滚和收藏收尾，避免后发请求先完成再被旧回执覆盖。
   const busy = useRef(false);
   const mounted = useRef(true);
   const [pending, setPending] = useState(false);
+  // 深度 / Fast 写入在途时,目标值先画在发起的那一行上:滑杆松手即停在新档,
+  // 不回弹到旧值再等回执。写入结束(成功或失败)即清除,之后以真实状态为准。
+  const [optimistic, setOptimistic] = useState<UnifiedOptimisticConfig | null>(null);
+  // 在途的深度 / Fast 调整属于哪一行;同一行的后续调整不被锁挡掉,而是每一维只保留最新
+  // 一笔,等当前写入落定再依次提交(远程往返常超过 1 秒,挡掉会让滑杆「拖了没反应」)。
+  // 排队的只是参数:真正提交时走最新一次渲染的动作,不拿旧闭包里的回调与实时值。
+  const adjustingAnchor = useRef<string | null>(null);
+  const queuedAdjustments = useRef(new Map<AdjustmentKind, () => ActionResult>());
+  const latestAdjust = useRef<Partial<Record<AdjustmentKind, (args: unknown[]) => ActionResult>>>({});
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
     };
   }, []);
-  const exclusive =
-    <A extends unknown[]>(action: (...args: A) => ActionResult) =>
-    (...args: A): ActionResult => {
-      if (busy.current || options.interactionDisabled) return false;
+  const mergeOptimistic = (adjustment: UnifiedOptimisticConfig) =>
+    setOptimistic((current) =>
+      current?.anchorKey === adjustment.anchorKey ? { ...current, ...adjustment } : adjustment,
+    );
+  const exclusive = <A extends unknown[]>(
+    action: (...args: A) => ActionResult,
+    adjustment?: { kind: AdjustmentKind; of: (...args: A) => UnifiedOptimisticConfig },
+  ) => {
+    const run = (...args: A): ActionResult => {
+      if (options.interactionDisabled) {
+        queuedAdjustments.current.clear();
+        return false;
+      }
       busy.current = true;
+      const target = adjustment?.of(...args) ?? null;
+      adjustingAnchor.current = target?.anchorKey ?? null;
+      const release = () => {
+        busy.current = false;
+        adjustingAnchor.current = null;
+      };
       try {
         const result = action(...args);
-        if (result && typeof result === 'object' && 'then' in result) {
-          setPending(true);
-          return Promise.resolve(result)
-            .catch(() => false)
-            .finally(() => {
-              busy.current = false;
-              if (mounted.current) setPending(false);
-            });
+        if (!(result && typeof result === 'object' && 'then' in result)) {
+          release();
+          return result;
         }
-        busy.current = false;
-        return result;
+        if (target) mergeOptimistic(target);
+        const pendingTimer = target
+          ? null
+          : setTimeout(() => {
+              if (mounted.current) setPending(true);
+            }, PENDING_VISIBLE_DELAY_MS);
+        return Promise.resolve(result)
+          .catch(() => false as const)
+          .then((outcome) => {
+            if (pendingTimer !== null) clearTimeout(pendingTimer);
+            release();
+            const queue = queuedAdjustments.current;
+            const [nextKind] = queue.keys();
+            const next = nextKind ? queue.get(nextKind) : undefined;
+            if (nextKind) queue.delete(nextKind);
+            // 这笔没写成时丢掉全部排队的调整:调用方已提示失败,不在失败后悄悄再改。
+            if (outcome === false || !mounted.current) queue.clear();
+            if (!mounted.current) return outcome;
+            setPending(false);
+            const followUp = next && outcome !== false ? next() : undefined;
+            const followUpPending =
+              !!followUp && typeof followUp === 'object' && 'then' in followUp;
+            if (target && !followUpPending) setOptimistic(null);
+            return outcome;
+          });
       } catch {
-        busy.current = false;
+        release();
         return false;
       }
     };
+    if (adjustment) latestAdjust.current[adjustment.kind] = (queued) => run(...(queued as A));
+    return (...args: A): ActionResult => {
+      if (options.interactionDisabled) return false;
+      if (!busy.current) return run(...args);
+      const target = adjustment?.of(...args);
+      if (!adjustment || !target || target.anchorKey !== adjustingAnchor.current) return false;
+      const kind = adjustment.kind;
+      queuedAdjustments.current.set(kind, () => latestAdjust.current[kind]?.(args));
+      mergeOptimistic(target);
+      return undefined;
+    };
+  };
   const {
     interactionDisabled,
     isLiveRow,
@@ -1011,10 +1112,17 @@ export function useUnifiedRowActions(options: UnifiedRowActionsOptions): Unified
 
   return {
     pending,
+    optimistic,
     runExternal: exclusive((action: () => ActionResult) => action()),
     applyEngine: exclusive(applyEngine),
-    applyEffort: exclusive(applyEffort),
-    applyFast: exclusive(applyFast),
+    applyEffort: exclusive(applyEffort, {
+      kind: 'effort',
+      of: (anchor, _entry, _config, effort) => ({ anchorKey: anchorKey(anchor), effort }),
+    }),
+    applyFast: exclusive(applyFast, {
+      kind: 'fast',
+      of: (anchor, _entry, _config, enabled) => ({ anchorKey: anchorKey(anchor), fast: enabled }),
+    }),
     resetToRecommended: exclusive(resetToRecommended),
     addFavorite: exclusive(addFavorite),
     removeFavorite: exclusive(removeFavorite),

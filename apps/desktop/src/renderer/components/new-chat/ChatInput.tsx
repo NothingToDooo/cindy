@@ -7633,19 +7633,24 @@ export function ChatInput({
             // 控制端纯镜像:**await** 运行时隧道 setEffort,被控端持久化后广播回流更新分片。
             // New-K:await 而非 fire-and-forget —— 失败时被控端没真改,不能照报成功、污染默认偏好;
             // toast 提示并 return,不跑下方 onEffortDidChange 成功收尾。
-            // 乐观显示目标 effort + 置灰 selector(model/provider 不变),等被控端 echo 回流;失败回滚。
-            setPendingRemoteSwitch({
+            // 乐观显示目标 effort,等被控端 echo 回流;失败回滚。只改深度(model/provider 不变)
+            // 不置灰 selector:用户可以继续调档,各笔经本会话的 commit lane 按点击顺序提交,
+            // 迟到的旧回执不会盖过新选择。
+            const optimisticSwitch = {
               model: activeModel,
               effort: newEffort,
               providerId: selectedProviderId,
               fastMode: fastMode === true,
-            });
-            setRemoteSwitchInFlight(true);
+            };
+            setPendingRemoteSwitch(optimisticSwitch);
             try {
-              await makerApiForDevice(remoteDeviceId).setEffort(sessionId, newEffort);
+              await effortChangeCoordinatorRef.current.enqueue(sessionId, () =>
+                makerApiForDevice(remoteDeviceId).setEffort(sessionId, newEffort),
+              );
             } catch (err) {
               if (isSessionScopeCurrent(sessionId, currentSessionIdRef.current)) {
-                setPendingRemoteSwitch(null);
+                // 之后又调过档时,乐观显示已是那一笔的目标,不能被这笔的失败撤掉。
+                setPendingRemoteSwitch((current) => (current === optimisticSwitch ? null : current));
                 toast.error(
                   t(
                     mapIpcErrorToI18nKey(err, { fallback: 'newChat.chatInput.remoteSwitchFailed' }),
@@ -7653,9 +7658,6 @@ export function ChatInput({
                 );
               }
               return false;
-            } finally {
-              if (isSessionScopeCurrent(sessionId, currentSessionIdRef.current))
-                setRemoteSwitchInFlight(false);
             }
             if (activeModel) {
               syncSessionDraftModelPrefs(
