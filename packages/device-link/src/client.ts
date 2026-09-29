@@ -1564,7 +1564,12 @@ export class DeviceLinkClient {
 
       const pendingRequest: PendingRequest = {
         expireIfOverdue: () => {
-          if (this.monotonicNow() - startedMonotonicAt < timeout) return false;
+          // Some native monotonic clocks pause in deep sleep. Either elapsed
+          // clock reaching the budget retires this request: wall time covers
+          // suspension, monotonic time covers wall-clock rollback. A forward
+          // wall correction may expire early, but must not replay stale writes.
+          if (this.monotonicNow() - startedMonotonicAt < timeout
+            && Date.now() - startedAt < timeout) return false;
           expire();
           return true;
         },
