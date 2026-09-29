@@ -432,18 +432,21 @@ export function createLlamaCppService(
     let owner;
     try {
       owner = JSON.parse(await readFile(path.join(root, 'server-owner.json'), 'utf8'));
-    } catch {
-      return false;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+      throw new Error('BUSY');
     }
     if (
       owner?.identity?.version !== 1 ||
       !Number.isInteger(owner.identity.port) ||
       owner.identity.port <= 0 ||
       owner.identity.port >= 65536 ||
-      typeof owner.identity.token !== 'string' ||
-      (await probeReviewOwnerLiveness(owner.identity)) !== 'alive'
+      typeof owner.identity.token !== 'string'
     )
-      return false;
+      throw new Error('BUSY');
+    const status = await probeReviewOwnerLiveness(owner.identity);
+    if (status === 'ended') return false;
+    if (status !== 'alive') throw new Error('BUSY');
     if (reload || owner.preset !== preset) throw new Error('BUSY');
     const health = await fetch(`${LLAMACPP_MANAGED_ORIGIN}/health`, {
       signal: AbortSignal.any([signal, AbortSignal.timeout(3000)]),

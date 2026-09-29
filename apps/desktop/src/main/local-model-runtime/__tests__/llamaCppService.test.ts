@@ -759,6 +759,37 @@ describe('managed llama.cpp model lifecycle', () => {
     expect(await service.snapshot()).toMatchObject({ running: false, canConfigure: true });
     expect(mocks.spawn).not.toHaveBeenCalled();
   });
+  it.each([false, true].flatMap((reload) =>
+    ['unknown', 'unknown-under-lock', 'corrupt', 'invalid-identity', 'read-error'].map((state) => ({ reload, state })),
+  ))('refuses takeover on $state with reload=$reload', async ({ reload, state }) => {
+    const runtime = path.join(root, 'llamacpp-runtime');
+    await mkdir(runtime);
+    const ownerPath = path.join(runtime, 'server-owner.json');
+    const record = state === 'corrupt' ? '{' : JSON.stringify({
+      identity: { version: 1, port: state === 'invalid-identity' ? 0 : 12345, token: 'external' },
+      preset: '',
+    });
+    await writeFile(ownerPath, record);
+    mocks.probeOwner.mockResolvedValue('unknown');
+    if (state === 'unknown-under-lock') mocks.probeOwner.mockResolvedValueOnce('ended');
+    const fs = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+    if (state === 'read-error') mocks.readFile.mockImplementation(async (file, ...args) => {
+      if (file === ownerPath) throw Object.assign(new Error('read failed'), { code: 'EACCES' });
+      return fs.readFile(file, ...args);
+    });
+    const service = createLlamaCppService(root);
+    await expect(service.start(reload)).rejects.toThrow('BUSY');
+    expect(mocks.spawn).not.toHaveBeenCalled();
+    expect(mocks.ownerProof).not.toHaveBeenCalled();
+    expect(await fs.readFile(ownerPath, 'utf8')).toBe(record);
+    if (state === 'unknown-under-lock') expect(mocks.probeOwner).toHaveBeenCalledTimes(2);
+    mocks.readFile.mockImplementation(fs.readFile);
+    await writeFile(ownerPath, JSON.stringify({ identity: { version: 1, port: 12345, token: 'external' } }));
+    mocks.probeOwner.mockResolvedValue('ended');
+    // Conclusive owner exit permits startup to proceed to installation validation.
+    await expect(service.start(reload)).rejects.toThrow('NOT_INSTALLED');
+    await service.dispose();
+  });
   it('reuses the same profile owner and never stops it from a borrowing instance', async () => {
     const runtime = path.join(root, 'llamacpp-runtime');
     await mkdir(runtime);
