@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import ts from 'typescript';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { InteractionDecision, InteractionRequest } from '@cindy/maker-core';
+import { assertSharedTaskInteractionResolveCurrent, assertSharedTaskInvoke, setSharedTaskInteractionReader, type SharedTaskPeerCapture } from '../device-link/sharedTaskDispatch.js';
 
 // Execute the production listener and control adapter without booting Electron.
 const source = readFileSync(new URL('../maker-ipc/register.ts', import.meta.url), 'utf8');
@@ -15,7 +16,12 @@ const names = new Set([
 const functions = ast.statements.filter((node) => ts.isFunctionDeclaration(node)
   && node.name && names.has(node.name.text)).map(node => node.getText(ast).replace(/^export /, ''));
 let holdInputSource = '';
+let resolveHandlerSource = '';
 function visit(node: ts.Node): void {
+  if (ts.isCallExpression(node) && node.expression.getText(ast) === 'ipcMain.handle'
+    && node.arguments[0]?.getText(ast) === 'MAKER_INVOKE.RESOLVE_INTERACTION') {
+    resolveHandlerSource = node.arguments[1].getText(ast);
+  }
   if (ts.isPropertyAssignment(node) && node.name.getText(ast) === 'holdInput') {
     holdInputSource = node.initializer.getText(ast);
   }
@@ -23,15 +29,17 @@ function visit(node: ts.Node): void {
 }
 visit(ast);
 if (!holdInputSource) throw new Error('Task holdInput adapter missing');
+if (!resolveHandlerSource) throw new Error('Resolve interaction IPC handler missing');
 const compiled = ts.transpileModule(`${functions.join('\n')}
 return { install: installDesktopInteractionListener, hold: ${holdInputSource},
   answer: resolvePendingInteraction, cleanup: cleanupPendingAgentInteractionsForSession,
-  take: takePendingInteractionsForSession };`, {
+  take: takePendingInteractionsForSession, resolveFromIpc: ${resolveHandlerSource} };`, {
   compilerOptions: { target: ts.ScriptTarget.ES2022 },
 }).outputText;
 const MINUTE = 60_000;
 
 function harness() {
+  let sharedTask: SharedTaskPeerCapture | undefined;
   const held = new Set<string>();
   const coordinator = {
     isExecutionPaused: (id: string) => held.has(id),
@@ -42,6 +50,10 @@ function harness() {
   const entries = new Map();
   const dismiss = vi.fn();
   const deps = {
+    getDeviceLinkInvokeContext: () => ({ sharedTask }),
+    assertSharedTaskInteractionResolveCurrent,
+    isPluginSetupInteractionDecision: () => false,
+    assertResolveInteractionOrigin: vi.fn(), isPendingDesktopOnlyConfirmation: () => false,
     pendingInteractionResolvers: entries,
     agentInputCoordinatorHolder: coordinator, inputCoordinator: coordinator,
     PERMISSION_INTERACTION_TIMEOUT_MS: 10 * MINUTE,
@@ -61,6 +73,7 @@ function harness() {
     answer: (id: string, decision: InteractionDecision) => boolean;
     cleanup: (id: string, reason: string) => void;
     take: (id: string) => Array<{ resolve: (decision: InteractionDecision) => void }>;
+    resolveFromIpc: (event: unknown, id: string, decision: InteractionDecision) => Promise<{ accepted: boolean }>;
   };
   const request = (id = 'permission', sessionId = 'task', kind: InteractionRequest['kind'] = 'permission') => {
     runtime.install({ id: sessionId });
@@ -69,11 +82,38 @@ function harness() {
     void promise.then(settled);
     return { promise, settled };
   };
-  return { ...runtime, request, entries, dismiss };
+  return { ...runtime, request, entries, dismiss, setSharedTask: (peer?: SharedTaskPeerCapture) => { sharedTask = peer; } };
 }
 
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(0); });
-afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); });
+afterEach(() => { setSharedTaskInteractionReader(null); vi.clearAllTimers(); vi.useRealTimers(); });
+
+it('does not consume the pending decision when membership is revoked after dispatch admission', async () => {
+  const h = harness();
+  const p = h.request();
+  setSharedTaskInteractionReader((id) => h.entries.get(id)?.request
+    ? { sessionId: 'task', kind: 'permission', toolName: 'Shell' } : undefined);
+  let authorized = true;
+  const peer: SharedTaskPeerCapture = {
+    author: { sharedTaskId: 'shared', sessionId: 'task', memberId: 'guest', accountId: 'guest', displayName: 'Guest' },
+    isCurrent: () => authorized, authorize: () => authorized,
+  };
+  const decision = { kind: 'permission', behavior: 'allow' } as const;
+  assertSharedTaskInvoke(peer, { channel: 'maker:resolve-interaction', args: ['permission', decision] });
+  // Simulate revocation during async admission, without removing the request.
+  await Promise.resolve();
+  authorized = false;
+  h.setSharedTask(peer);
+  await expect(h.resolveFromIpc({}, 'permission', decision)).rejects.toThrow('PERMISSION_DENIED');
+  expect(h.entries.has('permission')).toBe(true);
+  expect(p.settled).not.toHaveBeenCalled();
+  expect(h.dismiss).not.toHaveBeenCalled();
+  h.setSharedTask(undefined);
+  await expect(h.resolveFromIpc({}, 'permission', decision)).resolves.toEqual({ accepted: true });
+  await expect(p.promise).resolves.toEqual(decision);
+  expect(h.entries.has('permission')).toBe(false);
+  expect(h.dismiss).toHaveBeenCalledTimes(1);
+});
 
 describe('permission timeout follows the task pause lifecycle', () => {
   it('keeps the permission pending across its original deadline and resumes only the remaining budget', async () => {
