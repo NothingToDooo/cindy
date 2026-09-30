@@ -542,6 +542,29 @@ describe('mobileAttachmentUpload', () => {
     } finally { vi.useRealTimers(); }
   });
 
+  it('has no fixed total deadline for a large native upload that keeps progressing', async () => {
+    vi.useFakeTimers();
+    try {
+      let finish!: (value: { status: number }) => void;
+      let progress!: (bytes: number) => void;
+      let signal!: AbortSignal;
+      const uploadFile = vi.fn((_url, _uri, _headers, opts) => {
+        progress = opts.onProgress;
+        signal = opts.signal;
+        return new Promise<{ status: number }>((resolve) => { finish = resolve; });
+      });
+      const pending = putMobileAttachmentUploadFromFile('https://oss.example/upload', 'file:///tmp/big.mov', 'video/quicktime', { uploadFile });
+      for (let minute = 1; minute <= 10; minute += 1) {
+        await vi.advanceTimersByTimeAsync(50_000);
+        progress(minute * 100 * 1024 * 1024);
+      }
+      expect(signal.aborted).toBe(false);
+      expect(uploadFile).toHaveBeenCalledTimes(1);
+      finish({ status: 200 });
+      await pending;
+    } finally { vi.useRealTimers(); }
+  });
+
   it('duplicate progress events cannot keep a stalled native upload alive', async () => {
     vi.useFakeTimers();
     try {

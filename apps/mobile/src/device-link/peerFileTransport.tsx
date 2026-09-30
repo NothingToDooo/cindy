@@ -93,7 +93,7 @@ export function PeerFileTransport() {
       `window.filePeerMessage(${JSON.stringify(message)});true;`,
     );
   }
-  async function command(action: string, args: unknown[]) {
+  async function command(action: string, args: unknown[], timeoutMs?: number) {
     return new Promise<unknown>((resolve, reject) => {
       const id = randomUUID();
       let timer = setTimeout(
@@ -101,7 +101,11 @@ export function PeerFileTransport() {
           pending.current.delete(id);
           reject(new Error("FILE_PEER_TIMEOUT"));
         },
-        action === "receive" ? 60_000 : 15000,
+        action === "receive"
+          ? 60_000
+          : timeoutMs && timeoutMs > 15000
+            ? timeoutMs
+            : 15000,
       );
       const entry = {
         resolve,
@@ -492,21 +496,26 @@ export function PeerFileTransport() {
                   for (const byte of bytes) binary += String.fromCharCode(byte);
                   return btoa(binary);
                 },
-                async (request) => {
+                async (request, timeoutMs) => {
                   check();
-                  const raw = await command("invoke", [
-                    active.id,
-                    JSON.stringify({
-                      channel: FILE_PEER_CHANNEL,
-                      args: [
-                        {
-                          action: "attachment",
-                          connection: active.remote,
-                          request,
-                        },
-                      ],
-                    }),
-                  ]);
+                  const raw = await command(
+                    "invoke",
+                    [
+                      active.id,
+                      JSON.stringify({
+                        channel: FILE_PEER_CHANNEL,
+                        args: [
+                          {
+                            action: "attachment",
+                            connection: active.remote,
+                            request,
+                          },
+                        ],
+                      }),
+                      timeoutMs,
+                    ],
+                    timeoutMs,
+                  );
                   check();
                   const response = JSON.parse(String(raw));
                   if (!response.ok) throw new Error("FILE_PEER_UPLOAD");

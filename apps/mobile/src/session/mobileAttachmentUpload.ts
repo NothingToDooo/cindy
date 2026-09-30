@@ -215,8 +215,9 @@ async function putAttachmentWithRecovery(
         rejectWait(new Error(uploadTimeoutMessage()));
         controller.abort();
       };
-      const timer = setTimeout(expire, PUT_ATTEMPT_TIMEOUT_MS);
-      // fetch 没有进度事件，保留完整单次预算；原生上传只在字节停滞时提前恢复。
+      // fetch 没有进度事件，保留完整单次预算；原生上传有进度，只在字节停滞时判超时，
+      // 不设总时限——附件不限大小，持续有进度的大文件不能被固定预算掐断。
+      const timer = reportsProgress ? undefined : setTimeout(expire, PUT_ATTEMPT_TIMEOUT_MS);
       let idleTimer = setTimeout(expire, reportsProgress ? PUT_IDLE_TIMEOUT_MS : PUT_ATTEMPT_TIMEOUT_MS);
       let lastBytesSent = 0;
       let settled = false;

@@ -50,11 +50,22 @@ export function buildPeerAttachmentRef(value: PeerAttachment): string {
   return result;
 }
 
+/**
+ * 接收端处理 finish 要整读文件重算摘要,耗时随体积增长;按保守的 20 MB/s 放宽这一次请求的等待。
+ * 其余请求沿用 RPC 默认超时。
+ */
+export function peerAttachmentFinishTimeoutMs(size: number): number {
+  return 15_000 + Math.ceil(Math.max(0, size) / (20 * 1024 ** 2)) * 1000;
+}
+
 /** A failed upload is abandoned before sending the message; callers then upload through OSS. */
 export async function uploadPeerAttachment(
   metadata: Omit<PeerAttachment, "ticket">,
   read: (offset: number, length: number) => Promise<string>,
-  invoke: (request: Record<string, unknown>) => Promise<unknown>,
+  invoke: (
+    request: Record<string, unknown>,
+    timeoutMs?: number,
+  ) => Promise<unknown>,
   check: () => void,
   onProgress?: (bytes: number) => void,
 ): Promise<string> {
@@ -76,7 +87,10 @@ export async function uploadPeerAttachment(
       onProgress?.(Math.min(offset + 1024 * 1024, metadata.size));
     }
     check();
-    await invoke({ op: "finish", ticket });
+    await invoke(
+      { op: "finish", ticket },
+      peerAttachmentFinishTimeoutMs(metadata.size),
+    );
     check();
     return buildPeerAttachmentRef({ ...metadata, ticket });
   } catch (error) {

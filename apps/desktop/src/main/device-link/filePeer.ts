@@ -189,7 +189,11 @@ async function command(c: FilePeerCommand): Promise<string | undefined> {
         if (c.action !== 'invoke') stopConnection(c.connection, `${c.action}-timeout`);
         reject(new Error('FILE_PEER_TIMEOUT'));
       },
-      c.action === 'receive' ? 60_000 : 15_000,
+      c.action === 'receive'
+        ? 60_000
+        : c.action === 'invoke' && c.timeoutMs && c.timeoutMs > 15_000
+          ? c.timeoutMs
+          : 15_000,
     );
     timer.unref();
     replies.set(id, { connection: c.connection, resolve, reject, timer });
@@ -670,12 +674,13 @@ export async function tryUploadPeerAttachment(
       const result = await uploadPeerAttachment(
         { size, sha256: hash.digest('hex'), mimeType },
         async (offset, length) => (await read(offset, length)).toString('base64'),
-        async (request) => {
+        async (request, timeoutMs) => {
           check();
           const response = JSON.parse(
             (await command({
               action: 'invoke',
               connection: out.id,
+              ...(timeoutMs ? { timeoutMs } : {}),
               payload: JSON.stringify({
                 channel: FILE_PEER_CHANNEL,
                 args: [{ action: 'attachment', connection: out.remote, request }],
