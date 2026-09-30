@@ -284,6 +284,25 @@ afterEach(() => {
 });
 
 describe('Codex local session import', () => {
+  it('locates archive storage in the known state DB after sqlite_home changes', () => {
+    const dbPath = createStateDb(externalHome);
+    const newHome = path.join(rootDir, 'new-state');
+    const newDbPath = createStateDb(newHome);
+    const rolloutPath = path.join(externalHome, 'sessions', `rollout-2026-05-13-${threadId}.jsonl`);
+    fs.mkdirSync(path.dirname(rolloutPath), { recursive: true });
+    fs.writeFileSync(rolloutPath, '');
+    insertThread(dbPath, threadId, rolloutPath, { updatedAt: 1_000 });
+    const config = `sqlite_home = ${JSON.stringify(newHome)}\n`;
+    fs.writeFileSync(path.join(externalHome, 'config.toml'), config);
+    const before = [fs.readFileSync(dbPath), fs.readFileSync(newDbPath)];
+
+    expect(readCodexThreadStorageForArchive(threadId)).toEqual({
+      historyHome: externalHome, sqliteHome: fs.realpathSync(externalHome), rolloutPath,
+    });
+    expect([fs.readFileSync(dbPath), fs.readFileSync(newDbPath)]).toEqual(before);
+    expect(fs.readFileSync(path.join(externalHome, 'config.toml'), 'utf8')).toBe(config);
+  });
+
   it.each(['absolute', 'relative'])('locates archive storage with a separate %s sqlite_home', kind => {
     const sqliteHome = path.join(rootDir, 'separate-state');
     const dbPath = createStateDb(sqliteHome);

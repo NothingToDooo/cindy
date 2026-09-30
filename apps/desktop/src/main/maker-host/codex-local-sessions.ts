@@ -433,20 +433,21 @@ export function readCodexThreadStorageForArchive(threadId: string): {
   const thread = findThreadByIdInHome(getDesktopCodexHome(), threadId)
     ?? findExternalThreadById(threadId);
   if (!thread) return;
-  let config: Record<string, unknown>;
-  try { config = parseToml(fs.readFileSync(path.join(thread.sourceHome, 'config.toml'), 'utf8')); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    config = {};
+  // An actual thread row establishes storage ownership even if config changed
+  // afterward. Consult current config only for the pure rollout fallback.
+  let sqliteHome = thread.sourceDbPath ? path.dirname(thread.sourceDbPath) : thread.sourceHome;
+  if (!thread.sourceDbPath) {
+    let config: Record<string, unknown>;
+    try { config = parseToml(fs.readFileSync(path.join(thread.sourceHome, 'config.toml'), 'utf8')); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      config = {};
+    }
+    if (config.sqlite_home !== undefined && typeof config.sqlite_home !== 'string') {
+      throw new Error('Invalid Codex sqlite_home');
+    }
+    if (typeof config.sqlite_home === 'string') sqliteHome = path.resolve(thread.sourceHome, config.sqlite_home);
   }
-  // The rollout fallback has no sourceDbPath. Preserve the native configured
-  // SQLite root instead of overriding it with CODEX_HOME on host startup.
-  if (config.sqlite_home !== undefined && typeof config.sqlite_home !== 'string') {
-    throw new Error('Invalid Codex sqlite_home');
-  }
-  const sqliteHome = typeof config.sqlite_home === 'string'
-    ? path.resolve(thread.sourceHome, config.sqlite_home)
-    : thread.sourceDbPath ? path.dirname(thread.sourceDbPath) : thread.sourceHome;
   return { historyHome: historyHomeForRollout(thread.rolloutPath),
     sqliteHome,
     rolloutPath: thread.rolloutPath };
