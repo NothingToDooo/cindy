@@ -3348,6 +3348,46 @@ describe('provider:custom:* CRUD handlers', () => {
     );
   });
 
+  it.each(['switch-account', 'stop-failed', 'success'] as const)(
+    'stages llama.cpp deletion only after stopping with the same owner (%s)', async (outcome) => {
+      mountDb();
+      const harness = new IpcHarness();
+      const owner = { dataOwnerId: 'owner-a', generation: 1 };
+      const deps = makeDeps({
+        currentOwnerSession: () => ({ ...owner }),
+        stageClearProviderDisableOverrides: vi.fn(() => () => true),
+        stageClearProviderModelPriceOverrides: vi.fn(() => () => true),
+      });
+      registerProviderHandlers(harness, deps);
+      const id = 'cindy-local-llamacpp';
+      await createCustomProvider({ ...validConfig, id });
+      let release!: () => void;
+      const stop = vi.spyOn(llamaCppService, 'stopManagedLlamaCppService').mockImplementation(async (remove) => {
+        await new Promise<void>((resolve) => { release = resolve; });
+        if (outcome === 'stop-failed') throw new Error('STOP_TIMEOUT');
+        await remove();
+      });
+      const deletion = harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_DELETE, id).catch(error => error);
+      await vi.waitFor(() => expect(stop).toHaveBeenCalledOnce());
+      const writes = [deps.stageClearProviderDisableOverrides, deps.stageClearProviderModelPriceOverrides,
+        deps.removeOAuthCredentials, deps.removeCustomProviderKey, deps.removeCustomProviderHeaders];
+      for (const write of writes) expect(write).not.toHaveBeenCalled();
+      if (outcome === 'switch-account') owner.generation++;
+      release();
+      const result = await deletion;
+      if (outcome === 'success') {
+        expect(result).toEqual({ ok: true });
+        expect(await getCustomProvider(id)).toBeNull();
+        expect(deps.stageClearProviderDisableOverrides).toHaveBeenCalledOnce();
+        expect(deps.stageClearProviderModelPriceOverrides).toHaveBeenCalledOnce();
+      } else {
+        expect(result).toEqual(expect.objectContaining({ message: expect.stringContaining('LLAMACPP_STOP_FAILED') }));
+        for (const write of writes) expect(write).not.toHaveBeenCalled();
+        expect(await getCustomProvider(id)).not.toBeNull();
+      }
+    },
+  );
+
   it('waits for llama.cpp cleanup before deletion and retains the connection on failure', async () => {
     mountDb();
     const harness = new IpcHarness();

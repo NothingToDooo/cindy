@@ -74,10 +74,11 @@ beforeEach(async () => {
     identity: { version: 1, port: 12345, token: 'test-owner' },
     close: vi.fn(async () => { mocks.probeOwner.mockResolvedValue('ended'); }),
   }));
-  const proc = await vi.importActual<typeof import('../../scheduler-host/proc-util.js')>(
-    '../../scheduler-host/proc-util.js',
-  );
-  mocks.killTree.mockImplementation(proc.killProcessTree);
+  // Service tests use fake children; taskkill outcomes are covered by procUtilRetry.
+  mocks.killTree.mockImplementation((_pid, child, finish) => {
+    child.kill('SIGKILL');
+    finish?.(true);
+  });
   root = await mkdtemp(path.join(os.tmpdir(), 'cindy-llamacpp-service-test-'));
   mocks.resolve.mockResolvedValue({
     revision: 'a'.repeat(40),
@@ -692,9 +693,9 @@ describe('managed llama.cpp model lifecycle', () => {
       );
       let finishTree!: () => void;
       mocks.killTree.mockImplementation((_pid, target, finish) => {
-        finishTree = finish;
+        finishTree = () => finish(true);
         if (order === 'exit-first') target.emit('exit');
-        else finish();
+        else finish(true);
       });
       let stopped = false;
       const stopping = service[action]().then(() => {
@@ -715,7 +716,7 @@ describe('managed llama.cpp model lifecycle', () => {
       expect((await service.snapshot()).running).toBe(false);
     },
   );
-  it.each(['exit-first', 'tree-first', 'both-late'] as const)(
+  it.each(['exit-first', 'tree-first', 'both-late', 'tree-failed'] as const)(
     'retains the owner proof after STOP_TIMEOUT until both Windows confirmations (%s)',
     async (order) => {
       const runtime = path.join(root, 'llamacpp-runtime');
@@ -732,12 +733,13 @@ describe('managed llama.cpp model lifecycle', () => {
         get(target, key) { return key === 'platform' ? 'win32' : Reflect.get(target, key); },
       }));
       let finishTree!: () => void;
-      mocks.killTree.mockImplementation((_pid, _target, finish) => { finishTree = finish; });
+      mocks.killTree.mockImplementation((_pid, _target, finish) => { finishTree = () => finish(order !== 'tree-failed'); });
       vi.useFakeTimers();
       try {
         const stopped = service.stop().catch((error: Error) => error.message);
         await vi.advanceTimersByTimeAsync(0);
         if (order === 'exit-first') child.emit('exit');
+        if (order === 'tree-failed') { child.emit('exit'); finishTree(); }
         if (order === 'tree-first') finishTree();
         await vi.advanceTimersByTimeAsync(4000);
         expect(await stopped).toBe('STOP_TIMEOUT');
@@ -748,6 +750,11 @@ describe('managed llama.cpp model lifecycle', () => {
         await expect(other.configure(async () => {})).rejects.toThrow('RUNTIME_OWNED_ELSEWHERE');
         await expect(other.remove(deleted)).rejects.toThrow('BUSY');
         expect(deleted).not.toHaveBeenCalled();
+        if (order === 'tree-failed') {
+          await expect(service.remove(deleted)).rejects.toThrow('BUSY');
+          expect(proof.close).not.toHaveBeenCalled();
+          return;
+        }
         if (order !== 'exit-first') child.emit('exit');
         if (order === 'both-late') expect(proof.close).not.toHaveBeenCalled();
         if (order !== 'tree-first') finishTree();

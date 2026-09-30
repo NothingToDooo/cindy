@@ -276,7 +276,8 @@ export function createLlamaCppService(
       if (windows) {
         // Do not kill the router first: taskkill needs its live parent identity
         // to enumerate workers. Router exit alone does not settle tree cleanup.
-        killProcessTree(previous.pid, previous, () => {
+        killProcessTree(previous.pid, previous, (treeTerminated) => {
+          if (!treeTerminated) return;
           treeSettled = true;
           done();
         });
