@@ -12,6 +12,19 @@ export interface PeerAttachment {
  * 超过此值的附件没有 OSS 保底,只能直连发送。
  */
 export const OSS_ATTACHMENT_MAX_BYTES = 2 * 1024 ** 3;
+/**
+ * 对端能否收这份直连附件(依据 file-peer caps):需支持附件 RPC;超过 OSS 上限还要求对端声明
+ * largeAttachments(旧端仍按 2GB 拒收)。发送端在读整份文件之前与建链之后都用这一判据。
+ */
+export function canSendPeerAttachment(
+  caps: { attachments?: boolean; largeAttachments?: boolean } | null | undefined,
+  size: number,
+): boolean {
+  return (
+    !!caps?.attachments &&
+    (size <= OSS_ATTACHMENT_MAX_BYTES || !!caps.largeAttachments)
+  );
+}
 const prefix = "cindy-peer-attach://";
 export const isPeerAttachmentRef = (value: unknown): value is string =>
   typeof value === "string" && value.startsWith(prefix);

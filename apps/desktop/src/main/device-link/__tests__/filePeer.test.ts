@@ -22,6 +22,10 @@ vi.mock('@cindy/device-link', async (importOriginal) => {
       actual.createPeerTransferCooldown(() => mock.now ?? Date.now()),
   };
 });
+vi.mock('node:crypto', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:crypto')>();
+  return { ...actual, createHash: vi.fn(actual.createHash) };
+});
 vi.mock('electron', () => ({
   ipcMain: { handle: (key: string, fn: (...args: any[]) => any) => mock.handlers.set(key, fn) },
   app: { on: vi.fn(), getPath: () => os.tmpdir() },
@@ -67,7 +71,30 @@ import {
   stopFilePeers,
   tryPeerInvoke,
   tryPeerFile,
+  tryUploadPeerAttachment,
 } from '../filePeer';
+import { createHash } from 'node:crypto';
+
+describe('peer attachment upload preflight', () => {
+  it('checks the peer before reading a large file and never connects to an old peer', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'cindy-peer-upload-'));
+    try {
+      const file = path.join(dir, 'movie.mov');
+      await writeFile(file, '');
+      await truncate(file, 3 * 1024 ** 3);
+      const invoke = vi.fn(async () => ({
+        ok: true,
+        result: { version: 1, streaming: true, attachments: true },
+      }));
+      vi.mocked(createHash).mockClear();
+      expect(await tryUploadPeerAttachment('old-large-peer', file, 'video/quicktime', invoke)).toBeNull();
+      expect(invoke.mock.calls.map((call) => (call as unknown[])[2])).toEqual([[{ action: 'caps' }]]);
+      expect(createHash).not.toHaveBeenCalled();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('authorized file peer source', () => {
   it.each([0, 15_001])(

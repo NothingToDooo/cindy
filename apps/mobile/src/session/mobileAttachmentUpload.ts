@@ -1,5 +1,5 @@
 import { apiFetchRaw } from '@/api/client';
-import { tryMobilePeerUpload } from '@/device-link/peerFileRegistry';
+import { canMobilePeerUpload, tryMobilePeerUpload } from '@/device-link/peerFileRegistry';
 import { DEVICE_LINK_API_BASE_URL } from '@/config/env';
 import { i18n } from '@/i18n';
 import { withTransientRemoteRetry } from '@/device-link/remoteRetry';
@@ -8,6 +8,7 @@ import {
   buildMobileUploadedAttachment,
   assertMobileDocumentSize,
   assertMobileOssAttachmentSize,
+  isWithinMobileOssAttachmentLimit,
   extractRemoteFileExt,
 } from '@/session/attachments';
 import type { RemoteSerializedAttachment } from '@/session/types';
@@ -334,9 +335,15 @@ export async function uploadMobileAttachmentFromFile(
   },
 ): Promise<RemoteSerializedAttachment> {
   assertMobileDocumentSize(candidate.size);
-  // 直连不设体积上限;无法直连(共享任务 / 无目标设备)时只剩 OSS,超限就不必再白算一遍摘要。
+  // 直连不设体积上限;超过 OSS 上限的附件只能直连——先确认直连可用(只查对端能力),
+  // 不可用就在快照和摘要之前失败,不白复制、白读一遍数 GB 的文件。
   const peerCandidate = !!options.deviceId && !options.sharedTaskId;
-  if (!peerCandidate) assertMobileOssAttachmentSize(candidate.size);
+  if (
+    !isWithinMobileOssAttachmentLimit(candidate.size) &&
+    !(peerCandidate && await canMobilePeerUpload(options.deviceId!, candidate.size))
+  ) {
+    assertMobileOssAttachmentSize(candidate.size);
+  }
   const snapshot = options.deps?.snapshotFile
     ? await options.deps.snapshotFile(fileUri)
     : options.deps?.readFileChunk

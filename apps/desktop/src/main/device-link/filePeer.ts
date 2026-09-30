@@ -12,7 +12,7 @@ import {
   uploadPeerAttachment,
   FILE_PEER_CHUNK_BYTES,
   FILE_PEER_MAX_BYTES,
-  OSS_ATTACHMENT_MAX_BYTES,
+  canSendPeerAttachment,
   FILE_PEER_IDLE_MS,
   FILE_PEER_CHANNEL,
   parseFilePeerRequest,
@@ -658,6 +658,28 @@ async function receivePeerFile(
   }
 }
 
+interface PeerAttachmentCaps {
+  attachments?: boolean;
+  largeAttachments?: boolean;
+}
+/** 已有连接直接复用其能力;否则只发一次 caps 查询(走既有通道,不建 WebRTC 连接)。 */
+async function peerAttachmentCaps(
+  peer: string,
+  invoke: Invoke,
+): Promise<PeerAttachmentCaps | undefined> {
+  const existing = outgoing.get(peer);
+  if (existing?.remote) return existing;
+  const caps = await invoke(peer, FILE_PEER_CHANNEL, [{ action: 'caps' }]);
+  const result = caps.ok
+    ? (caps.result as { version?: unknown; attachments?: unknown; largeAttachments?: unknown })
+    : undefined;
+  if (result?.version !== 1) return undefined;
+  return {
+    attachments: result.attachments === true,
+    largeAttachments: result.largeAttachments === true,
+  };
+}
+
 const warming = new Set<string>();
 /** Upload only bytes; the eventual message still uses its original WSS acceptance semantics. */
 export async function tryUploadPeerAttachment(
@@ -682,6 +704,9 @@ export async function tryUploadPeerAttachment(
         handle = await fs.open(source, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
       const size = handle ? (await handle.stat()).size : (source as Buffer).length;
       if (!size) return null;
+      // 读整份文件算摘要之前先确认对端能收:对端离线、旧版或不支持时不白读一遍(随后还要走 OSS)。
+      if (!canSendPeerAttachment(await peerAttachmentCaps(peer, invoke), size)) return null;
+      check();
       const read = async (offset: number, length: number) => {
         check();
         if (!handle) return (source as Buffer).subarray(offset, offset + length);
@@ -690,7 +715,7 @@ export async function tryUploadPeerAttachment(
           throw new Error('FILE_PEER_CHANGED');
         return bytes;
       };
-      // 先算摘要再建链:大文件摘要可能超过连接空闲时限,建好的连接不能在 begin 前被闲置关掉。
+      // 能力确认后先算摘要再建链:大文件摘要可能超过连接空闲时限,建好的连接不能在 begin 前被闲置关掉。
       const hash = createHash('sha256');
       for (let offset = 0; offset < size; offset += 1024 * 1024)
         hash.update(await read(offset, Math.min(1024 * 1024, size - offset)));
@@ -698,8 +723,7 @@ export async function tryUploadPeerAttachment(
       await receivePeerFile(peer, null, invoke);
       check();
       const out = outgoing.get(peer);
-      if (!out?.remote || !out.attachments) return null;
-      if (size > OSS_ATTACHMENT_MAX_BYTES && !out.largeAttachments) return null;
+      if (!out?.remote || !canSendPeerAttachment(out, size)) return null;
       active = out;
       out.busy = true;
       const transferStartedAt = Date.now();
