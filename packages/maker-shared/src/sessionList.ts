@@ -11,6 +11,11 @@ import { getSessionListCollapseView } from './sessionListCollapse.js';
 import { collapseWorktreeDirForGrouping } from './worktreePaths.js';
 
 let sessionListCollator: Intl.Collator | undefined;
+/** Call when the host resumes after system locale/region preferences may change. */
+export function clearSessionListCollator(): void {
+  sessionListCollator = undefined;
+}
+
 /** Same default-locale ordering as localeCompare, without constructing an ICU
  * collator for every comparison on Android/Hermes. */
 export function compareSessionListStrings(left: string, right: string): number {

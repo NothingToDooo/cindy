@@ -22,6 +22,7 @@ import {
   type ReactNode,
 } from 'react';
 import { AppState } from 'react-native';
+import { clearSessionListCollator } from '@cindy/maker-shared/session-list';
 
 import { setManualLocaleOverride } from './appLanguage';
 import { clearPresentationDateFormatters } from './dateFormatters';
@@ -58,7 +59,10 @@ export function LocaleProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     // System timezone/preferences may have changed while the app was backgrounded.
     const subscription = AppState.addEventListener('change', (state) => {
-      if (state === 'active') clearPresentationDateFormatters();
+      if (state === 'active') {
+        clearPresentationDateFormatters();
+        clearSessionListCollator();
+      }
     });
     return () => subscription.remove();
   }, []);
