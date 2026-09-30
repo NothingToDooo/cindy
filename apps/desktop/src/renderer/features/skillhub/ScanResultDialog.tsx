@@ -14,7 +14,7 @@ import { cn } from '@/lib/utils';
 import { toast } from '@/lib/toast';
 import type { ScanResultPayload } from './PublishDialog';
 import { isPassingScanStatus, isPendingManualReviewStatus } from './lib/scanStatus';
-import { isPublicationProcessingFailure, publicationProcessingErrorCode, scanPublicationErrorCode } from './lib/scanResultPresentation';
+import { isPublicationProcessingFailure, publicationProcessingErrorCode, publicationProcessingGateErrorCode, scanPublicationErrorCode } from './lib/scanResultPresentation';
 import { publishErrorDetail } from '../../../shared/skillhubPublishErrors';
 
 interface ScanIssue {
@@ -51,7 +51,7 @@ function visibleScanIssues(gate: ScanGate, t: TFunction): ScanIssue[] {
   return (issues as ScanIssue[]).filter(
     (issue) => issue.severity === 'warning' || issue.severity === 'error',
   ).map((issue) => {
-    const code = scanPublicationErrorCode(issue.code, resolveI18nField(issue.message)) ?? scanPublicationErrorCode(gate.name);
+    const code = scanPublicationErrorCode(issue.code, resolveI18nField(issue.message)) ?? publicationProcessingGateErrorCode(gate.name);
     if (!code) return issue;
     const message = publishErrorDetail(code, resolveI18nField(issue.message));
     if (message) return { ...issue, message };

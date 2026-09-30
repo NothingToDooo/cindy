@@ -27,4 +27,17 @@ describe('scan result presentation', () => {
     expect(publicationProcessingErrorCode([{ name: 'publication', status: 'failed',
       issues: [null, 'legacy finding', { severity: 'error', code: 'INVALID_PARAMS' }] }])).toBe('INVALID_PARAMS');
   });
+
+  it.each(['warn', 'warning', ' WARNING ', 'pending', 'scanning'])('excludes non-failing %s gates before reading issue codes or legacy gate names', (status) => {
+    expect(isPublicationProcessingFailure([{ name: 'MANIFEST_INVALID', status }])).toBe(false);
+    expect(isPublicationProcessingFailure([{ name: 'package-validation', status,
+      issues: [{ severity: 'error', code: 'MANIFEST_INVALID' }] }])).toBe(false);
+  });
+
+  it('uses the safe fallback for unknown processing codes while retaining security findings', () => {
+    expect(publicationProcessingErrorCode([{ name: 'package-validation', status: 'failed',
+      issues: [{ severity: 'error', code: 'FUTURE_PROCESSOR_FAILURE' }] }])).toBe('INTERNAL');
+    expect(publicationProcessingErrorCode([{ name: 'archive-safety', status: 'failed',
+      issues: [{ severity: 'error', code: 'UNSAFE_PATH' }] }])).toBeUndefined();
+  });
 });

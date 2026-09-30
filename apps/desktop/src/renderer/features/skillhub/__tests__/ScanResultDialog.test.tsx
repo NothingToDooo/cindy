@@ -51,6 +51,44 @@ describe('ScanResultDialog pending review presentation', () => {
     expect(writeText.mock.calls[0][0]).toContain(`skillhub.publishError.${code}.message`);
   });
 
+  it.each(['package-validation', 'publication', 'publication-processing', 'upload-processing'])('redacts an unknown processing failure under %s in display and clipboard', async (name) => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } });
+    render(<ScanResultDialog open onClose={vi.fn()} result={{
+      status: 'failed', gates: [{ name, status: 'failed',
+        issues: [{ severity: 'error', code: 'FUTURE_PROCESSOR_FAILURE', message: 'private diagnostic', path: '/private/diagnostic', evidence: 'private evidence' }] }],
+    }} />);
+    expect(screen.getByRole('heading', { name: 'skillhub.scanResult.processingFailedTitle' })).toBeTruthy();
+    expect(document.body.textContent).not.toContain('private');
+    expect(document.body.textContent).toContain('skillhub.publishError.INTERNAL.message');
+    fireEvent.click(screen.getByRole('button', { name: 'skillhub.scanResult.copyReviewResult' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(writeText.mock.calls[0][0]).not.toContain('private');
+    expect(writeText.mock.calls[0][0]).toContain('skillhub.publishError.INTERNAL.message');
+  });
+
+  it('still displays and copies a concrete security finding with an unrelated code', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } });
+    render(<ScanResultDialog open onClose={vi.fn()} result={{
+      status: 'failed', gates: [{ name: 'archive-safety', status: 'failed',
+        issues: [{ severity: 'error', code: 'UNSAFE_PATH', message: 'Unsafe archive path', path: '../unsafe.txt' }] }],
+    }} />);
+    expect(screen.getByText('Unsafe archive path')).toBeTruthy();
+    expect(screen.getByText('../unsafe.txt')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'skillhub.scanResult.copyReviewResult' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(expect.stringContaining('../unsafe.txt - Unsafe archive path')));
+  });
+
+  it.each(['warn', 'warning'])('does not present a %s gate as a processing failure', (status) => {
+    render(<ScanResultDialog open onClose={vi.fn()} result={{ status,
+      gates: [{ name: 'MANIFEST_INVALID', status, issues: [{ severity: 'warning', code: 'MANIFEST_INVALID', message: 'Optional field missing' }] }],
+    }} />);
+    expect(screen.queryByRole('heading', { name: 'skillhub.publishError.MANIFEST_INVALID.title' })).toBeNull();
+    expect(document.querySelector('.lucide-shield-alert')).not.toBeNull();
+    expect(screen.getByText('Optional field missing')).toBeTruthy();
+  });
+
   it('shows manual feedback even when every machine check passed, and copies the full reason', async () => {
     const reason = 'Remove private project notes.\n<script>do not execute</script>';
     const writeText = vi.fn().mockResolvedValue(undefined);

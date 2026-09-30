@@ -1,5 +1,4 @@
 import { isSkillhubPublishErrorCode, serverPublishErrorCode, type SkillhubPublishErrorCode } from '../../../../shared/skillhubPublishErrors';
-import { isPassingScanStatus } from './scanStatus';
 
 interface ScanGateLike {
   name: string;
@@ -24,10 +23,19 @@ export function scanPublicationErrorCode(value: unknown, message?: unknown): Ski
   return undefined;
 }
 
+/** These processing gates can carry newer issue codes that this client cannot interpret yet. */
+export function publicationProcessingGateErrorCode(name: string): SkillhubPublishErrorCode | undefined {
+  return scanPublicationErrorCode(name) ?? (
+    ['package-validation', 'publication', 'publication-processing', 'upload-processing'].includes(normalizeCode(name))
+      ? 'INTERNAL'
+      : undefined
+  );
+}
+
 /** Processing failures can use an issue code or a legacy error-code gate name. */
 export function publicationProcessingErrorCode(gates: ScanGateLike[] | undefined): SkillhubPublishErrorCode | undefined {
   for (const gate of gates ?? []) {
-    if (gate.status != null && isPassingScanStatus(gate.status)) continue;
+    if (gate.status != null && !['fail', 'failed', 'quarantine', 'rejected', 'blocked', 'error'].includes(normalizeCode(gate.status))) continue;
     for (const value of gate.issues ?? []) {
       if (!value || typeof value !== 'object') continue;
       const issue = value as Record<string, unknown>;
@@ -35,7 +43,7 @@ export function publicationProcessingErrorCode(gates: ScanGateLike[] | undefined
       const code = scanPublicationErrorCode(issue.code, issue.message);
       if (code) return code;
     }
-    const code = scanPublicationErrorCode(gate.name);
+    const code = publicationProcessingGateErrorCode(gate.name);
     if (code) return code;
   }
   return undefined;

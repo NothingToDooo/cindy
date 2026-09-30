@@ -23,7 +23,11 @@
 
 后台处理失败复用扫描结果的 `gates[].issues[]`（severity、code、message），客户端
 同时识别失败项的 issue 错误码与旧版错误码检查项名称，展示具体原因与相应修改建议，
-避免把包校验或名称冲突描述为安全审核失败；已通过项和 warning 不参与失败分类。旧客户端本来就能
+避免把包校验或名称冲突描述为安全审核失败；只对失败检查项进行该分类，已通过项、
+warn/warning 状态检查项、等待或处理中的检查项和 warning issue
+不参与失败分类。`package-validation`、`publication`、`publication-processing`、`upload-processing`
+表示发布处理检查项，其中未知错误使用内部失败的公开恢复说明，并移除诊断路径与证据；
+普通安全扫描的 findings 继续保留具体原因与相对文件位置。旧客户端本来就能
 展示 issue。服务端只向上传者返回会话原因，公开目录权限不变；未知内部异常仍返回公开的
 重试说明。实现与回归见 `shared/skillhubPublishErrors.ts`、`publishService.test.ts`、
 `PublishDialog.feedback.test.tsx` 和 `ScanResultDialog.test.tsx`。
