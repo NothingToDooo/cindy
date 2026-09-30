@@ -373,11 +373,15 @@ export function PeerFileTransport() {
         // Network arrival (runtime/WebRTC counters) vs. disk writes, once per interval.
         // Only while Debug recording is on: otherwise nothing would consume the sample.
         let sampling = false;
+        // Set when the receive settles: an already-issued stats reply must not append
+        // a progress line behind the outcome log with a dropped sink offset.
+        let ended = false;
         const sampler = setInterval(() => {
           if (sampling || !current() || !mobileDebugEnabled()) return;
           sampling = true;
           void command("stats", [id])
             .then((raw) => {
+              if (ended) return;
               lastProgress = {
                 elapsedMs: Date.now() - transferStartedAt,
                 written: sinks.current.get(id)?.offset ?? null,
@@ -403,6 +407,7 @@ export function PeerFileTransport() {
           )
             throw new Error("FILE_PEER_SIZE");
         } finally {
+          ended = true;
           clearInterval(sampler);
           received = sinks.current.get(id)?.offset ?? received;
           sinks.current.delete(id);

@@ -345,6 +345,11 @@ loss and receiver-side write stalls. Sampling uses a separate probe that neither
 the idle deadline nor closes the connection when it times out
 ([filePeer.ts](../../apps/desktop/src/main/device-link/filePeer.ts), tests in
 [filePeer.test.ts](../../apps/desktop/src/main/device-link/__tests__/filePeer.test.ts)).
+A probe that times out only skips its sample — monitoring continues while the transfer
+runs — and transfer chunks never refresh its five-second budget. Even without samples
+the drain phase stays bounded at 30 seconds, and a new transfer on the connection
+supersedes the previous file's drain accounting because `bufferedAmount` covers the
+whole channel.
 Engines expose different stats subsets; missing metrics are omitted, not reported as 0.
 
 Optional `caps.attachments` enables controller-to-host byte staging for Desktop and

@@ -143,7 +143,7 @@ try {
             const sender = JSON.parse(rawSender);
             const r = receiver.receive, s = sender.send;
             if (!r || r.size !== last || r.received !== last || r.written !== last ||
-                r.writes !== Math.ceil(last / 16384) || r.queued > 1 || !(r.queuedMax >= 1))
+                r.writes !== Math.ceil(last / 16384) || r.queued !== 0 || !(r.queuedMax >= 1))
               throw new Error("receive progress differs");
             if (!s || s.sent !== last || s.reads !== Math.ceil(last / 16384) + 1 || !(s.creditWaitMs >= 0))
               throw new Error("send progress differs");

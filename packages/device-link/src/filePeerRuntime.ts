@@ -493,6 +493,10 @@ export function createFilePeerRuntime(bridge: FilePeerRuntimeBridge) {
               .then(async () => {
                 if (settled) return;
                 if (!bytes.length) {
+                  // The zero-byte EOF block leaves the queue like any other block,
+                  // so a completed receive reports no pending writes.
+                  queued--;
+                  progress.queued = queued;
                   done();
                   return;
                 }

@@ -454,18 +454,32 @@ export default function RemoteFilePreviewScreen() {
       withTransientRemoteRetry(async () => {
         await openLink(deviceId);
         const startedAt = Date.now();
-        const res = singleAbsPath
-          ? adaptTextFilePreviewResult(singleAbsPath, await maker.fs.readTextFilePreview(singleAbsPath))
-          : await maker.fileBrowser.readFile(workdir, relPath, { acceptGzip: true });
-        // Whole-text reads share the relay with rendered-HTML resource requests; size only.
-        mobileDebugLog('debug', 'files', 'preview text read', {
-          channel: singleAbsPath ? 'text-preview' : 'read-file',
-          ms: Date.now() - startedAt,
-          ...(res.ok
-            ? { chars: res.data.content.length, gzip: res.data.contentEncoding === 'gzip' }
-            : { code: res.code }),
-        });
-        return res;
+        const channel = singleAbsPath ? 'text-preview' : 'read-file';
+        try {
+          const res = singleAbsPath
+            ? adaptTextFilePreviewResult(singleAbsPath, await maker.fs.readTextFilePreview(singleAbsPath))
+            : await maker.fileBrowser.readFile(workdir, relPath, { acceptGzip: true });
+          // Whole-text reads share the relay with rendered-HTML resource requests; size only.
+          // gzip 回包是压缩数据的 base64,与纯文本字符数分字段记录,避免两种口径混用。
+          mobileDebugLog('debug', 'files', 'preview text read', {
+            channel,
+            ms: Date.now() - startedAt,
+            ...(res.ok
+              ? res.data.contentEncoding === 'gzip'
+                ? { gzip: true, base64Chars: res.data.content.length }
+                : { chars: res.data.content.length }
+              : { code: res.code }),
+          });
+          return res;
+        } catch (error) {
+          // 慢失败同样留痕:抛错触发重试时恰好漏掉最慢的样本。
+          mobileDebugLog('debug', 'files', 'preview text read failed', {
+            channel,
+            ms: Date.now() - startedAt,
+            error: error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200),
+          });
+          throw error;
+        }
       }),
     [deviceId, maker, openLink, singleAbsPath, workdir],
   );
