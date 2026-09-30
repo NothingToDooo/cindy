@@ -284,6 +284,23 @@ afterEach(() => {
 });
 
 describe('Codex local session import', () => {
+  it.each(['sessions', 'archived_sessions'])('locates current-home archive storage in %s without a location record', directory => {
+    const home = path.join(targetUserData, 'codex-home');
+    const dbPath = createStateDb(home);
+    const rolloutPath = path.join(home, directory, `rollout-2026-05-13-${threadId}.jsonl`);
+    fs.mkdirSync(path.dirname(rolloutPath), { recursive: true });
+    fs.writeFileSync(rolloutPath, '');
+    insertThread(dbPath, threadId, rolloutPath, { updatedAt: 1_000 });
+    const before = fs.readFileSync(dbPath);
+
+    expect(readCodexThreadStorageForArchive(threadId)).toEqual({
+      historyHome: home, sqliteHome: home, rolloutPath,
+    });
+    expect(fs.readFileSync(dbPath)).toEqual(before);
+    expect(currentTestDb().prepare('SELECT COUNT(*) AS n FROM sessions').get()).toEqual({ n: 0 });
+    expect(fs.readFileSync(rolloutPath, 'utf8')).toBe('');
+  });
+
   it('locates archive storage without importing or copying history', () => {
     const dbPath = createStateDb(externalHome);
     const rolloutPath = path.join(externalHome, 'sessions', `rollout-2026-05-13-${threadId}.jsonl`);

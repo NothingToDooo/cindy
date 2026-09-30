@@ -6,7 +6,7 @@ import { setCurrentDbClient, clearCurrentDbClient } from '../../localDb/client/c
 import type { DbClient } from '../../localDb/client/DbClient.js';
 
 const cleanups: Array<() => void> = [];
-afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); clearCurrentDbClient(); });
+afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); clearCurrentDbClient(); vi.useRealTimers(); });
 
 function fixture() {
   const db = new Database(':memory:');
@@ -32,6 +32,25 @@ function fixture() {
 }
 
 describe('task archive projection', () => {
+  it.each(['active', 'archived'])('periodically repairs native drift while Cindy stays %s', async status => {
+    vi.useFakeTimers();
+    const f = fixture();
+    f.insert('task', 'codex', status);
+    let nativeArchived = status !== 'archived';
+    f.sync.mockImplementation(async input => { nativeArchived = input.archived; });
+    await f.coordinator.request();
+    expect(nativeArchived).toBe(status === 'archived');
+
+    // Another native client changes the thread; Cindy's row is unchanged.
+    nativeArchived = !nativeArchived;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(f.sync).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(4 * 60_000);
+    expect(f.sync).toHaveBeenCalledTimes(2);
+    expect(nativeArchived).toBe(status === 'archived');
+    expect(f.db.prepare('SELECT status FROM sessions').get()).toEqual({ status });
+  });
+
   it('backfills Codex, restores it, and preserves all three harnesses and directory scopes', async () => {
     const f = fixture();
     for (const kind of ['cc', 'codex', 'pi']) f.insert(kind, kind);

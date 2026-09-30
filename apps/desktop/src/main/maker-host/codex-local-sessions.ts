@@ -427,7 +427,10 @@ export function readCodexThreadStorageForArchive(threadId: string): {
   historyHome: string; sqliteHome: string; rolloutPath: string;
 } | undefined {
   if (!isLikelyThreadId(threadId)) return;
-  const thread = findExternalThreadById(threadId);
+  // External discovery deliberately excludes our current home. Legacy/local
+  // tasks without a location record must still resolve their original storage.
+  const thread = findThreadByIdInHome(getDesktopCodexHome(), threadId)
+    ?? findExternalThreadById(threadId);
   if (!thread) return;
   return { historyHome: historyHomeForRollout(thread.rolloutPath),
     sqliteHome: thread.sourceDbPath ? path.dirname(thread.sourceDbPath) : thread.sourceHome,

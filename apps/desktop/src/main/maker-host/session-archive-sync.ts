@@ -12,6 +12,8 @@ const SELECT = `SELECT id, sdk_session_id AS sdkSessionId, remote_host_id AS rem
   FROM sessions WHERE agent_kind = 'codex' AND sdk_session_id IS NOT NULL
   AND status IN ('active', 'archived')`;
 
+const NATIVE_RECHECK_MS = 5 * 60_000;
+
 /** Reconcile native storage without changing Cindy metadata or interrupting live work.
  * The database is the durable retry source; no second status store or schema is needed.
  */
@@ -23,7 +25,7 @@ export function createSessionArchiveSync(deps: {
   release(): Promise<void>;
   warn(failures: number): void;
 }) {
-  const applied = new Map<string, string>();
+  const applied = new Map<string, { signature: string; checkedAt: number }>();
   let stopped = false;
   let pending = false;
   let running: Promise<void> | undefined;
@@ -49,7 +51,10 @@ export function createSessionArchiveSync(deps: {
     for (const [key, group] of groups) {
       assertCurrent();
       const signature = JSON.stringify(group.map(row => [row.id, row.status]).sort());
-      if (applied.get(key) === signature) continue;
+      const previous = applied.get(key);
+      // Native CLI actions can change storage without updating Cindy. Bound the
+      // cache lifetime, while avoiding a full native scan on every UI mutation.
+      if (previous?.signature === signature && Date.now() - previous.checkedAt < NATIVE_RECHECK_MS) continue;
       const first = group[0]!;
       if (first.remoteHostId && !deps.canUseRemote(first.remoteHostId)) continue;
       try {
@@ -71,7 +76,7 @@ export function createSessionArchiveSync(deps: {
             assertCurrent,
           });
           assertCurrent();
-          applied.set(key, signature);
+          applied.set(key, { signature, checkedAt: Date.now() });
         });
       } catch {
         assertCurrent();
