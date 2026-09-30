@@ -92,6 +92,48 @@ afterEach(async () => {
 });
 
 describe('managed llama.cpp model lifecycle', () => {
+  it.each(['install', 'download', 'configure'] as const)(
+    'revalidates %s under the configuration lock after deletion and cancellation',
+    async (action) => {
+      let present = true;
+      const remover = createLlamaCppService(root);
+      const validate = vi.fn(async () => {
+        if (!present) throw new Error('LOCAL_LLAMACPP_NOT_READY');
+      });
+      const stale = createLlamaCppService(root, () => ({}), validate);
+      const configure = vi.fn(async () => {});
+      const run = () => action === 'download'
+        ? stale.download({ repo: 'owner/model', file: 'model.gguf' })
+        : action === 'install' ? stale.install() : stale.configure(configure);
+      await remover.remove(async () => { present = false; });
+      await expect(run()).rejects.toThrow('LOCAL_LLAMACPP_NOT_READY');
+      expect(mocks.release).not.toHaveBeenCalled();
+      expect(mocks.resolve).not.toHaveBeenCalled();
+      expect(mocks.download).not.toHaveBeenCalled();
+      expect(configure).not.toHaveBeenCalled();
+      expect(await readdir(path.join(root, 'llamacpp-runtime'))).toEqual([]);
+
+      // A re-add is allowed without a tombstone. While validating, another
+      // instance cannot delete; cancellation must still stop the pending write.
+      present = true;
+      validate.mockImplementationOnce(async () => {
+        await expect(remover.remove(async () => { present = false; })).rejects.toThrow('BUSY');
+        stale.cancel();
+      });
+      await expect(run()).rejects.toThrow();
+      expect(present).toBe(true);
+      expect(mocks.release).not.toHaveBeenCalled();
+      expect(mocks.resolve).not.toHaveBeenCalled();
+      expect(configure).not.toHaveBeenCalled();
+      // Stop at release lookup rather than unpacking a real runtime.
+      if (action === 'install') {
+        mocks.release.mockRejectedValueOnce(new Error('RELEASE_LOOKUP_REACHED'));
+        await expect(run()).rejects.toThrow('RELEASE_LOOKUP_REACHED');
+      } else await run();
+      expect(validate).toHaveBeenCalledTimes(3);
+      await stale.dispose();
+    },
+  );
   it.each(
     ['write', 'rename', 'success'].flatMap((stage) =>
       ['absent', 'invalid-json', 'missing-binary'].map((previous) => ({ stage, previous })),

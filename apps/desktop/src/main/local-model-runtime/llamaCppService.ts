@@ -78,7 +78,7 @@ export async function findLlamaServer(root: string, depth = 0): Promise<string |
 export function createLlamaCppService(
   userDataDir: string,
   contextLimits: () => Record<string, number> = () => ({}),
-  validateStart: () => Promise<void> = async () => {},
+  validateConnection: () => Promise<void> = async () => {},
 ) {
   const root = path.join(userDataDir, 'llamacpp-runtime');
   const modelsRoot = path.join(root, 'models');
@@ -186,6 +186,10 @@ export function createLlamaCppService(
       async (lock) => {
         if (!lock.held) throw new Error('BUSY');
         if (await hasExternalOwner()) throw new Error('RUNTIME_OWNED_ELSEWHERE');
+        signal.throwIfAborted();
+        // Deletion shares this lock. A stale window must not install/download
+        // or change context after the managed connection has been removed.
+        await validateConnection();
         signal.throwIfAborted();
         return fn();
       },
@@ -482,7 +486,7 @@ export function createLlamaCppService(
           signal.throwIfAborted();
           // A different instance may have deleted the connection while this
           // start waited. Read the provider again under the same lock as delete.
-          await validateStart();
+          await validateConnection();
           signal.throwIfAborted();
           if (await reuseRuntime(reload, signal)) return;
           const preset = await currentPreset(signal);
