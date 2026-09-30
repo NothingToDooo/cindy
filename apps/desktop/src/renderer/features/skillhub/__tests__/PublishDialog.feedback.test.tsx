@@ -98,6 +98,15 @@ describe('PublishDialog result delivery', () => {
     expect(await screen.findByText('标签不存在')).toBeTruthy();
   });
 
+  it('uses localized recovery copy when local visibility validation has no server detail', async () => {
+    await startPublication();
+    act(() => progress({ phase: 'failed', name: 'review-helper', errorCode: 'INVALID_VISIBILITY', message: '',
+      ownerStamp: { dataOwnerId: 'owner-a', ownerGeneration: 1 } }));
+    expect(await screen.findByText(getPublishErrorCopy('INVALID_VISIBILITY').message)).toBeTruthy();
+    expect(screen.queryByText('Organization skills only support public or organization visibility')).toBeNull();
+    expect(screen.queryByText('Personal skills only support public or private visibility')).toBeNull();
+  });
+
   it.each(['PERMISSION_DENIED', 'NOT_AUTHOR', 'API_KEY_MISSING', 'SKILL_HUB_READ_ONLY', 'OSS_PUT_EXPIRED', 'OSS_OBJECT_NOT_FOUND'] as const)('does not expose %s diagnostics or offer to edit the request', async (errorCode) => {
     mocks.publish.mockResolvedValue({ success: false, errorCode, error: 'private diagnostic' });
     await startPublication();

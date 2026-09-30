@@ -260,9 +260,8 @@ export class SkillPublishService {
           phase: 'failed',
           name: params.name,
           errorCode: 'INVALID_VISIBILITY',
-          message: identityPolicy.ownerType === 'organization'
-            ? 'Organization skills only support public or organization visibility'
-            : 'Personal skills only support public or private visibility',
+          // Local policy rejection uses the renderer's localized recovery copy.
+          message: '',
         },
       );
       return { success: false, errorCode: 'INVALID_VISIBILITY' };

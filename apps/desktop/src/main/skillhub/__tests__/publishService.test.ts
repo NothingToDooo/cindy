@@ -158,13 +158,17 @@ describe('SkillPublishService', () => {
     serverPolicy.allowedVisibilities = ['PUBLIC', 'DEPARTMENT_SCOPED'];
     const { SkillPublishService } = await import('../publishService');
     const service = new SkillPublishService();
+    const onProgress = vi.fn();
 
     await expect(service.publish({
       absolutePath: '/tmp/skill',
       name: 'org-private',
       isFirstPublish: true,
       visibility: 'PRIVATE',
-    })).resolves.toEqual({ success: false, errorCode: 'INVALID_VISIBILITY' });
+    }, onProgress)).resolves.toEqual({ success: false, errorCode: 'INVALID_VISIBILITY' });
+    expect(onProgress).toHaveBeenCalledWith(expect.objectContaining({
+      phase: 'failed', errorCode: 'INVALID_VISIBILITY', message: '',
+    }));
   });
 
   it('allows version publishes without category metadata and omits category fields from commit', async () => {
