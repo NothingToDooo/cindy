@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import sharp from 'sharp';
 import { NOTIFY_AVATAR_JPEG_MAX_LENGTH, type NotifySender } from '@cindy/device-link';
 import { isManagedBotAvatarUrl, isSingleBotAvatarGrapheme, BOT_AVATAR_MAX_BYTES } from '../shared/botAvatarValue';
 import { resolveSafe } from './cindy-media/blobStore';
@@ -16,8 +17,6 @@ export async function notificationAvatar(value: string): Promise<NotifySender['a
       (async () => {
         const bytes = await readFile(resolveSafe(value).absPath, { signal: controller.signal });
         if (controller.signal.aborted || bytes.length > BOT_AVATAR_MAX_BYTES) return undefined;
-        const { default: sharp } = await import('sharp');
-        if (controller.signal.aborted) return undefined;
         return encodeNotificationAvatar(bytes, sharp, controller.signal);
       })(),
       // Never spend the transcript's entire preview deadline on optional artwork.
