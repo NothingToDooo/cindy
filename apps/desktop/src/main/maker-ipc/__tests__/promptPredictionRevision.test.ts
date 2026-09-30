@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({
   rows: [] as Array<{
@@ -15,12 +15,19 @@ const h = vi.hoisted(() => ({
   dbReads: 0,
   beforeDispatchCalls: 0,
   models: [] as string[],
+  owner: 'owner-a:1',
+  boundaryPending: false,
   afterDispatch: null as null | (() => void),
   requestUtilityText: vi.fn(),
 }));
 
 vi.mock('../../logger.js', () => ({
   createLogger: () => ({ debug: vi.fn(), warn: vi.fn(), error: vi.fn() }),
+}));
+
+vi.mock('../../appSessionState.js', () => ({
+  activeOwnerScopeKey: () => h.owner,
+  isAppSessionBoundaryPending: () => h.boundaryPending,
 }));
 
 vi.mock('../../i18n.js', () => ({
@@ -90,11 +97,14 @@ function predict(): Promise<string | null> {
 }
 
 beforeEach(() => {
+  vi.useFakeTimers();
   vi.clearAllMocks();
   h.dbReads = 0;
   h.beforeDispatchCalls = 0;
   h.afterDispatch = null;
   h.models = [];
+  h.owner = 'owner-a:1';
+  h.boundaryPending = false;
   h.rows = [{ ...VALID_ROW }, { ...VALID_ROW }];
   h.requestUtilityText.mockImplementation(
     async (_maker: unknown, _prompt: string, options: Record<string, unknown>) => {
@@ -121,7 +131,61 @@ beforeEach(() => {
   resetPromptPredictionStopLedgerForTests();
 });
 
+afterEach(() => vi.useRealTimers());
+
 describe('prompt prediction completion revision guard', () => {
+  const timeout = {
+    ok: false,
+    reason: 'timeout',
+    attempts: [{ status: 'failed', reason: 'timeout' }],
+  };
+
+  it('临时超时后在同一请求中补试一次并返回推荐', async () => {
+    h.requestUtilityText.mockResolvedValueOnce(timeout);
+    const pending = predict();
+    await vi.advanceTimersByTimeAsync(1_499);
+    expect(h.requestUtilityText).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(pending).resolves.toBe('继续补测试');
+    expect(h.requestUtilityText).toHaveBeenCalledTimes(2);
+  });
+
+  it('连续临时失败最多补试一次，不无限重试', async () => {
+    h.requestUtilityText.mockResolvedValue(timeout);
+    const pending = predict();
+    await vi.runAllTimersAsync();
+    await expect(pending).resolves.toBeNull();
+    expect(h.requestUtilityText).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    { ok: false, reason: 'no_candidate', attempts: [] },
+    { ok: false, reason: 'all_candidates_failed', attempts: [{ status: 'failed', reason: 'http_error', httpStatus: 401 }] },
+    { ok: true, text: 'invalid\nmultiline' },
+  ])('不可用配置或不合格输出不触发重复付费: %j', async (result) => {
+    h.requestUtilityText.mockResolvedValueOnce(result);
+    await expect(predict()).resolves.toBeNull();
+    expect(h.requestUtilityText).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['stop', 'new-turn', 'owner', 'boundary', 'models'])(
+    '重试等待期间发生 %s 时不会派发旧请求', async (change) => {
+      h.requestUtilityText.mockResolvedValueOnce(timeout);
+      const paidDispatch = vi.fn();
+      h.afterDispatch = paidDispatch;
+      const pending = predict();
+      await vi.advanceTimersByTimeAsync(1);
+      if (change === 'stop') notePromptPredictionSessionStopped('session-1');
+      if (change === 'new-turn') h.rows = [{ ...VALID_ROW, activeTurnStartedAt: 300 }];
+      if (change === 'owner') h.owner = 'owner-b:2';
+      if (change === 'boundary') h.boundaryPending = true;
+      if (change === 'models') h.models = ['changed-model'];
+      await vi.runAllTimersAsync();
+      await expect(pending).resolves.toBeNull();
+      expect(paidDispatch).not.toHaveBeenCalled();
+    },
+  );
+
   it('provider 派发紧前两次复核都匹配时允许预测', async () => {
     await expect(predict()).resolves.toBe('继续补测试');
     expect(h.beforeDispatchCalls).toBe(1);
@@ -162,6 +226,11 @@ describe('prompt prediction completion revision guard', () => {
     await expect(predict()).resolves.toBeNull();
     expect(h.beforeDispatchCalls).toBe(1);
     expect(h.dbReads).toBe(2);
+  });
+
+  it('provider 请求已发出后切换 owner 时丢弃返回值', async () => {
+    h.afterDispatch = () => { h.owner = 'owner-b:2'; };
+    await expect(predict()).resolves.toBeNull();
   });
 
   it('首次复核发现 completion revision 已变化时中止付费派发', async () => {

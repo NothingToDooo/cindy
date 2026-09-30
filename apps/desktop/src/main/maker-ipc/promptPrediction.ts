@@ -11,12 +11,14 @@ import { dbToMakerAgentKind } from '../../shared/agentKindConversion.js';
 import { getResolvedMainLocale } from '../i18n.js';
 import { getMaker } from '../maker-host/index.js';
 import { validateTitleOutput } from '../maker-host/title-output-validation.js';
-import { requestUtilityText } from '../utility-model/oneShotCandidates.js';
+import { requestUtilityText, type UtilityTextRequestOptions } from '../utility-model/oneShotCandidates.js';
+import type { UtilityTextFailure } from '../../shared/utilityTextResult.js';
 import { readAuxiliaryModelSettings } from '../utility-model/auxiliary-model-settings-store.js';
 import { eq } from 'drizzle-orm';
 import { getDbClient } from '../localDb/client/current.js';
 import { sessions } from '../localDb/schema.js';
 import { createLogger } from '../logger.js';
+import { activeOwnerScopeKey, isAppSessionBoundaryPending } from '../appSessionState.js';
 import { wasPromptPredictionSessionStopped } from './promptPredictionStopLedger.js';
 
 const log = createLogger('maker-ipc/prompt-prediction');
@@ -28,6 +30,16 @@ const PREDICTION_USER_MSG_MAX = 400;
 const PREDICTION_ASSISTANT_MSG_MAX = 600;
 /** 最近 N 轮 user↔assistant 配对数。 */
 const PREDICTION_RECENT_PAIRS = 3;
+const PREDICTION_RETRY_DELAY_MS = 1_500;
+
+function isTransientPredictionFailure(result: UtilityTextFailure): boolean {
+  return result.attempts.some((attempt) => attempt.status === 'failed' && (
+    attempt.reason === 'timeout' ||
+    attempt.reason === 'request_failed' ||
+    attempt.reason === 'empty_response' ||
+    (attempt.reason === 'http_error' && (attempt.httpStatus === 429 || attempt.httpStatus >= 500))
+  ));
+}
 
 type SlimMessage = { role: string; content: string };
 
@@ -182,6 +194,7 @@ export interface PromptPredictionParams {
 export async function generatePromptPrediction(
   params: PromptPredictionParams,
 ): Promise<string | null> {
+  const requestOwnerScopeKey = activeOwnerScopeKey();
   const context = buildConversationContext(params.messages, PREDICTION_RECENT_PAIRS);
   if (!context) {
     log.debug('prompt prediction skipped: no conversational context');
@@ -226,7 +239,7 @@ export async function generatePromptPrediction(
 
   const modelsSnapshot = JSON.stringify(readAuxiliaryModelSettings().models);
 
-  const result = await requestUtilityText(getMaker(), truncated, {
+  const requestOptions: UtilityTextRequestOptions = {
     maxTokens: 96,
     timeoutMs: 12_000,
     disableReasoning: true,
@@ -236,6 +249,9 @@ export async function generatePromptPrediction(
       'Output only the predicted next user message — no quotes, markdown, or commentary.',
     beforeDispatch: async () => {
       try {
+        if (isAppSessionBoundaryPending() || activeOwnerScopeKey() !== requestOwnerScopeKey) {
+          return false;
+        }
         if (JSON.stringify(readAuxiliaryModelSettings().models) !== modelsSnapshot) {
           return false;
         }
@@ -257,16 +273,31 @@ export async function generatePromptPrediction(
           beforeDispatchDrainUpdatedAt
           && finalRow.updatedAt !== beforeDispatchDrainUpdatedAt
         ) return false;
-        return JSON.stringify(readAuxiliaryModelSettings().models) === modelsSnapshot;
+        return !isAppSessionBoundaryPending()
+          && activeOwnerScopeKey() === requestOwnerScopeKey
+          && JSON.stringify(readAuxiliaryModelSettings().models) === modelsSnapshot;
       } catch {
         return false;
       }
     },
-  });
+  };
+
+  // 重试包含在 Main 已去重的同一笔 Promise 内：跨窗口、远程读取不会各自重试。
+  // 只补试一次临时传输失败；无可用模型、鉴权失败、输出格式不合格不重试。
+  let result = await requestUtilityText(getMaker(), truncated, requestOptions);
+  if (!result.ok && isTransientPredictionFailure(result)) {
+    await new Promise<void>((resolve) => setTimeout(resolve, PREDICTION_RETRY_DELAY_MS));
+    // beforeDispatch 保留首次 owner，并复核配置、Stop、完成代次及素材。
+    result = await requestUtilityText(getMaker(), truncated, requestOptions);
+  }
 
   // HTTP 已经发出后仍可能收到其它窗口 / Device Link 的 Stop。费用无法撤回，但返回值
   // 必须丢弃，不能在用户明确停止后把推荐重新显示到输入框。
-  if (wasPromptPredictionSessionStopped(params.sessionId)) return null;
+  if (
+    wasPromptPredictionSessionStopped(params.sessionId) ||
+    isAppSessionBoundaryPending() ||
+    activeOwnerScopeKey() !== requestOwnerScopeKey
+  ) return null;
   if (!result.ok) return null;
   const normalized = validateTitleOutput(result.text, 512);
   return normalized ? Array.from(normalized).slice(0, 140).join('') : null;
