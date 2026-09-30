@@ -6,6 +6,8 @@
  * "prepare this thread before resume" hook.
  */
 
+import { projectNativeSessionMetadata, type NativeSessionScope } from './native-session-metadata.js';
+import { historyHomeForRollout } from './codex-thread-locations.js';
 import { app } from 'electron';
 import { atomicWriteFileSync } from '../utils/atomicWriteFile';
 import type Database from 'better-sqlite3';
@@ -338,7 +340,7 @@ export interface CodexExternalImportResult {
   updated: number;
 }
 
-export interface CodexExternalSessionCandidate {
+export interface CodexExternalSessionCandidate extends NativeSessionScope {
   source: 'codex';
   id: string;
   title: string;
@@ -401,7 +403,7 @@ export async function scanExternalCodexSessions(): Promise<CodexExternalScanResu
       }
     }
   }
-  return { homes, candidates: [...candidatesById.values()], rejectedCount };
+  return { homes, candidates: await projectNativeSessionMetadata('codex', [...candidatesById.values()]), rejectedCount };
 }
 
 /** Import the selected external Codex sessions into xdt-maker's session table. */
@@ -418,6 +420,18 @@ export async function importExternalCodexSessions(threadIds: string[]): Promise<
     else if (action === 'updated') out.updated += 1;
   }
   return out;
+}
+
+/** Locate existing history without adopting, copying or reconstructing it. */
+export function readCodexThreadStorageForArchive(threadId: string): {
+  historyHome: string; sqliteHome: string; rolloutPath: string;
+} | undefined {
+  if (!isLikelyThreadId(threadId)) return;
+  const thread = findExternalThreadById(threadId);
+  if (!thread) return;
+  return { historyHome: historyHomeForRollout(thread.rolloutPath),
+    sqliteHome: thread.sourceDbPath ? path.dirname(thread.sourceDbPath) : thread.sourceHome,
+    rolloutPath: thread.rolloutPath };
 }
 
 /** Ensure a Codex thread from another local CODEX_HOME is visible to xdt-maker's app-server. */
@@ -4881,17 +4895,15 @@ async function upsertLocalSession(thread: CodexThreadSummary): Promise<'inserted
       -- 复活语义(#3548,与 claude 侧同口径):旧行已软删时按全新导入对待,
       -- 元数据与 updated_at 一并收敛回源值,不残留删除时刻的旧快照。
       title = CASE WHEN sessions.status = 'deleted' OR sessions.updated_at <= excluded.updated_at THEN excluded.title ELSE sessions.title END,
-      working_dir = CASE WHEN sessions.status = 'deleted' OR sessions.updated_at <= excluded.updated_at THEN excluded.working_dir ELSE sessions.working_dir END,
-      -- Classification follows Codex global state, not local edit recency.
-      -- This lets a re-import fix rows previously misclassified as projects
-      -- while preserving newer local title/metadata via the CASE clauses.
-      workspace_kind = excluded.workspace_kind,
+      working_dir = CASE WHEN sessions.status = 'archived' THEN sessions.working_dir WHEN sessions.status = 'deleted' OR sessions.updated_at <= excluded.updated_at THEN excluded.working_dir ELSE sessions.working_dir END,
+      -- Active imports follow native classification; archived tasks retain the
+      -- project and directory scope they must restore with.
+      workspace_kind = CASE WHEN sessions.status = 'archived' THEN sessions.workspace_kind ELSE excluded.workspace_kind END,
       model = CASE WHEN sessions.status = 'deleted' OR sessions.updated_at <= excluded.updated_at THEN excluded.model ELSE sessions.model END,
       effort = CASE WHEN sessions.status = 'deleted' OR sessions.updated_at <= excluded.updated_at THEN excluded.effort ELSE sessions.effort END,
       permission_mode = CASE WHEN sessions.status = 'deleted' OR sessions.updated_at <= excluded.updated_at THEN excluded.permission_mode ELSE sessions.permission_mode END,
       status = CASE
         WHEN sessions.status = 'deleted' THEN excluded.status
-        WHEN sessions.updated_at <= excluded.updated_at THEN excluded.status
         ELSE sessions.status
       END,
       sdk_session_id = excluded.sdk_session_id,

@@ -35,6 +35,7 @@ import {
   parseCodexRolloutMessageLine,
   scanExternalCodexSessions,
   prepareExternalCodexSessionForResume,
+  readCodexThreadStorageForArchive,
 } from '../maker-host/codex-local-sessions';
 import { clearCurrentDbClient, setCurrentDbClient } from '../localDb/client/current';
 import type { DbClient } from '../localDb/client/DbClient';
@@ -86,6 +87,8 @@ function createLocalDb(): Database.Database {
       feishu_bot_app_id TEXT,
       used_project_context INTEGER NOT NULL DEFAULT 0,
       extra_dirs TEXT NOT NULL DEFAULT '[]',
+      writable_dirs TEXT NOT NULL DEFAULT '[]',
+      remote_host_id TEXT,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
@@ -281,6 +284,22 @@ afterEach(() => {
 });
 
 describe('Codex local session import', () => {
+  it('locates archive storage without importing or copying history', () => {
+    const dbPath = createStateDb(externalHome);
+    const rolloutPath = path.join(externalHome, 'sessions', `rollout-2026-05-13-${threadId}.jsonl`);
+    fs.mkdirSync(path.dirname(rolloutPath), { recursive: true });
+    fs.writeFileSync(rolloutPath, '');
+    insertThread(dbPath, threadId, rolloutPath, { updatedAt: 1_000 });
+    const before = fs.readFileSync(dbPath);
+
+    expect(readCodexThreadStorageForArchive(threadId)).toEqual({
+      historyHome: externalHome, sqliteHome: fs.realpathSync(externalHome), rolloutPath,
+    });
+    expect(fs.readFileSync(dbPath)).toEqual(before);
+    expect(currentTestDb().prepare('SELECT COUNT(*) AS n FROM sessions').get()).toEqual({ n: 0 });
+    expect(fs.readFileSync(rolloutPath, 'utf8')).toBe('');
+  });
+
   it('defensively removes complete IDE context from Codex user messages', () => {
     const ideContext = '<ide_opened_file>The user opened /tmp/a.ts in the IDE.</ide_opened_file>';
     const cleaned = parseCodexRolloutMessageLine(
@@ -711,6 +730,25 @@ describe('Codex local session import', () => {
       title: 'Local Rename',
       workspaceKind: 'dialogue',
       updatedAt: 2000000,
+    });
+  });
+
+  it('keeps Cindy archive and directory scope when a newer native index still says active', async () => {
+    const dbPath = createStateDb(externalHome);
+    const rolloutPath = path.join(externalHome, 'sessions', `rollout-${threadId}.jsonl`);
+    fs.mkdirSync(path.dirname(rolloutPath), { recursive: true });
+    fs.writeFileSync(rolloutPath, '');
+    insertThread(dbPath, threadId, rolloutPath, { updatedAt: 2000 });
+    insertImportedCodexSession(currentTestDb(), `codex-${threadId}`, threadId);
+    currentTestDb().prepare(`UPDATE sessions SET status='archived', working_dir='/moved-project',
+      extra_dirs='["/reference"]', writable_dirs='["/output"]'`).run();
+    const scan = await scanExternalCodexSessions();
+    expect(scan.candidates).toEqual([expect.objectContaining({
+      archived: true, cwd: '/moved-project', extraDirs: ['/reference'], writableDirs: ['/output'],
+    })]);
+    await importExternalCodexSessions([threadId]);
+    expect(currentTestDb().prepare('SELECT status, working_dir, extra_dirs, writable_dirs FROM sessions').get()).toEqual({
+      status: 'archived', working_dir: '/moved-project', extra_dirs: '["/reference"]', writable_dirs: '["/output"]',
     });
   });
 
