@@ -21,7 +21,7 @@ import {
 } from "@cindy/device-link";
 import { useAuth } from "@/auth/AuthContext";
 import { errorText, nextFileTrace } from "@/debug/fileDiagnostics";
-import { mobileDebugLog } from "@/debug/mobileDebugLog";
+import { mobileDebugEnabled, mobileDebugLog } from "@/debug/mobileDebugLog";
 import { useDeviceLink } from "./DeviceLinkContext";
 import {
   DEVICE_LINK_API_BASE_URL,
@@ -40,6 +40,16 @@ import {
 
 let swept = false;
 const origin = "https://cindy-file-peer.invalid";
+/** Transfers slower than one sample interval record runtime stats once per interval. */
+const PROGRESS_SAMPLE_MS = 1000;
+/** Runtime stats are counters and candidate kinds only; unparsable replies stay out of logs. */
+function parseTransportStats(raw: unknown): unknown {
+  try {
+    return typeof raw === "string" ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
 const html = `<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; connect-src 'none';"><script>
 const pending=new Map();let seq=0;
 function call(type,args){return new Promise((resolve,reject)=>{const id=String(++seq);pending.set(id,{resolve,reject});window.ReactNativeWebView.postMessage(JSON.stringify({type,id,args}));});}
@@ -222,6 +232,8 @@ export function PeerFileTransport() {
       const startedAt = Date.now();
       let step = "link";
       let received = 0;
+      // Latest in-flight sample, attached to the outcome log of slow transfers.
+      let lastProgress: Record<string, unknown> | undefined;
       // Distinguishes a transport/view reset (no upload fallback) from ordinary failures.
       const cancelReason = () =>
         signal?.aborted
@@ -322,7 +334,10 @@ export function PeerFileTransport() {
           mobileDebugLog("debug", "files", "direct transfer connected", {
             trace,
             ms: Date.now() - startedAt,
-            transport: await command("stats", [id]),
+            // Diagnostics must not turn a connected transfer into a fallback.
+            transport: parseTransportStats(
+              await command("stats", [id]).catch(() => null),
+            ),
           });
         }
         if (url === null) {
@@ -355,6 +370,30 @@ export function PeerFileTransport() {
         target.create();
         const handle = target.open();
         sinks.current.set(id, { handle, size: file.size, offset: 0 });
+        // Network arrival (runtime/WebRTC counters) vs. disk writes, once per interval.
+        // Only while Debug recording is on: otherwise nothing would consume the sample.
+        let sampling = false;
+        const sampler = setInterval(() => {
+          if (sampling || !current() || !mobileDebugEnabled()) return;
+          sampling = true;
+          void command("stats", [id])
+            .then((raw) => {
+              lastProgress = {
+                elapsedMs: Date.now() - transferStartedAt,
+                written: sinks.current.get(id)?.offset ?? null,
+                size: file.size,
+                stats: parseTransportStats(raw),
+              };
+              mobileDebugLog("debug", "files", "direct transfer progress", {
+                trace,
+                ...lastProgress,
+              });
+            })
+            .catch(() => {})
+            .finally(() => {
+              sampling = false;
+            });
+        }, PROGRESS_SAMPLE_MS);
         try {
           await command("receive", [id, file.ticket, file.size, id]);
           if (
@@ -364,6 +403,7 @@ export function PeerFileTransport() {
           )
             throw new Error("FILE_PEER_SIZE");
         } finally {
+          clearInterval(sampler);
           received = sinks.current.get(id)?.offset ?? received;
           sinks.current.delete(id);
           try {
@@ -396,6 +436,7 @@ export function PeerFileTransport() {
           bytesPerSecond: Math.round(
             (file.size * 1000) / Math.max(1, Date.now() - transferStartedAt),
           ),
+          lastProgress,
         });
         return result;
       } catch (error) {
@@ -408,6 +449,7 @@ export function PeerFileTransport() {
           error: errorText(error),
           // Non-null means the read is rejected instead of falling back to upload.
           cancelled,
+          lastProgress,
         });
         if (!current() || signal?.aborted)
           throw new Error("FILE_PEER_CANCELLED");

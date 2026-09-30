@@ -331,6 +331,18 @@ of starting OSS. Cooldown has no background polling and does not stop another
 device's connection. Local diagnostics record selected direct/relay path, transport
 protocol, RTT, setup time, bytes, transfer time, throughput and fallback stage;
 candidate addresses, paths and payloads are not added to these metrics.
+Transfers that outlast one second also sample the runtime `stats` once per second on
+both ends (Desktop main log `device-link:filePeer`, Mobile opt-in Debug log): candidate
+kinds and relay protocol, selected-pair/transport byte and packet counters, bitrate
+estimates, data-channel `bufferedAmount`, and application progress — receiver
+arrived/written bytes, bridge write latency and idle time; sender reads and time spent
+waiting for credit. After EOF the sender keeps sampling until the channel buffer drains
+(at most 30 seconds). Comparing the two ends separates slow network delivery, relay
+loss and receiver-side write stalls. Sampling uses a separate probe that neither renews
+the idle deadline nor closes the connection when it times out
+([filePeer.ts](../../apps/desktop/src/main/device-link/filePeer.ts), tests in
+[filePeer.test.ts](../../apps/desktop/src/main/device-link/__tests__/filePeer.test.ts)).
+Engines expose different stats subsets; missing metrics are omitted, not reported as 0.
 
 Optional `caps.attachments` enables controller-to-host byte staging for Desktop and
 Mobile, complementing the existing host-to-controller download path. Staging failure

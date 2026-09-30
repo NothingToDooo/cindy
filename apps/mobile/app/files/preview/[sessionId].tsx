@@ -453,11 +453,19 @@ export default function RemoteFilePreviewScreen() {
     (relPath: string): Promise<FileBrowserReadFileResult> =>
       withTransientRemoteRetry(async () => {
         await openLink(deviceId);
-        if (singleAbsPath) {
-          const res = await maker.fs.readTextFilePreview(singleAbsPath);
-          return adaptTextFilePreviewResult(singleAbsPath, res);
-        }
-        return maker.fileBrowser.readFile(workdir, relPath, { acceptGzip: true });
+        const startedAt = Date.now();
+        const res = singleAbsPath
+          ? adaptTextFilePreviewResult(singleAbsPath, await maker.fs.readTextFilePreview(singleAbsPath))
+          : await maker.fileBrowser.readFile(workdir, relPath, { acceptGzip: true });
+        // Whole-text reads share the relay with rendered-HTML resource requests; size only.
+        mobileDebugLog('debug', 'files', 'preview text read', {
+          channel: singleAbsPath ? 'text-preview' : 'read-file',
+          ms: Date.now() - startedAt,
+          ...(res.ok
+            ? { chars: res.data.content.length, gzip: res.data.contentEncoding === 'gzip' }
+            : { code: res.code }),
+        });
+        return res;
       }),
     [deviceId, maker, openLink, singleAbsPath, workdir],
   );

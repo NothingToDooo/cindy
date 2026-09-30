@@ -363,4 +363,36 @@ describe('authorized file peer source', () => {
       vi.useRealTimers();
     }
   });
+  it('samples send progress without renewing the idle deadline and stops with the connection', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+    try {
+      const { connection } = await connect();
+      const { ticket } = await open(connection);
+      mock.commandReply.mockClear();
+      await vi.advanceTimersByTimeAsync(3_000);
+      const samples = () => mock.commandReply.mock.calls.filter(([action]) => action === 'stats');
+      expect(samples().length).toBeGreaterThanOrEqual(3);
+      await vi.advanceTimersByTimeAsync(58_000);
+      await expect(read(connection, ticket, 0)).rejects.toThrow('FILE_PEER_BLOCK');
+      mock.commandReply.mockClear();
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(samples()).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it('keeps a transfer usable when a diagnostics stats probe stalls', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+    try {
+      const { connection } = await connect();
+      mock.replyDelay = 20_000;
+      const { ticket } = await open(connection);
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(await read(connection, ticket, 0)).toBe(Buffer.from('hello').toString('base64'));
+      expect(await read(connection, ticket, 5)).toBe('');
+      expect((await open(connection)).ticket).toEqual(expect.any(String));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
