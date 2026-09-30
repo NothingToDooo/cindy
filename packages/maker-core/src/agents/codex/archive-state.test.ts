@@ -2,6 +2,23 @@ import { describe, expect, it, vi } from 'vitest';
 import { syncCodexArchiveState } from './archive-state.js';
 
 describe('native archive projection', () => {
+  it.each(['/', '\\'])('uses the closest storage bucket beneath a same-named ancestor (%s)', async separator => {
+    let archived = false;
+    const request = vi.fn(async (method: string) => {
+      if (method === 'thread/archive') archived = true;
+      if (method === 'thread/unarchive') archived = false;
+      return { thread: { id: 'thread', path: ['root', 'archived_sessions', 'codex',
+        archived ? 'archived_sessions' : 'sessions', '2026', '09', 'history.jsonl'].join(separator) } };
+    });
+    const invoke = request as Parameters<typeof syncCodexArchiveState>[0];
+    await syncCodexArchiveState(invoke, 'thread', false, () => {});
+    expect(request).toHaveBeenCalledTimes(1);
+    await syncCodexArchiveState(invoke, 'thread', true, () => {});
+    expect(request).toHaveBeenCalledWith('thread/archive', { threadId: 'thread' });
+    await syncCodexArchiveState(invoke, 'thread', false, () => {});
+    expect(request).toHaveBeenCalledWith('thread/unarchive', { threadId: 'thread' });
+  });
+
   it.each(['/', '\\'])('archives and restores through native APIs with %s paths', async separator => {
     let archived = false;
     const request = vi.fn(async (method: string) => {

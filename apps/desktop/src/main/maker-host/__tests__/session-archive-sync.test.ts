@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import { createSessionArchiveSync } from '../session-archive-sync.js';
+import { createSessionArchiveSync, prepareArchiveSessions, type ArchiveSessionRow } from '../session-archive-sync.js';
 import { projectNativeSessionMetadata } from '../native-session-metadata.js';
 import { setCurrentDbClient, clearCurrentDbClient } from '../../localDb/client/current.js';
 import type { DbClient } from '../../localDb/client/DbClient.js';
@@ -17,7 +17,7 @@ function fixture() {
   const client = { query: async <T>(sql: string, params: unknown[] = []) => db.prepare(sql).all(...params) as T[] };
   setCurrentDbClient(client as DbClient, 'owner');
   const sync = vi.fn(async (_input: { threadId: string; archived: boolean; remoteHostId?: string; assertCurrent(): void }) => {});
-  const prepare = vi.fn(async () => true);
+  const prepare = vi.fn(async (_rows: ArchiveSessionRow[]) => true);
   const warn = vi.fn();
   const assertCurrent = vi.fn();
   const canUseRemote = vi.fn(() => true);
@@ -32,6 +32,33 @@ function fixture() {
 }
 
 describe('task archive projection', () => {
+  it('rechecks an idle active handle without closing it', async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    f.insert('task', 'codex', 'active');
+    const live = { getStatus: () => 'active', isTurnRunning: () => false, closeIfIdle: vi.fn(async () => true) };
+    f.prepare.mockImplementation(rows => prepareArchiveSessions(rows, () => live));
+    await f.coordinator.request();
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(f.sync).toHaveBeenCalledTimes(2);
+    expect(f.sync).toHaveBeenLastCalledWith(expect.objectContaining({ archived: false }));
+    expect(live.closeIfIdle).not.toHaveBeenCalled();
+  });
+
+  it('defers running handles and closes idle archived handles before syncing', async () => {
+    const f = fixture();
+    f.insert('task');
+    const live = { getStatus: () => 'active', isTurnRunning: vi.fn(() => true), closeIfIdle: vi.fn(async () => true) };
+    f.prepare.mockImplementation(rows => prepareArchiveSessions(rows, () => live));
+    await f.coordinator.request();
+    expect(f.sync).not.toHaveBeenCalled();
+    expect(live.closeIfIdle).not.toHaveBeenCalled();
+    live.isTurnRunning.mockReturnValue(false);
+    await f.coordinator.request();
+    expect(live.closeIfIdle).toHaveBeenCalledTimes(1);
+    expect(f.sync).toHaveBeenCalledTimes(1);
+  });
+
   it.each(['active', 'archived'])('periodically repairs native drift while Cindy stays %s', async status => {
     vi.useFakeTimers();
     const f = fixture();

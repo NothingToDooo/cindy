@@ -14,6 +14,22 @@ const SELECT = `SELECT id, sdk_session_id AS sdkSessionId, remote_host_id AS rem
 
 const NATIVE_RECHECK_MS = 5 * 60_000;
 
+/** Keep idle active handles available to their native writer; only archived
+ * handles need closing before the native archive operation. Called under route locks. */
+export async function prepareArchiveSessions(
+  rows: ArchiveSessionRow[],
+  getSession: (id: string) => {
+    getStatus(): string; isTurnRunning(): boolean; closeIfIdle(): Promise<boolean>;
+  } | undefined,
+): Promise<boolean> {
+  const live = rows.map(row => getSession(row.id))
+    .filter((session): session is NonNullable<typeof session> => session !== undefined && session.getStatus() !== 'closed');
+  if (live.some(session => session.isTurnRunning())) return false;
+  if (rows.some(row => row.status === 'active')) return true;
+  for (const session of live) if (!await session.closeIfIdle()) return false;
+  return true;
+}
+
 /** Reconcile native storage without changing Cindy metadata or interrupting live work.
  * The database is the durable retry source; no second status store or schema is needed.
  */

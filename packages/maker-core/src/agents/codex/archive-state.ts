@@ -10,7 +10,10 @@ export async function syncCodexArchiveState(
   const isArchived = (result: ThreadResult): boolean => {
     if (result.thread.id !== threadId || !result.thread.path) throw new Error('Codex archive history is unavailable');
     // Native SSH paths use the remote platform's separators.
-    return result.thread.path.split(/[\\/]/).includes('archived_sessions');
+    const bucket = result.thread.path.split(/[\\/]/).slice(0, -1).reverse()
+      .find(part => part === 'sessions' || part === 'archived_sessions');
+    if (!bucket) throw new Error('Codex archive history storage is unavailable');
+    return bucket === 'archived_sessions';
   };
   let result = await read();
   assertCurrent();

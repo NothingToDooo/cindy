@@ -19,7 +19,7 @@ import { clearCodexAccountUsageSnapshot } from '../usageBroadcaster.js';
 import { createMediaDownloadContext } from '../cindy-media/mediaDownloadApproval.js';
 import { isCodexAccountProvider, codexAccountHome, setCodexAccountRetirement } from './codex-account-auth.js';
 import { CodexThreadLocations } from './codex-thread-locations.js';
-import { createSessionArchiveSync } from './session-archive-sync.js';
+import { createSessionArchiveSync, prepareArchiveSessions } from './session-archive-sync.js';
 import { getCurrentDbClientSnapshot } from '../localDb/client/current.js';
 import { setSessionArchiveSyncRequester } from '../localDb/sessionArchiveSync.js';
 import { getActiveAppSession, activeOwnerScopeKey, isAppSessionBoundaryPending } from '../appSessionState.js';
@@ -2857,14 +2857,7 @@ export function getMaker(): Maker {
           }
         } };
       },
-      prepare: async (rows) => {
-        const live = rows.map(row => makerRef.getSession(row.id))
-          .filter((session): session is NonNullable<typeof session> => session !== undefined && session.getStatus() !== 'closed');
-        if (live.some(session => session.isTurnRunning())) return false;
-        if (live.length && rows.some(row => row.status === 'active')) return false;
-        for (const session of live) if (!await session.closeIfIdle()) return false;
-        return true;
-      },
+      prepare: (rows) => prepareArchiveSessions(rows, id => makerRef.getSession(id)),
       canUseRemote: (id) => getRemoteSshPool().get(id)?.getStatus() === 'ready',
       sync: (input) => codexAgent.syncThreadArchiveState(input),
       release: () => codexAgent.releaseArchiveHosts(),
