@@ -295,6 +295,7 @@ import {
 } from '@/hooks/useComposerSendShortcutPreference';
 import { usePromptRecommendationPreference } from '@/hooks/usePromptRecommendationPreference';
 import { usePromptRecommendationPrediction } from '@/hooks/usePromptRecommendationPrediction';
+import { predictPromptUntilDisabled } from '@/lib/predictPromptUntilDisabled';
 import {
   dismissPromptRecommendation,
   usePromptRecommendation,
@@ -8298,7 +8299,7 @@ export function ChatInput({
     predict: async (revision) => {
       if (!sessionId || runtimeAgentKind == null) return null;
       // 素材仍由 Main 从 DB 读取；远程任务经 sticky 路由交给被控电脑。
-      const result = await makerApiForSticky(sessionId).predictNextPrompt({
+      const result = await predictPromptUntilDisabled(makerApiForSticky(sessionId), {
         sessionId,
         agentKind: runtimeAgentKind,
         messages: (messages ?? []).slice(-20).map(({ role, content }) => ({ role, content })),

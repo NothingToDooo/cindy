@@ -66,6 +66,7 @@ vi.mock('../../maker-host/index.js', () => ({
 
 import { generatePromptPrediction } from '../promptPrediction.js';
 import {
+  notePromptPredictionSessionCancelled,
   notePromptPredictionSessionStopped,
   resetPromptPredictionStopLedgerForTests,
 } from '../promptPredictionStopLedger.js';
@@ -202,7 +203,7 @@ describe('prompt prediction completion revision guard', () => {
     expect(h.requestUtilityText).toHaveBeenCalledTimes(1);
   });
 
-  it.each(['stop', 'new-turn', 'owner', 'boundary', 'models'])(
+  it.each(['stop', 'new-turn', 'owner', 'boundary', 'models', 'disabled'])(
     '重试等待期间发生 %s 时不会派发旧请求', async (change) => {
       h.requestUtilityText.mockResolvedValueOnce(timeout);
       const paidDispatch = vi.fn();
@@ -214,9 +215,11 @@ describe('prompt prediction completion revision guard', () => {
       if (change === 'owner') h.owner = 'owner-b:2';
       if (change === 'boundary') h.boundaryPending = true;
       if (change === 'models') h.models = ['changed-model'];
+      if (change === 'disabled') notePromptPredictionSessionCancelled('session-1', 200, h.owner);
       await vi.runAllTimersAsync();
       await expect(pending).resolves.toBeNull();
       expect(paidDispatch).not.toHaveBeenCalled();
+      if (change === 'disabled') expect(h.requestUtilityText).toHaveBeenCalledTimes(1);
     },
   );
 
@@ -260,6 +263,26 @@ describe('prompt prediction completion revision guard', () => {
     await expect(predict()).resolves.toBeNull();
     expect(h.beforeDispatchCalls).toBe(1);
     expect(h.dbReads).toBe(2);
+  });
+
+  it('请求准备期间关闭推荐时拦截首次付费派发', async () => {
+    const paidDispatch = vi.fn();
+    h.afterDispatch = paidDispatch;
+    notePromptPredictionSessionCancelled('session-1', 200, h.owner);
+    await expect(predict()).resolves.toBeNull();
+    expect(paidDispatch).not.toHaveBeenCalled();
+  });
+
+  it('请求发出后关闭推荐时丢弃迟到结果', async () => {
+    h.afterDispatch = () => notePromptPredictionSessionCancelled('session-1', 200, h.owner);
+    await expect(predict()).resolves.toBeNull();
+  });
+
+  it('旧完成轮和旧账号的取消不影响当前推荐', async () => {
+    notePromptPredictionSessionCancelled('session-1', 199, h.owner);
+    await expect(predict()).resolves.toBe('继续补测试');
+    notePromptPredictionSessionCancelled('session-1', 200, 'owner-other');
+    await expect(predict()).resolves.toBe('继续补测试');
   });
 
   it('provider 请求已发出后切换 owner 时丢弃返回值', async () => {

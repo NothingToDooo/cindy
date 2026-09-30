@@ -19,7 +19,10 @@ import { getDbClient } from '../localDb/client/current.js';
 import { sessions } from '../localDb/schema.js';
 import { createLogger } from '../logger.js';
 import { activeOwnerScopeKey, isAppSessionBoundaryPending } from '../appSessionState.js';
-import { wasPromptPredictionSessionStopped } from './promptPredictionStopLedger.js';
+import {
+  wasPromptPredictionSessionCancelled,
+  wasPromptPredictionSessionStopped,
+} from './promptPredictionStopLedger.js';
 
 const log = createLogger('maker-ipc/prompt-prediction');
 
@@ -197,6 +200,9 @@ export async function generatePromptPrediction(
   params: PromptPredictionParams,
 ): Promise<string | null> {
   const requestOwnerScopeKey = activeOwnerScopeKey();
+  const isCancelled = () => wasPromptPredictionSessionCancelled(
+    params.sessionId, params.completionRevision, requestOwnerScopeKey,
+  );
   const context = buildConversationContext(params.messages, PREDICTION_RECENT_PAIRS);
   if (!context) {
     log.debug('prompt prediction skipped: no conversational context');
@@ -254,6 +260,7 @@ export async function generatePromptPrediction(
         if (isAppSessionBoundaryPending() || activeOwnerScopeKey() !== requestOwnerScopeKey) {
           return false;
         }
+        if (isCancelled()) return false;
         if (JSON.stringify(readAuxiliaryModelSettings().models) !== modelsSnapshot) {
           return false;
         }
@@ -276,6 +283,7 @@ export async function generatePromptPrediction(
           && finalRow.updatedAt !== beforeDispatchDrainUpdatedAt
         ) return false;
         return !isAppSessionBoundaryPending()
+          && !isCancelled()
           && activeOwnerScopeKey() === requestOwnerScopeKey
           && JSON.stringify(readAuxiliaryModelSettings().models) === modelsSnapshot;
       } catch {
@@ -290,13 +298,16 @@ export async function generatePromptPrediction(
   if (!result.ok && isTransientPredictionFailure(result)) {
     await new Promise<void>((resolve) => setTimeout(resolve, PREDICTION_RETRY_DELAY_MS));
     // beforeDispatch 保留首次 owner，并复核配置、Stop、完成代次及素材。
-    result = await requestUtilityText(getMaker(), truncated, requestOptions);
+    if (!isCancelled()) {
+      result = await requestUtilityText(getMaker(), truncated, requestOptions);
+    }
   }
 
   // HTTP 已经发出后仍可能收到其它窗口 / Device Link 的 Stop。费用无法撤回，但返回值
   // 必须丢弃，不能在用户明确停止后把推荐重新显示到输入框。
   if (
     wasPromptPredictionSessionStopped(params.sessionId) ||
+    isCancelled() ||
     isAppSessionBoundaryPending() ||
     activeOwnerScopeKey() !== requestOwnerScopeKey
   ) return null;
