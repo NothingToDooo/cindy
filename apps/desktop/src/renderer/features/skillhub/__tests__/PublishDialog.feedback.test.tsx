@@ -48,16 +48,18 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
+const skillFixture: PublishDialogProps['skill'] = {
+  id: 'review-helper', urlKey: 'review-helper', engine: 'claude-code', linkedEngines: [],
+  kind: 'skill', scope: 'global', mdPath: '/fixture/review-helper/SKILL.md', files: [], registryEntry: null,
+  name: 'review-helper', absolutePath: '/fixture/review-helper', frontmatter: { version: '1.0.1' },
+};
+
 function mountPublication(overrides: Partial<PublishDialogProps> = {}) {
   const onScanResult = vi.fn();
   const onOpenChange = vi.fn();
   const onLocalRenamed = vi.fn();
   const props: PublishDialogProps = {
-    open: true, onOpenChange, onScanResult, onLocalRenamed, isFirstPublish: false, latestVersion: '1.0.0', skill: {
-      id: 'review-helper', urlKey: 'review-helper', engine: 'claude-code', linkedEngines: [],
-      kind: 'skill', scope: 'global', mdPath: '/fixture/review-helper/SKILL.md', files: [], registryEntry: null,
-      name: 'review-helper', absolutePath: '/fixture/review-helper', frontmatter: { version: '1.0.1' },
-    },
+    open: true, onOpenChange, onScanResult, onLocalRenamed, isFirstPublish: false, latestVersion: '1.0.0', skill: skillFixture,
     ...overrides,
   };
   const view = render(<PublishDialog {...props} />);
@@ -89,6 +91,28 @@ describe('PublishDialog result delivery', () => {
     await waitFor(() => expect(mocks.publish).toHaveBeenCalledTimes(2));
     expect(mocks.publish.mock.calls[1][0]).toMatchObject({
       name: 'renamed-helper', absolutePath: '/fixture/renamed-helper', isFirstPublish: true,
+    });
+  });
+
+  it('checks the discovered path on the first rename and the current path on a subsequent rename', async () => {
+    mocks.publish.mockResolvedValueOnce({ success: false, errorCode: 'SKILL_DELETED', error: '同名技能已删除' });
+    await startPublication({ isFirstPublish: true, autoCleanName: true,
+      skill: { ...skillFixture, discoveredPath: '/fixture/link-helper' } });
+    expect(mocks.renameLocal).toHaveBeenNthCalledWith(1, {
+      absolutePath: '/fixture/link-helper', newName: 'renamed-helper',
+    });
+    expect(mocks.publish.mock.calls[0][0]).toMatchObject({ absolutePath: '/fixture/renamed-helper' });
+
+    mocks.renameLocal.mockResolvedValueOnce({ success: true, newAbsolutePath: '/fixture/final-helper' });
+    fireEvent.click(await screen.findByRole('button', { name: getPublishErrorCopy('SKILL_DELETED').primaryAction.label }));
+    fireEvent.change(screen.getByPlaceholderText('skillhub.publishDialog.skillNamePlaceholder'), { target: { value: 'final-helper' } });
+    fireEvent.click(screen.getByRole('button', { name: 'skillhub.publishDialog.startPublish' }));
+    await waitFor(() => expect(mocks.renameLocal).toHaveBeenNthCalledWith(2, {
+      absolutePath: '/fixture/renamed-helper', newName: 'final-helper',
+    }));
+    await waitFor(() => expect(mocks.publish).toHaveBeenCalledTimes(2));
+    expect(mocks.publish.mock.calls[1][0]).toMatchObject({
+      name: 'final-helper', absolutePath: '/fixture/final-helper', isFirstPublish: true,
     });
   });
 
