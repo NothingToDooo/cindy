@@ -2,18 +2,26 @@ import { stripTrailingPathSeparators } from '@cindy/maker-shared/path-text';
 import { i18n } from '@/i18n';
 import type { RemoteFileRef, RemoteImageRef, RemoteSerializedAttachment } from '@/session/types';
 import { buildLegacyAttachmentOssRef } from '@/session/attachmentOssRef';
-import { parsePeerAttachmentRef } from '@cindy/device-link';
+import { FILE_PEER_MAX_BYTES, parsePeerAttachmentRef } from '@cindy/device-link';
 
 export type MobileAttachmentCategory = RemoteSerializedAttachment['category'];
 
 export const MOBILE_MAX_ATTACHMENTS = 20;
-export const MOBILE_MAX_ATTACHMENT_BYTES = 30 * 1024 * 1024;
+/**
+ * 与桌面一致,附件不设产品层体积上限;这里只是跨端传输通道的物理上限(peer 直传与
+ * device-link OSS 中转都是 2GB),提前拦下能省掉超限文件白跑一遍 sha256。
+ */
+export const MOBILE_MAX_ATTACHMENT_BYTES = FILE_PEER_MAX_BYTES;
+
+export function formatMobileAttachmentLimit(): string {
+  return `${Math.round(MOBILE_MAX_ATTACHMENT_BYTES / 1024 / 1024 / 1024)} GB`;
+}
 
 const SUPPORTED_IMAGE_EXTS = new Set(['.jpeg', '.jpg', '.png', '.gif', '.webp']);
 const SUPPORTED_DOC_EXTS = new Set(['.pdf']);
 const SUPPORTED_OFFICE_EXTS = new Set(['.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx']);
 
-// Mirrors desktop shared/textFileExts.ts for the mobile remote-path attachment path.
+// Mirrors desktop shared/textFileExts.ts; only refines the category, never gates sending.
 const SUPPORTED_TEXT_EXTS = new Set([
   '.js', '.ts', '.tsx', '.jsx', '.mjs', '.cjs', '.py', '.go', '.rs', '.java',
   '.c', '.cpp', '.cc', '.cxx', '.h', '.hpp', '.hh', '.cs', '.rb', '.php',
@@ -89,7 +97,7 @@ export function assertMobileDocumentSize(size: number): void {
     throw new Error(i18n.t('composer.upload.emptyFile'));
   }
   if (size > MOBILE_MAX_ATTACHMENT_BYTES) {
-    throw new Error(i18n.t('composer.upload.fileTooLarge', { size: Math.round(MOBILE_MAX_ATTACHMENT_BYTES / 1024 / 1024) }));
+    throw new Error(i18n.t('composer.upload.fileTooLarge', { limit: formatMobileAttachmentLimit() }));
   }
 }
 
@@ -115,20 +123,22 @@ export function extractRemoteFileExt(name: string): string {
   return lower.slice(dotIdx);
 }
 
-export function categorizeMobileAttachment(name: string): MobileAttachmentCategory | null {
+/** 与桌面 fileTypes 同口径:认不出的类型归为通用 'file',不拒收。 */
+export function categorizeMobileAttachment(name: string): MobileAttachmentCategory {
   const ext = extractRemoteFileExt(name);
   if (SUPPORTED_IMAGE_EXTS.has(ext)) return 'image';
   if (SUPPORTED_DOC_EXTS.has(ext)) return 'pdf';
   if (SUPPORTED_OFFICE_EXTS.has(ext)) return 'office';
   if (SUPPORTED_TEXT_EXTS.has(ext)) return 'text';
   if (!ext && KNOWN_TEXT_FILENAMES.has(name.toLowerCase())) return 'text';
-  return null;
+  return 'file';
 }
 
 export function mimeTypeForMobileAttachment(
   ext: string,
   category: MobileAttachmentCategory,
 ): string {
+  if (category === 'file') return 'application/octet-stream';
   if (category === 'pdf') return 'application/pdf';
   if (category === 'text') return 'text/plain';
   if (category === 'office') {
@@ -158,7 +168,6 @@ export function buildMobileRemoteFileAttachment(
   const name = basenameRemotePath(path);
   if (!name) return null;
   const category = categorizeMobileAttachment(name);
-  if (!category) return null;
   const ext = extractRemoteFileExt(name);
   return {
     id: opts.id ?? `mobile-remote-file:${path}`,
@@ -185,7 +194,6 @@ export function buildMobileUploadedAttachment(input: {
   const name = basenameRemotePath(input.name).trim();
   if (!name) return null;
   const category = categorizeMobileAttachment(name);
-  if (!category) return null;
   const ext = extractRemoteFileExt(name);
   const mimeType = input.mimeType?.trim() || mimeTypeForMobileAttachment(ext, category);
   const ref = input.peerRef ?? buildLegacyAttachmentOssRef({

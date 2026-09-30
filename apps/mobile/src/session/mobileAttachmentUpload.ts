@@ -7,7 +7,6 @@ import { isAttachmentOssRef, parseAttachmentOssRef } from '@/session/attachmentO
 import {
   buildMobileUploadedAttachment,
   assertMobileDocumentSize,
-  categorizeMobileAttachment,
   extractRemoteFileExt,
 } from '@/session/attachments';
 import type { RemoteSerializedAttachment } from '@/session/types';
@@ -298,13 +297,8 @@ export async function uploadMobileAttachment(
   body: MobileAttachmentUploadBody,
   options: { token: string | null; sharedTaskId?: string; id?: string; deps?: UploadDeps },
 ): Promise<RemoteSerializedAttachment> {
-  // 上传前先校验类型:不支持的本机文件(如 .zip)若先 presign + PUT、再在
-  // buildMobileUploadedAttachment 处被拒,会在 device-link OSS 桶里留下一个永不被引用、
-  // 也没有 delete 回收的孤儿对象(泄漏用户数据 + 占用存储)。类型判定复用
-  // categorizeMobileAttachment 这一唯一真源,保证与下面最终校验同口径。
-  if (!categorizeMobileAttachment(candidate.name)) {
-    throw new Error(i18n.t('composer.upload.fileTypeUnsupported'));
-  }
+  // presign 前先校验体积:超出传输上限的文件若先 presign + PUT、再在
+  // buildMobileUploadedAttachment 处被拒,会在 device-link OSS 桶里留下永不被引用的孤儿对象。
   assertMobileDocumentSize(candidate.size);
   const sha256 = await sha256MobileAttachmentBody(body, candidate.size);
   const presigned = await presignMobileAttachmentUpload(candidate, options);
@@ -318,7 +312,7 @@ export async function uploadMobileAttachment(
     mimeType: candidate.mimeType,
   });
   if (!attachment) {
-    throw new Error(i18n.t('composer.upload.fileTypeUnsupported'));
+    throw new Error(i18n.t('composer.upload.noFileRead'));
   }
   return attachment;
 }
@@ -336,10 +330,7 @@ export async function uploadMobileAttachmentFromFile(
     signal?: AbortSignal;
   },
 ): Promise<RemoteSerializedAttachment> {
-  // 同 uploadMobileAttachment:presign 前先拦不支持的类型,避免 OSS 孤儿对象。
-  if (!categorizeMobileAttachment(candidate.name)) {
-    throw new Error(i18n.t('composer.upload.fileTypeUnsupported'));
-  }
+  // 同 uploadMobileAttachment:presign 前先拦超限体积,避免 OSS 孤儿对象。
   assertMobileDocumentSize(candidate.size);
   const snapshot = options.deps?.snapshotFile
     ? await options.deps.snapshotFile(fileUri)
@@ -360,7 +351,7 @@ export async function uploadMobileAttachmentFromFile(
       }, options.signal);
       if (peerRef) {
         const attachment = buildMobileUploadedAttachment({ ...candidate, sha256, peerRef, id: options.id });
-        if (!attachment) throw new Error(i18n.t('composer.upload.fileTypeUnsupported'));
+        if (!attachment) throw new Error(i18n.t('composer.upload.noFileRead'));
         return attachment;
       }
     }
@@ -389,7 +380,7 @@ export async function uploadMobileAttachmentFromFile(
       mimeType: candidate.mimeType,
     });
     if (!attachment) {
-      throw new Error(i18n.t('composer.upload.fileTypeUnsupported'));
+      throw new Error(i18n.t('composer.upload.noFileRead'));
     }
     return attachment;
   } finally {

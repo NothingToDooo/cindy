@@ -172,7 +172,7 @@ describe('mobileAttachmentUpload', () => {
     });
   });
 
-  it('rejects an unsupported local file type before any presign or PUT (no orphaned OSS object)', async () => {
+  it('rejects a file beyond the transfer limit before any presign or PUT (no orphaned OSS object)', async () => {
     const apiFetch = vi.fn();
     const fetchPut = vi.fn();
 
@@ -180,7 +180,7 @@ describe('mobileAttachmentUpload', () => {
       uploadMobileAttachment(
         {
           name: 'archive.zip',
-          size: 4096,
+          size: 2 * 1024 * 1024 * 1024 + 1,
           mimeType: 'application/zip',
         },
         new Blob(['zip'], { type: 'application/zip' }),
@@ -192,7 +192,7 @@ describe('mobileAttachmentUpload', () => {
           },
         },
       ),
-    ).rejects.toThrow('这个本机文件类型暂不支持作为附件发送。');
+    ).rejects.toThrow('文件超过 2 GB，不能作为附件发送。');
 
     // 关键:校验发生在网络调用之前,绝不能 presign / PUT,否则会留下孤儿对象。
     expect(apiFetch).not.toHaveBeenCalled();
@@ -385,7 +385,7 @@ describe('mobileAttachmentUpload', () => {
     })).rejects.toThrow('附件上传失败：HTTP 403 (SignatureDoesNotMatch)');
   });
 
-  it('rejects an unsupported file type before presign in the native file path (no orphaned OSS object)', async () => {
+  it('rejects a file beyond the transfer limit before presign in the native file path (no orphaned OSS object)', async () => {
     const apiFetch = vi.fn();
     const uploadFile = vi.fn();
 
@@ -393,7 +393,7 @@ describe('mobileAttachmentUpload', () => {
       uploadMobileAttachmentFromFile(
         {
           name: 'archive.zip',
-          size: 4096,
+          size: 2 * 1024 * 1024 * 1024 + 1,
           mimeType: 'application/zip',
         },
         'file:///tmp/archive.zip',
@@ -405,7 +405,7 @@ describe('mobileAttachmentUpload', () => {
           },
         },
       ),
-    ).rejects.toThrow('这个本机文件类型暂不支持作为附件发送。');
+    ).rejects.toThrow('文件超过 2 GB，不能作为附件发送。');
 
     expect(apiFetch).not.toHaveBeenCalled();
     expect(uploadFile).not.toHaveBeenCalled();

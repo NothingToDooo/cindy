@@ -177,6 +177,15 @@ link-accept 双向声明，不改 relay）。Desktop 控制端在本机没有订
 Mobile 以同一归纳算法在上传后的附件（含持久发件箱 `DurableUpload`，可选字段、旧记录缺省）
 上携带该字段；底图本身已是烧录图、旧红线位置不可知时不带区域。服务端无需改动。
 
+## 手机附件的通用文件类别
+
+Mobile 发送的队列附件（`RemoteSerializedAttachment.category`）与 Desktop `AgentInputFileCategory`
+对齐，追加 `'file'`：认不出的扩展名不再拒收，按通用文件以 `application/octet-stream` 上传。
+Mobile 不再设类型白名单与 30 MB 上限，只保留 device-link 传输上限（`FILE_PEER_MAX_BYTES`，
+与服务端 presign 上限同为 2GB）。主机只按 `category === 'image'` 分流，其余一律作为文件路径
+交给 Agent，并以 `originalName` 落地保留扩展名，新旧主机都已认得 `'file'`。不新增 channel、
+relay 类型或持久化 schema，服务端无需改动。
+
 ## 事实来源
 
 | 内容                     | 权威来源                                                                                                                                                                                   |

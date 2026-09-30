@@ -13,6 +13,7 @@ import {
   extractRemoteFileExt,
 } from '@/session/attachments';
 import { isAttachmentOssRef, parseAttachmentOssRef } from '@/session/attachmentOssRef';
+import { FILE_PEER_MAX_BYTES } from '@cindy/device-link';
 import type { RemoteSerializedAttachment } from '@/session/types';
 
 const SHA256 = 'a'.repeat(64);
@@ -31,7 +32,9 @@ describe('mobile remote file attachments', () => {
     expect(categorizeMobileAttachment('report.docx')).toBe('office');
     expect(categorizeMobileAttachment('SessionScreen.tsx')).toBe('text');
     expect(categorizeMobileAttachment('Dockerfile')).toBe('text');
-    expect(categorizeMobileAttachment('archive.zip')).toBeNull();
+    expect(categorizeMobileAttachment('archive.zip')).toBe('file');
+    expect(categorizeMobileAttachment('clip.mp4')).toBe('file');
+    expect(categorizeMobileAttachment('LICENSE')).toBe('file');
   });
 
   it('builds desktop-compatible serialized attachment and persisted file refs', () => {
@@ -159,15 +162,29 @@ describe('mobile remote file attachments', () => {
     });
   });
 
-  it('rejects uploaded mobile files outside desktop attachment limits', () => {
+  it('accepts any file type like desktop and only rejects files beyond the transfer limit', () => {
+    const archive = buildMobileUploadedAttachment({
+      ossKey: 'cindy/device-link/user-1/archive.zip',
+      name: 'archive.zip',
+      size: 1024,
+      sha256: SHA256,
+    });
+    expect(archive).toMatchObject({
+      name: 'archive.zip',
+      ext: '.zip',
+      category: 'file',
+      mimeType: 'application/octet-stream',
+    });
+    expect(archive).not.toHaveProperty('url');
     expect(
       buildMobileUploadedAttachment({
-        ossKey: 'cindy/device-link/user-1/archive.zip',
-        name: 'archive.zip',
-        size: 1024,
+        ossKey: 'cindy/device-link/user-1/big.pdf',
+        name: 'big.pdf',
+        size: 100 * 1024 * 1024,
         sha256: SHA256,
       }),
-    ).toBeNull();
+    ).toMatchObject({ category: 'pdf', size: 100 * 1024 * 1024 });
+    expect(MOBILE_MAX_ATTACHMENT_BYTES).toBe(FILE_PEER_MAX_BYTES);
     expect(
       buildMobileUploadedAttachment({
         ossKey: 'cindy/device-link/user-1/spec.pdf',
