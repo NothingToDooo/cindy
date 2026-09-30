@@ -80,9 +80,10 @@ export async function handlePeerAttachment(peer: string, r: Record<string, unkno
         });
       }
       const space = await fs.statfs(root);
+      // 物化峰值同时存在三份:收件箱保留件、会话临时件、媒体仓/附件缓存的持久副本。
       if (
         count >= 128 ||
-        space.bavail * space.bsize < pending + parsed.size * 2 + 256 * 1024 ** 2
+        space.bavail * space.bsize < pending + parsed.size * 3 + 256 * 1024 ** 2
       )
         throw new Error('FILE_PEER_STORAGE');
       check();

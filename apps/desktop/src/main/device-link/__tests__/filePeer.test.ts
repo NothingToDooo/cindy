@@ -402,6 +402,43 @@ describe('authorized file peer source', () => {
       vi.useRealTimers();
     }
   });
+  it('keeps only the stalled peer alive; another controller link and in-flight request are unaffected', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+    try {
+      let finishA!: (value: unknown) => void;
+      let finishB!: (value: unknown) => void;
+      const invokeA = vi.fn(() => new Promise((resolve) => { finishA = resolve; }));
+      const invokeB = vi.fn(() => new Promise((resolve) => { finishB = resolve; }));
+      const offer = async (peer: string, invoke: unknown) =>
+        ((await requestFilePeer(peer, { action: 'offer', sdp: 'v=0' }, invoke as never)) as {
+          connection: string;
+        }).connection;
+      const a = await offer('device-a', invokeA);
+      const b = await offer('device-b', invokeB);
+      const handle = (connection: string) =>
+        mock.handlers.get('file-peer:host:invoke')!(
+          {},
+          connection,
+          JSON.stringify({
+            channel: 'device-link:file-peer',
+            args: [{ action: 'attachment', connection, request: { op: 'finish' } }],
+          }),
+        );
+      // device-a 停在一次很长的请求上(不回包);device-b 同时有自己的在途请求。
+      const stalledA = handle(a);
+      const inflightB = handle(b);
+      await vi.advanceTimersByTimeAsync(20_000);
+      finishB({ ok: 'b' });
+      await expect(inflightB).resolves.toBe(JSON.stringify({ ok: 'b' }));
+      // A 的保活只刷新 A 自己的连接:B 按自身空闲时限关闭,不被 A 延长。
+      await vi.advanceTimersByTimeAsync(61_000);
+      await expect(handle(b)).rejects.toThrow('FILE_PEER_CLOSED');
+      finishA({ ok: 'a' });
+      await expect(stalledA).resolves.toBe(JSON.stringify({ ok: 'a' }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it('keeps a stalled transfer alive past 30 seconds, renews on progress and closes after 60 idle seconds', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     try {
