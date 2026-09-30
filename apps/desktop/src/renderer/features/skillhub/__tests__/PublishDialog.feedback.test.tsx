@@ -21,6 +21,7 @@ vi.mock('../hooks/useSkillFolderHash', () => ({ invalidateHash: vi.fn() }));
 vi.mock('../components/PlatformTagSelector', () => ({ PlatformTagSelector: () => null }));
 
 import { PublishDialog, type PublishDialogProps } from '../PublishDialog';
+import { getPublishErrorCopy } from '../lib/publishErrorMap';
 
 let progress!: (event: SkillhubPublishProgressEvent) => void;
 const feedback: SkillhubPublishProgressEvent = {
@@ -60,9 +61,9 @@ function mountPublication(overrides: Partial<PublishDialogProps> = {}) {
     ...overrides,
   };
   const view = render(<PublishDialog {...props} />);
-  if (props.isFirstPublish) {
+  if (props.isFirstPublish && props.autoCleanName) {
     fireEvent.change(screen.getByPlaceholderText('skillhub.publishDialog.skillNamePlaceholder'), { target: { value: 'renamed-helper' } });
-  } else {
+  } else if (!props.isFirstPublish) {
     fireEvent.change(screen.getByPlaceholderText('skillhub.publishDialog.changelogPlaceholder'), { target: { value: 'Improve documentation' } });
   }
   return { onScanResult, onOpenChange, onLocalRenamed, unmount: view.unmount,
@@ -77,6 +78,33 @@ async function startPublication(overrides: Partial<PublishDialogProps> = {}) {
 }
 
 describe('PublishDialog result delivery', () => {
+  it.each([true, false])('lets the user rename after deletion when first publication is %s', async (isFirstPublish) => {
+    mocks.publish.mockResolvedValueOnce({ success: false, errorCode: 'SKILL_DELETED', error: '同名技能已删除' });
+    await startPublication({ isFirstPublish });
+    const renameAction = getPublishErrorCopy('SKILL_DELETED').primaryAction.label;
+    fireEvent.click(await screen.findByRole('button', { name: renameAction }));
+    fireEvent.change(screen.getByPlaceholderText('skillhub.publishDialog.skillNamePlaceholder'), { target: { value: 'renamed-helper' } });
+    fireEvent.click(screen.getByRole('button', { name: 'skillhub.publishDialog.startPublish' }));
+    await waitFor(() => expect(mocks.renameLocal).toHaveBeenCalledWith({ absolutePath: '/fixture/review-helper', newName: 'renamed-helper' }));
+    await waitFor(() => expect(mocks.publish).toHaveBeenCalledTimes(2));
+    expect(mocks.publish.mock.calls[1][0]).toMatchObject({
+      name: 'renamed-helper', absolutePath: '/fixture/renamed-helper', isFirstPublish: true,
+    });
+  });
+
+  it('shows a short validation reason delivered through the IPC result fallback', async () => {
+    mocks.publish.mockResolvedValue({ success: false, errorCode: 'INVALID_PARAMS', error: '标签不存在' });
+    await startPublication();
+    expect(await screen.findByText('标签不存在')).toBeTruthy();
+  });
+
+  it('shows a short reason from a failed progress event', async () => {
+    await startPublication();
+    act(() => progress({ phase: 'failed', name: 'review-helper', errorCode: 'MANIFEST_INVALID', message: '缺少 description',
+      ownerStamp: { dataOwnerId: 'owner-a', ownerGeneration: 1 } }));
+    expect(await screen.findByText('缺少 description')).toBeTruthy();
+  });
+
   it.each(['unchanged', 'different-owner', 'same-owner-new-generation'] as const)(
     'forwards feedback after refresh only when the owner is %s', async (transition) => {
       let finishRefresh!: (value: unknown[]) => void;

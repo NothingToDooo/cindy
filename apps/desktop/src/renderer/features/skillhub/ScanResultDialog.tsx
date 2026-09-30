@@ -14,7 +14,7 @@ import { cn } from '@/lib/utils';
 import { toast } from '@/lib/toast';
 import type { ScanResultPayload } from './PublishDialog';
 import { isPassingScanStatus, isPendingManualReviewStatus } from './lib/scanStatus';
-import { isPublicationProcessingFailure } from './lib/scanResultPresentation';
+import { isPublicationProcessingFailure, publicationProcessingErrorCode } from './lib/scanResultPresentation';
 
 interface ScanIssue {
   severity?: string;
@@ -106,6 +106,8 @@ function scanGateLabel(gate: ScanGate, t: TFunction): string {
   if (code === 'internal-error') {
     return t('skillhub.scanResult.gateLabel.publicationProcessing');
   }
+  const errorCode = publicationProcessingErrorCode([gate]);
+  if (errorCode) return t(`skillhub.publishError.${errorCode}.title`);
   return gate.name;
 }
 
@@ -154,6 +156,13 @@ export function ScanResultDialog({ open, onClose, result }: ScanResultDialogProp
   const failedGates = (result.gates ?? []).filter((g) => !isPassingScanStatus(g.status));
   const processingFailure =
     !passed && !pendingManualReview && isPublicationProcessingFailure(result.gates);
+  const processingErrorCode = processingFailure ? publicationProcessingErrorCode(result.gates) : undefined;
+  const processingErrorCopy = processingErrorCode && processingErrorCode !== 'INTERNAL'
+    ? {
+        title: t(`skillhub.publishError.${processingErrorCode}.title`),
+        message: t(`skillhub.publishError.${processingErrorCode}.message`),
+      }
+    : undefined;
   const title = rejected
     ? t('skillhub.scanResult.rejectedTitle')
     : passed
@@ -161,7 +170,7 @@ export function ScanResultDialog({ open, onClose, result }: ScanResultDialogProp
       : pendingManualReview
         ? t('skillhub.scanResult.pendingTitle')
         : processingFailure
-          ? t('skillhub.scanResult.processingFailedTitle')
+          ? processingErrorCopy?.title ?? t('skillhub.scanResult.processingFailedTitle')
           : t('skillhub.scanResult.failedTitle', { status: result.status });
   const statusLabel = scanStatusLabel(result.status, t);
   const description = rejected
@@ -173,7 +182,7 @@ export function ScanResultDialog({ open, onClose, result }: ScanResultDialogProp
       : pendingManualReview
         ? t('skillhub.scanResult.pendingDesc')
         : processingFailure
-          ? t('skillhub.scanResult.processingFailedDesc')
+          ? processingErrorCopy?.message ?? t('skillhub.scanResult.processingFailedDesc')
           : t('skillhub.scanResult.failedDesc', { status: statusLabel });
 
   async function handleCopyReviewResult(): Promise<void> {

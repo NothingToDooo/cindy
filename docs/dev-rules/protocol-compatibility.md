@@ -11,6 +11,21 @@
 
 > **增量适用原则**：wire protocol 兼容对所有跨端改动生效，不因是小改而豁免。
 
+## SkillHub 发布失败原因
+
+发布错误继续使用 `{ error: { code, message } }`，Desktop 保留已知业务码与具体原因，
+同步用于进度事件和 IPC 结果回退；短原因也展示。未知 4xx 错误保留业务原因，网络故障、
+限流和服务不可用各自提供重试建议，未预期的内部异常不展示原始诊断。
+新服务端的 `SKILL_DELETED`（409）表示同名技能已删除但名称仍被占用，客户端引导改名；
+新客户端兼容旧服务端 `FORBIDDEN` + “已删除的 Skill 不能继续发布”。旧客户端遇到新错误码
+仍可按原有通用提示降级，不要求同步发布。
+
+后台处理失败复用扫描结果的 `gates[].issues[]`（severity、code、message），客户端显示
+具体原因与相应修改建议，避免把包校验或名称冲突描述为安全审核失败。旧客户端本来就能
+展示 issue。服务端只向上传者返回会话原因，公开目录权限不变；未知内部异常仍返回公开的
+重试说明。实现与回归见 `shared/skillhubPublishErrors.ts`、`publishService.test.ts`、
+`PublishDialog.feedback.test.tsx` 和 `ScanResultDialog.test.tsx`。
+
 ## 电脑互联的消息文件与历史变更
 
 跨电脑任务复制使用同账号业务通道 `maker:task-copy`，受信 Renderer 使用 `task-copy:request`。
