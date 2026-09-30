@@ -172,7 +172,7 @@ describe('mobileAttachmentUpload', () => {
     });
   });
 
-  it('rejects a file beyond the transfer limit before any presign or PUT (no orphaned OSS object)', async () => {
+  it('rejects a file beyond the OSS limit before any presign or PUT (no orphaned OSS object)', async () => {
     const apiFetch = vi.fn();
     const fetchPut = vi.fn();
 
@@ -192,7 +192,7 @@ describe('mobileAttachmentUpload', () => {
           },
         },
       ),
-    ).rejects.toThrow('文件超过 2 GB，不能作为附件发送。');
+    ).rejects.toThrow('文件超过 2 GB，只能在与电脑直连时发送');
 
     // 关键:校验发生在网络调用之前,绝不能 presign / PUT,否则会留下孤儿对象。
     expect(apiFetch).not.toHaveBeenCalled();
@@ -385,7 +385,7 @@ describe('mobileAttachmentUpload', () => {
     })).rejects.toThrow('附件上传失败：HTTP 403 (SignatureDoesNotMatch)');
   });
 
-  it('rejects a file beyond the transfer limit before presign in the native file path (no orphaned OSS object)', async () => {
+  it('rejects a file beyond the OSS limit before hashing or presign when no direct connection is possible', async () => {
     const apiFetch = vi.fn();
     const uploadFile = vi.fn();
 
@@ -405,7 +405,7 @@ describe('mobileAttachmentUpload', () => {
           },
         },
       ),
-    ).rejects.toThrow('文件超过 2 GB，不能作为附件发送。');
+    ).rejects.toThrow('文件超过 2 GB，只能在与电脑直连时发送');
 
     expect(apiFetch).not.toHaveBeenCalled();
     expect(uploadFile).not.toHaveBeenCalled();

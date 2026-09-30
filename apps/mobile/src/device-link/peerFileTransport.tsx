@@ -4,6 +4,7 @@ import {
   createPeerTransferCooldown,
   canUsePeerInvoke,
   uploadPeerAttachment,
+  OSS_ATTACHMENT_MAX_BYTES,
   type InvokeResultPayload,
 } from "@cindy/device-link";
 import { useEffect, useRef, useState } from "react";
@@ -171,6 +172,8 @@ export function PeerFileTransport() {
       device: string;
       rpc: boolean;
       attachments: boolean;
+      /** 电脑端直连附件不设固定上限;旧版电脑会拒收超过 OSS 上限的附件。 */
+      largeAttachments: boolean;
     } | null = null;
     let idle: ReturnType<typeof setTimeout> | undefined;
     const close = (notify = true) => {
@@ -260,6 +263,7 @@ export function PeerFileTransport() {
             version?: number;
             streaming?: boolean;
             attachments?: boolean;
+            largeAttachments?: boolean;
           };
           if (!current() || signal?.aborted)
             throw new Error("FILE_PEER_CANCELLED");
@@ -318,6 +322,7 @@ export function PeerFileTransport() {
             device,
             rpc: caps.streaming === true,
             attachments: caps.attachments === true,
+            largeAttachments: caps.largeAttachments === true,
           };
           mobileDebugLog("debug", "files", "direct transfer connected", {
             trace,
@@ -465,6 +470,12 @@ export function PeerFileTransport() {
               check();
               const active = connection;
               if (!active || active.device !== device || !active.attachments)
+                return null;
+              // 旧版电脑按 OSS 上限拒收:直接放弃直连,不计入失败冷却。
+              if (
+                metadata.size > OSS_ATTACHMENT_MAX_BYTES &&
+                !active.largeAttachments
+              )
                 return null;
               clearTimeout(idle);
               busy = true;

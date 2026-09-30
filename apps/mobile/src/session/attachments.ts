@@ -2,19 +2,27 @@ import { stripTrailingPathSeparators } from '@cindy/maker-shared/path-text';
 import { i18n } from '@/i18n';
 import type { RemoteFileRef, RemoteImageRef, RemoteSerializedAttachment } from '@/session/types';
 import { buildLegacyAttachmentOssRef } from '@/session/attachmentOssRef';
-import { FILE_PEER_MAX_BYTES, parsePeerAttachmentRef } from '@cindy/device-link';
+import { OSS_ATTACHMENT_MAX_BYTES, parsePeerAttachmentRef } from '@cindy/device-link';
 
 export type MobileAttachmentCategory = RemoteSerializedAttachment['category'];
 
 export const MOBILE_MAX_ATTACHMENTS = 20;
-/**
- * 与桌面一致,附件不设产品层体积上限;这里只是跨端传输通道的物理上限(peer 直传与
- * device-link OSS 中转都是 2GB),提前拦下能省掉超限文件白跑一遍 sha256。
- */
-export const MOBILE_MAX_ATTACHMENT_BYTES = FILE_PEER_MAX_BYTES;
 
-export function formatMobileAttachmentLimit(): string {
-  return `${Math.round(MOBILE_MAX_ATTACHMENT_BYTES / 1024 / 1024 / 1024)} GB`;
+/**
+ * 与桌面一致,附件不设产品层体积上限。直连只受电脑磁盘空间约束;只有 OSS 保底中转有
+ * 服务端单对象上限,超过它的附件没有保底、只能直连发送。
+ */
+export function isWithinMobileOssAttachmentLimit(size: number): boolean {
+  return size <= OSS_ATTACHMENT_MAX_BYTES;
+}
+
+/** 走 OSS 中转前的体积校验:超限时说明只能直连发送。 */
+export function assertMobileOssAttachmentSize(size: number): void {
+  if (!isWithinMobileOssAttachmentLimit(size)) {
+    throw new Error(i18n.t('composer.upload.fileTooLarge', {
+      limit: `${Math.round(OSS_ATTACHMENT_MAX_BYTES / 1024 ** 3)} GB`,
+    }));
+  }
 }
 
 const SUPPORTED_IMAGE_EXTS = new Set(['.jpeg', '.jpg', '.png', '.gif', '.webp']);
@@ -91,13 +99,10 @@ export function mergeAttachmentsWithinLimit(
   return { merged, dropped };
 }
 
-/** 本机文件附件的体积校验(乐观上传后台任务里执行,超限 throw 由失败回调呈现)。 */
+/** 本机文件附件的空文件校验(乐观上传后台任务里执行,throw 由失败回调呈现)。 */
 export function assertMobileDocumentSize(size: number): void {
   if (!Number.isFinite(size) || size <= 0) {
     throw new Error(i18n.t('composer.upload.emptyFile'));
-  }
-  if (size > MOBILE_MAX_ATTACHMENT_BYTES) {
-    throw new Error(i18n.t('composer.upload.fileTooLarge', { limit: formatMobileAttachmentLimit() }));
   }
 }
 
@@ -190,7 +195,8 @@ export function buildMobileUploadedAttachment(input: {
   id?: string;
 }): RemoteSerializedAttachment | null {
   if (input.peerRef ? !parsePeerAttachmentRef(input.peerRef) : !input.ossKey?.trim()) return null;
-  if (!Number.isFinite(input.size) || input.size <= 0 || input.size > MOBILE_MAX_ATTACHMENT_BYTES) return null;
+  if (!Number.isSafeInteger(input.size) || input.size <= 0) return null;
+  if (!input.peerRef && !isWithinMobileOssAttachmentLimit(input.size)) return null;
   const name = basenameRemotePath(input.name).trim();
   if (!name) return null;
   const category = categorizeMobileAttachment(name);

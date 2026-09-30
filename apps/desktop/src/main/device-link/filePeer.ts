@@ -12,6 +12,7 @@ import {
   uploadPeerAttachment,
   FILE_PEER_CHUNK_BYTES,
   FILE_PEER_MAX_BYTES,
+  OSS_ATTACHMENT_MAX_BYTES,
   FILE_PEER_IDLE_MS,
   FILE_PEER_CHANNEL,
   parseFilePeerRequest,
@@ -66,6 +67,8 @@ interface Outgoing {
   invoke: Invoke;
   rpc?: boolean;
   attachments?: boolean;
+  /** 对端接收直连附件不设固定上限(只看磁盘空间);旧端仍按 OSS 上限拒收更大的附件。 */
+  largeAttachments?: boolean;
 }
 const outgoing = new Map<string, Outgoing>();
 const cooldown = createPeerTransferCooldown();
@@ -232,7 +235,13 @@ async function handleFilePeerRequest(
   invoke?: Connection['invoke'],
 ): Promise<unknown> {
   if (r.action === 'caps')
-    return { version: 1, maxBytes: FILE_PEER_MAX_BYTES, streaming: true, attachments: true };
+    return {
+      version: 1,
+      maxBytes: FILE_PEER_MAX_BYTES,
+      streaming: true,
+      attachments: true,
+      largeAttachments: true,
+    };
   if (r.action === 'offer') {
     const id = randomUUID();
     track(id, peer, true);
@@ -508,6 +517,8 @@ async function receivePeerFile(
       }
       out.rpc = (caps.result as { streaming?: unknown }).streaming === true;
       out.attachments = (caps.result as { attachments?: unknown }).attachments === true;
+      out.largeAttachments =
+        (caps.result as { largeAttachments?: unknown }).largeAttachments === true;
       track(id, peer, false);
       const [, servers] = await Promise.all([prepareHost(id), loadDesktopIceServers()]);
       const offer = await command({
@@ -643,7 +654,7 @@ export async function tryUploadPeerAttachment(
       if (typeof source === 'string')
         handle = await fs.open(source, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
       const size = handle ? (await handle.stat()).size : (source as Buffer).length;
-      if (!size || size > FILE_PEER_MAX_BYTES) return null;
+      if (!size || (size > OSS_ATTACHMENT_MAX_BYTES && !out.largeAttachments)) return null;
       const read = async (offset: number, length: number) => {
         check();
         if (!handle) return (source as Buffer).subarray(offset, offset + length);

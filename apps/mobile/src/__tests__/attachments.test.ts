@@ -7,13 +7,12 @@ import {
   buildMobileRemoteFileAttachment,
   buildMobileUploadedAttachment,
   MOBILE_MAX_ATTACHMENTS,
-  MOBILE_MAX_ATTACHMENT_BYTES,
   categorizeMobileAttachment,
   mergeAttachmentsWithinLimit,
   extractRemoteFileExt,
 } from '@/session/attachments';
 import { isAttachmentOssRef, parseAttachmentOssRef } from '@/session/attachmentOssRef';
-import { FILE_PEER_MAX_BYTES } from '@cindy/device-link';
+import { OSS_ATTACHMENT_MAX_BYTES, buildPeerAttachmentRef } from '@cindy/device-link';
 import type { RemoteSerializedAttachment } from '@/session/types';
 
 const SHA256 = 'a'.repeat(64);
@@ -162,7 +161,7 @@ describe('mobile remote file attachments', () => {
     });
   });
 
-  it('accepts any file type like desktop and only rejects files beyond the transfer limit', () => {
+  it('accepts any file type like desktop', () => {
     const archive = buildMobileUploadedAttachment({
       ossKey: 'cindy/device-link/user-1/archive.zip',
       name: 'archive.zip',
@@ -176,23 +175,34 @@ describe('mobile remote file attachments', () => {
       mimeType: 'application/octet-stream',
     });
     expect(archive).not.toHaveProperty('url');
+  });
+
+  it('limits only OSS-relayed attachments; direct attachments have no fixed size cap', () => {
     expect(
       buildMobileUploadedAttachment({
         ossKey: 'cindy/device-link/user-1/big.pdf',
         name: 'big.pdf',
-        size: 100 * 1024 * 1024,
+        size: OSS_ATTACHMENT_MAX_BYTES,
         sha256: SHA256,
       }),
-    ).toMatchObject({ category: 'pdf', size: 100 * 1024 * 1024 });
-    expect(MOBILE_MAX_ATTACHMENT_BYTES).toBe(FILE_PEER_MAX_BYTES);
+    ).toMatchObject({ category: 'pdf', size: OSS_ATTACHMENT_MAX_BYTES });
     expect(
       buildMobileUploadedAttachment({
         ossKey: 'cindy/device-link/user-1/spec.pdf',
         name: 'spec.pdf',
-        size: MOBILE_MAX_ATTACHMENT_BYTES + 1,
+        size: OSS_ATTACHMENT_MAX_BYTES + 1,
         sha256: SHA256,
       }),
     ).toBeNull();
+    const size = 10 * 1024 ** 3;
+    const peerRef = buildPeerAttachmentRef({
+      ticket: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      size,
+      sha256: SHA256,
+    });
+    expect(
+      buildMobileUploadedAttachment({ peerRef, name: 'movie.mov', size, sha256: SHA256 }),
+    ).toMatchObject({ category: 'file', size, path: peerRef });
   });
 });
 

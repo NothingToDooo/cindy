@@ -82,6 +82,12 @@ describe("peer acceleration policy", () => {
       "finish",
     ]);
     expect(parsePeerAttachmentRef("cindy-peer-attach://bad")).toBeNull();
+    // 直连附件不设固定体积上限(只受接收端磁盘约束),但仍要求安全整数。
+    const large = { ...metadata, size: 64 * 1024 ** 3, ticket };
+    expect(parsePeerAttachmentRef(buildPeerAttachmentRef(large))).toEqual(large);
+    expect(() =>
+      buildPeerAttachmentRef({ ...metadata, size: Number.MAX_SAFE_INTEGER + 1, ticket }),
+    ).toThrow();
     expect(() =>
       buildPeerAttachmentRef({ ...metadata, ticket: "../evil" }),
     ).toThrow();

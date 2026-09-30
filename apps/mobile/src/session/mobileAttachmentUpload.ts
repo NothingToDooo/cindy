@@ -7,6 +7,7 @@ import { isAttachmentOssRef, parseAttachmentOssRef } from '@/session/attachmentO
 import {
   buildMobileUploadedAttachment,
   assertMobileDocumentSize,
+  assertMobileOssAttachmentSize,
   extractRemoteFileExt,
 } from '@/session/attachments';
 import type { RemoteSerializedAttachment } from '@/session/types';
@@ -297,9 +298,10 @@ export async function uploadMobileAttachment(
   body: MobileAttachmentUploadBody,
   options: { token: string | null; sharedTaskId?: string; id?: string; deps?: UploadDeps },
 ): Promise<RemoteSerializedAttachment> {
-  // presign 前先校验体积:超出传输上限的文件若先 presign + PUT、再在
+  // presign 前先校验体积:超出 OSS 上限的文件若先 presign + PUT、再在
   // buildMobileUploadedAttachment 处被拒,会在 device-link OSS 桶里留下永不被引用的孤儿对象。
   assertMobileDocumentSize(candidate.size);
+  assertMobileOssAttachmentSize(candidate.size);
   const sha256 = await sha256MobileAttachmentBody(body, candidate.size);
   const presigned = await presignMobileAttachmentUpload(candidate, options);
   await putMobileAttachmentUpload(presigned.putUrl, body, candidate.mimeType, options.deps);
@@ -330,8 +332,10 @@ export async function uploadMobileAttachmentFromFile(
     signal?: AbortSignal;
   },
 ): Promise<RemoteSerializedAttachment> {
-  // 同 uploadMobileAttachment:presign 前先拦超限体积,避免 OSS 孤儿对象。
   assertMobileDocumentSize(candidate.size);
+  // 直连不设体积上限;无法直连(共享任务 / 无目标设备)时只剩 OSS,超限就不必再白算一遍摘要。
+  const peerCandidate = !!options.deviceId && !options.sharedTaskId;
+  if (!peerCandidate) assertMobileOssAttachmentSize(candidate.size);
   const snapshot = options.deps?.snapshotFile
     ? await options.deps.snapshotFile(fileUri)
     : options.deps?.readFileChunk
@@ -345,8 +349,8 @@ export async function uploadMobileAttachmentFromFile(
       readChunk: options.deps?.readFileChunk,
       signal: options.signal,
     });
-    if (options.deviceId && !options.sharedTaskId) {
-      const peerRef = await tryMobilePeerUpload(options.deviceId, snapshot.uri, {
+    if (peerCandidate) {
+      const peerRef = await tryMobilePeerUpload(options.deviceId!, snapshot.uri, {
         size: candidate.size, sha256, mimeType: candidate.mimeType, originalName: candidate.name,
       }, options.signal);
       if (peerRef) {
@@ -354,6 +358,8 @@ export async function uploadMobileAttachmentFromFile(
         if (!attachment) throw new Error(i18n.t('composer.upload.noFileRead'));
         return attachment;
       }
+      // 直连没走通:OSS 保底只收上限以内的附件,presign 前拦下,避免孤儿对象。
+      assertMobileOssAttachmentSize(candidate.size);
     }
     const presigned = await presignMobileAttachmentUpload(candidate, options);
     try {

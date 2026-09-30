@@ -298,6 +298,7 @@ describe('authorized file peer source', () => {
       maxBytes: limit,
       streaming: true,
       attachments: true,
+      largeAttachments: true,
     });
     const first = await connect();
     expect((await open(first.connection)).size).toBe(limit);

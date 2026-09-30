@@ -106,3 +106,21 @@ it('rejects incorrect hashes and out of order writes', async () => {
   });
   await expect(handlePeerAttachment('a', { op: 'finish', ticket })).rejects.toThrow('INTEGRITY');
 });
+it('admits attachments of any size when the disk has room, reserving unwritten in-flight bytes', async () => {
+  const gib = 1024 ** 3;
+  const statfs = vi.spyOn(fs, 'statfs');
+  // 12 GiB free: a 5 GiB upload needs 2x + 256 MiB headroom, with no fixed total cap.
+  statfs.mockResolvedValue({ bavail: 12, bsize: gib } as Awaited<ReturnType<typeof fs.statfs>>);
+  const large = { size: 5 * gib, sha256: 'a'.repeat(64) };
+  const first = (await handlePeerAttachment('a', { op: 'begin', ...large })) as { ticket: string };
+  expect(first.ticket).toMatch(/^[a-f0-9-]{36}$/);
+  // The unfinished 5 GiB upload still has to land on disk: 5 + 2*5 + 0.25 > 12.
+  await expect(handlePeerAttachment('a', { op: 'begin', ...large })).rejects.toThrow(
+    'FILE_PEER_STORAGE',
+  );
+  await handlePeerAttachment('a', { op: 'cancel', ticket: first.ticket });
+  statfs.mockResolvedValue({ bavail: 10, bsize: gib } as Awaited<ReturnType<typeof fs.statfs>>);
+  await expect(handlePeerAttachment('a', { op: 'begin', ...large })).rejects.toThrow(
+    'FILE_PEER_STORAGE',
+  );
+});
