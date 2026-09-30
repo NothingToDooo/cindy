@@ -44,6 +44,11 @@ let swept = false;
 const origin = "https://cindy-file-peer.invalid";
 /** Transfers slower than one sample interval record runtime stats once per interval. */
 const PROGRESS_SAMPLE_MS = 1000;
+/**
+ * Diagnostics probe budget, independent of the generic 15s command timeout: a stalled
+ * runtime.stats() voids one sample only and never blocks later sampling ticks.
+ */
+const PROBE_BUDGET_MS = 5000;
 /** Runtime stats are counters and candidate kinds only; unparsable replies stay out of logs. */
 function parseTransportStats(raw: unknown): unknown {
   try {
@@ -387,11 +392,19 @@ export function PeerFileTransport() {
         // a progress line behind the outcome log with a dropped sink offset.
         let ended = false;
         const sampler = setInterval(() => {
-          if (sampling || !current() || !mobileDebugEnabled()) return;
+          if (sampling || ended || !current() || !mobileDebugEnabled()) return;
           sampling = true;
+          // 诊断探针独立短预算：runtime.stats() 卡死只作废本样本（迟到回包同样丢弃），
+          // 不让 15s 通用超时占住采样节拍，否则恰好在异常链路上拿不到任何样本。
+          let settled = false;
+          const budget = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            sampling = false;
+          }, PROBE_BUDGET_MS);
           void command("stats", [id])
             .then((raw) => {
-              if (ended) return;
+              if (settled || ended) return;
               lastProgress = {
                 elapsedMs: Date.now() - transferStartedAt,
                 written: sinks.current.get(id)?.offset ?? null,
@@ -405,6 +418,9 @@ export function PeerFileTransport() {
             })
             .catch(() => {})
             .finally(() => {
+              if (settled) return;
+              settled = true;
+              clearTimeout(budget);
               sampling = false;
             });
         }, PROGRESS_SAMPLE_MS);
