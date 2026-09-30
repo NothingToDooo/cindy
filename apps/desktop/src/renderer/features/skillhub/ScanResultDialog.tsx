@@ -14,7 +14,8 @@ import { cn } from '@/lib/utils';
 import { toast } from '@/lib/toast';
 import type { ScanResultPayload } from './PublishDialog';
 import { isPassingScanStatus, isPendingManualReviewStatus } from './lib/scanStatus';
-import { isPublicationProcessingFailure, publicationProcessingErrorCode } from './lib/scanResultPresentation';
+import { isPublicationProcessingFailure, publicationProcessingErrorCode, scanPublicationErrorCode } from './lib/scanResultPresentation';
+import { publishErrorDetail } from '../../../shared/skillhubPublishErrors';
 
 interface ScanIssue {
   severity?: string;
@@ -45,11 +46,18 @@ function resolveI18nField(value: unknown): string {
   return String(value ?? '');
 }
 
-function visibleScanIssues(gate: ScanGate): ScanIssue[] {
+function visibleScanIssues(gate: ScanGate, t: TFunction): ScanIssue[] {
   const issues = Array.isArray(gate.issues) ? gate.issues : [];
   return (issues as ScanIssue[]).filter(
     (issue) => issue.severity === 'warning' || issue.severity === 'error',
-  );
+  ).map((issue) => {
+    const code = scanPublicationErrorCode(issue.code, resolveI18nField(issue.message)) ?? scanPublicationErrorCode(gate.name);
+    if (!code) return issue;
+    const message = publishErrorDetail(code, resolveI18nField(issue.message));
+    if (message) return { ...issue, message };
+    // Service/auth diagnostics must not escape through either rendering or copy.
+    return { severity: issue.severity, code: issue.code, message: t(`skillhub.publishError.${code}.message`) };
+  });
 }
 
 function normalizeScanCode(value: unknown): string {
@@ -203,7 +211,7 @@ export function ScanResultDialog({ open, onClose, result }: ScanResultDialogProp
         lines.push(
           `- ${withRawCode(label, gate.name)}: ${withRawCode(scanStatusLabel(gate.status, t), gate.status)}`,
         );
-        for (const issue of visibleScanIssues(gate)) {
+        for (const issue of visibleScanIssues(gate, t)) {
           const line = scanIssueCopyLine(issue);
           if (line) lines.push(`  - ${line}`);
         }
@@ -312,9 +320,9 @@ export function ScanResultDialog({ open, onClose, result }: ScanResultDialogProp
                           {scanStatusLabel(gate.status, t)}
                         </span>
                       </div>
-                      {visibleScanIssues(gate).length > 0 && (
+                      {visibleScanIssues(gate, t).length > 0 && (
                         <div className="mt-2 flex flex-col gap-1.5 pl-5">
-                          {visibleScanIssues(gate).map((issue, i) => (
+                          {visibleScanIssues(gate, t).map((issue, i) => (
                             <div
                               key={i}
                               className="text-xs leading-relaxed text-[var(--cmd-palette-item-meta)]"

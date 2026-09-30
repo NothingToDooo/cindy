@@ -26,7 +26,8 @@ describe('SkillHub publish error classification', () => {
     expect(publishErrorDetail('INVALID_PARAMS', '  标签不存在  ')).toBe('标签不存在');
   });
 
-  it.each(['INTERNAL', 'PACK_FAILED', 'OSS_PUT_FAILED', 'NETWORK_ERROR', 'CANCELLED'] as const)(
+  it.each(['INTERNAL', 'PACK_FAILED', 'OSS_PUT_FAILED', 'NETWORK_ERROR', 'CANCELLED',
+    'SERVICE_UNAVAILABLE', 'RATE_LIMITED', 'AUTH_REQUIRED', 'PUBLISH_BUSY'] as const)(
     'does not display raw diagnostics for %s', (code) => {
       expect(publishErrorDetail(code, 'private diagnostic')).toBe('');
     },

@@ -19,17 +19,36 @@ afterEach(() => {
 });
 
 describe('ScanResultDialog pending review presentation', () => {
-  it('shows and copies the concrete reason for a package validation failure', async () => {
+  it.each(['MANIFEST_INVALID', 'package-validation'])('shows and copies a package validation reason under gate %s', async (name) => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } });
     render(<ScanResultDialog open onClose={vi.fn()} result={{
-      status: 'failed', gates: [{ name: 'MANIFEST_INVALID', status: 'failed',
+      status: 'failed', gates: [{ name, status: 'failed',
         issues: [{ severity: 'error', code: 'MANIFEST_INVALID', message: 'SKILL.md 缺少 description' }] }],
     }} />);
     expect(screen.getByText('SKILL.md 缺少 description')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'skillhub.publishError.MANIFEST_INVALID.title' })).toBeTruthy();
+    expect(screen.getByText('skillhub.publishError.MANIFEST_INVALID.message')).toBeTruthy();
     expect(screen.queryByText('skillhub.scanResult.failedDesc')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'skillhub.scanResult.copyReviewResult' }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(expect.stringContaining('SKILL.md 缺少 description')));
+  });
+
+  it.each(['SERVICE_UNAVAILABLE', 'RATE_LIMITED', 'AUTH_REQUIRED'])('uses recovery copy instead of raw %s diagnostics for display and clipboard', async (code) => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } });
+    render(<ScanResultDialog open onClose={vi.fn()} result={{
+      status: 'failed', gates: [{ name: 'publication', status: 'failed',
+        issues: [{ severity: 'error', code, message: 'private diagnostic', path: '/private/diagnostic', evidence: 'private evidence' }] }],
+    }} />);
+    expect(document.body.textContent).not.toContain('private diagnostic');
+    expect(document.body.textContent).not.toContain('/private/diagnostic');
+    expect(document.body.textContent).not.toContain('private evidence');
+    expect(document.body.textContent).toContain(`skillhub.publishError.${code}.message`);
+    fireEvent.click(screen.getByRole('button', { name: 'skillhub.scanResult.copyReviewResult' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(writeText.mock.calls[0][0]).not.toContain('private');
+    expect(writeText.mock.calls[0][0]).toContain(`skillhub.publishError.${code}.message`);
   });
 
   it('shows manual feedback even when every machine check passed, and copies the full reason', async () => {
