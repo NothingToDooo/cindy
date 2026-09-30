@@ -12501,7 +12501,7 @@
       },
       "REQUEST_REJECTED": {
         "title": "發布請求遭拒",
-        "message": "請依下方原因調整後重新發布"
+        "message": "請檢查發布資訊後重新發布；若持續失敗，請聯絡支援團隊"
       }
     },
     "scanResult": {

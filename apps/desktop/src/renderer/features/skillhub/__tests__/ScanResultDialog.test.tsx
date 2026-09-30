@@ -34,7 +34,7 @@ describe('ScanResultDialog pending review presentation', () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(expect.stringContaining('SKILL.md 缺少 description')));
   });
 
-  it.each(['SERVICE_UNAVAILABLE', 'RATE_LIMITED', 'AUTH_REQUIRED', 'PERMISSION_DENIED'])('uses recovery copy instead of raw %s diagnostics for display and clipboard', async (code) => {
+  it.each(['SERVICE_UNAVAILABLE', 'RATE_LIMITED', 'AUTH_REQUIRED', 'PERMISSION_DENIED', 'NOT_AUTHOR', 'API_KEY_MISSING', 'SKILL_HUB_READ_ONLY', 'OSS_PUT_EXPIRED', 'OSS_OBJECT_NOT_FOUND'])('uses recovery copy instead of raw %s diagnostics for display and clipboard', async (code) => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } });
     render(<ScanResultDialog open onClose={vi.fn()} result={{

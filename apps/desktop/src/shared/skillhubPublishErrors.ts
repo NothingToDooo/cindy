@@ -38,9 +38,8 @@ export function serverPublishErrorCode(code: string, message = '', statusCode?: 
 const PUBLIC_BUSINESS_ERROR_CODES: readonly SkillhubPublishErrorCode[] = [
   'NAME_TAKEN', 'SKILL_DELETED', 'SKILL_UNPUBLISHED', 'INVALID_DEPT', 'INVALID_NAME',
   'CATEGORY_REQUIRED', 'MANIFEST_INVALID', 'INVALID_PARAMS', 'SKILL_FILE_TOO_LARGE',
-  'VERSION_RACE', 'CHECKSUM_MISMATCH', 'NOT_AUTHOR',
-  'OSS_PUT_EXPIRED', 'OSS_OBJECT_NOT_FOUND', 'API_KEY_MISSING',
-  'SKILL_HUB_READ_ONLY', 'INVALID_VISIBILITY', 'REQUEST_REJECTED',
+  'VERSION_RACE', 'CHECKSUM_MISMATCH',
+  'INVALID_VISIBILITY', 'REQUEST_REJECTED',
 ];
 
 /** Only deliberate business messages are user-facing; service/auth diagnostics use recovery copy. */

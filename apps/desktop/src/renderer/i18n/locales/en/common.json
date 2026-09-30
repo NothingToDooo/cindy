@@ -12517,7 +12517,7 @@
       },
       "REQUEST_REJECTED": {
         "title": "Publication Request Rejected",
-        "message": "Address the reason below and publish again."
+        "message": "Check the publication details and publish again. If it keeps failing, contact support."
       }
     },
     "scanResult": {

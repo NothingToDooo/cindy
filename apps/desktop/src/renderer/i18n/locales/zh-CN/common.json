@@ -12501,7 +12501,7 @@
       },
       "REQUEST_REJECTED": {
         "title": "发布请求被拒绝",
-        "message": "请按下方原因调整后重新发布"
+        "message": "请检查发布信息后重新发布；持续失败时请联系支持"
       }
     },
     "scanResult": {

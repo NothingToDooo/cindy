@@ -14,7 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { net } from 'electron';
 import { ServerApiError } from '../serverApiClient';
-import { serverPublishErrorCode, type SkillhubPublishErrorCode } from '../../shared/skillhubPublishErrors';
+import { publishErrorDetail, serverPublishErrorCode, type SkillhubPublishErrorCode } from '../../shared/skillhubPublishErrors';
 import { skillhubApiFetch } from './hubApi';
 import { computeFolderHash } from './folderHash';
 import { writeSnapshot } from './snapshot';
@@ -120,6 +120,11 @@ function serverErrorToCode(err: unknown): PublishErrorCode {
   return err instanceof ServerApiError
     ? serverPublishErrorCode(err.code, err.message, err.statusCode)
     : 'INTERNAL';
+}
+
+function publicServerErrorMessage(err: unknown, code: PublishErrorCode): string {
+  if (!(err instanceof ServerApiError) || /^HTTP_\d+$/.test(err.code)) return '';
+  return publishErrorDetail(code, err.message);
 }
 
 function unhandledPublishErrorToCode(err: unknown): PublishErrorCode {
@@ -399,15 +404,16 @@ export class SkillPublishService {
               return { success: false, errorCode: 'CANCELLED' };
             }
             const code = serverErrorToCode(err);
+            const message = publicServerErrorMessage(err, code);
             emitProgress(
               {
                 phase: 'failed',
                 name: params.name,
                 errorCode: code,
-                message: err instanceof Error ? err.message : String(err),
+                message,
               },
             );
-            return { success: false, errorCode: code, error: err instanceof Error ? err.message : String(err) };
+            return { success: false, errorCode: code, error: message };
           }
         }
 
@@ -599,15 +605,16 @@ export class SkillPublishService {
             }
           }
           const code = serverErrorToCode(err);
+          const message = publicServerErrorMessage(err, code);
           emitProgress(
             {
               phase: 'failed',
               name: params.name,
               errorCode: code,
-              message: err instanceof Error ? err.message : String(err),
+              message,
             },
           );
-          return { success: false, errorCode: code, error: err instanceof Error ? err.message : String(err) };
+          return { success: false, errorCode: code, error: message };
         }
       }
     } catch (err) {

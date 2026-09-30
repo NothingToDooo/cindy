@@ -775,17 +775,23 @@ describe('SkillPublishService', () => {
     ['NAME_TAKEN', 409, '名字已被占用', 'NAME_TAKEN'],
     ['SKILL_DELETED', 409, '同名 Skill 已删除，但名称仍被占用', 'SKILL_DELETED'],
     ['FORBIDDEN', 403, '已删除的 Skill 不能继续发布', 'SKILL_DELETED'],
-    ['FORBIDDEN', 403, '当前账号无权发布', 'PERMISSION_DENIED'],
-    ['HTTP_403', 403, 'private diagnostic', 'PERMISSION_DENIED'],
+    ['FORBIDDEN', 403, '当前账号无权发布', 'PERMISSION_DENIED', ''],
+    ['HTTP_403', 403, 'private diagnostic', 'PERMISSION_DENIED', ''],
+    ['HTTP_400', 400, 'private diagnostic', 'REQUEST_REJECTED', ''],
+    ['NOT_AUTHOR', 403, 'private diagnostic', 'NOT_AUTHOR', ''],
+    ['UNAUTHORIZED', 401, 'private diagnostic', 'AUTH_REQUIRED', ''],
+    ['STORAGE_UNAVAILABLE', 503, 'private diagnostic', 'SERVICE_UNAVAILABLE', ''],
+    ['RATE_LIMITED', 429, 'private diagnostic', 'RATE_LIMITED', ''],
     ['MANIFEST_INVALID', 400, '缺少 description', 'MANIFEST_INVALID'],
     ['INVALID_PARAMS', 400, '包含不存在的平台标签', 'INVALID_PARAMS'],
     ['SKILL_FILE_TOO_LARGE', 413, 'SKILL.md 超过 2 MiB', 'SKILL_FILE_TOO_LARGE'],
-    ['SKILL_HUB_READ_ONLY', 403, '当前组织仅支持读取', 'SKILL_HUB_READ_ONLY'],
+    ['SKILL_HUB_READ_ONLY', 403, '当前组织仅支持读取', 'SKILL_HUB_READ_ONLY', ''],
     ['INVALID_VISIBILITY', 400, '当前组织暂不支持组织或私有可见性，请选择公开发布', 'INVALID_VISIBILITY'],
     ['FUTURE_BUSINESS_ERROR', 422, '需要修改某个字段', 'REQUEST_REJECTED'],
-  ].flatMap(([wireCode, statusCode, message, expectedCode]) => ['init', 'commit'].map((stage) => ({
+  ].flatMap(([wireCode, statusCode, message, expectedCode, expectedMessage]) => ['init', 'commit'].map((stage) => ({
     wireCode: String(wireCode), statusCode: Number(statusCode), message: String(message), expectedCode: String(expectedCode), stage,
-  }))))('preserves $wireCode and its reason during $stage', async ({ wireCode, statusCode, message, expectedCode, stage }) => {
+    expectedMessage: expectedMessage === undefined ? String(message) : String(expectedMessage),
+  }))))('preserves $wireCode and only its public reason during $stage', async ({ wireCode, statusCode, message, expectedCode, expectedMessage, stage }) => {
     writeApiKeyFile();
     fs.mkdirSync('/tmp/xdt-publish-service-test/skill', { recursive: true });
     fs.writeFileSync(
@@ -846,8 +852,8 @@ describe('SkillPublishService', () => {
       (event) => events.push(event),
     );
 
-    expect(result).toEqual({ success: false, errorCode: expectedCode, error: message });
-    expect(events.at(-1)).toMatchObject({ phase: 'failed', errorCode: expectedCode, message });
+    expect(result).toEqual({ success: false, errorCode: expectedCode, error: expectedMessage });
+    expect(events.at(-1)).toMatchObject({ phase: 'failed', errorCode: expectedCode, message: expectedMessage });
   });
 
   it('emits a failed progress event when packing throws unexpectedly', async () => {

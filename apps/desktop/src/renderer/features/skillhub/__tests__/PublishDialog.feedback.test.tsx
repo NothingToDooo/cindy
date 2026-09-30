@@ -98,10 +98,10 @@ describe('PublishDialog result delivery', () => {
     expect(await screen.findByText('标签不存在')).toBeTruthy();
   });
 
-  it('does not expose permission diagnostics or offer to edit a forbidden request', async () => {
-    mocks.publish.mockResolvedValue({ success: false, errorCode: 'PERMISSION_DENIED', error: 'private diagnostic' });
+  it.each(['PERMISSION_DENIED', 'NOT_AUTHOR', 'API_KEY_MISSING', 'SKILL_HUB_READ_ONLY', 'OSS_PUT_EXPIRED', 'OSS_OBJECT_NOT_FOUND'] as const)('does not expose %s diagnostics or offer to edit the request', async (errorCode) => {
+    mocks.publish.mockResolvedValue({ success: false, errorCode, error: 'private diagnostic' });
     await startPublication();
-    expect(await screen.findByText(getPublishErrorCopy('PERMISSION_DENIED').title)).toBeTruthy();
+    expect(await screen.findByText(getPublishErrorCopy(errorCode).title)).toBeTruthy();
     expect(screen.queryByText('private diagnostic')).toBeNull();
     expect(screen.queryByRole('button', { name: getPublishErrorCopy('INVALID_PARAMS').primaryAction.label })).toBeNull();
   });

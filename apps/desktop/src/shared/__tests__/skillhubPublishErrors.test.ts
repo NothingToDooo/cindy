@@ -28,7 +28,8 @@ describe('SkillHub publish error classification', () => {
   });
 
   it.each(['INTERNAL', 'PACK_FAILED', 'OSS_PUT_FAILED', 'NETWORK_ERROR', 'CANCELLED',
-    'SERVICE_UNAVAILABLE', 'RATE_LIMITED', 'AUTH_REQUIRED', 'PERMISSION_DENIED', 'PUBLISH_BUSY'] as const)(
+    'SERVICE_UNAVAILABLE', 'RATE_LIMITED', 'AUTH_REQUIRED', 'PERMISSION_DENIED', 'NOT_AUTHOR',
+    'API_KEY_MISSING', 'SKILL_HUB_READ_ONLY', 'OSS_PUT_EXPIRED', 'OSS_OBJECT_NOT_FOUND', 'PUBLISH_BUSY'] as const)(
     'does not display raw diagnostics for %s', (code) => {
       expect(publishErrorDetail(code, 'private diagnostic')).toBe('');
     },
