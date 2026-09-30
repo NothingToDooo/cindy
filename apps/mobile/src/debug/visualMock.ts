@@ -1,5 +1,6 @@
 import { SHARED_REMOTE_CONTROL_FIXTURE } from '@cindy/maker-shared/fixtures';
 import { projectHistoryView } from '@cindy/maker-shared/message-window';
+import { TASK_TAG_COLORS, type TaskTagRequest, type TaskTagResult } from '@cindy/maker-shared';
 import { ApiError, type ApiFetchOptions } from '@/api/client';
 import type { DeviceView, LinkAcceptPayload } from '@cindy/device-link';
 import type { MobileUser } from '@/auth/AuthContext';
@@ -65,6 +66,7 @@ export const visualMockUser: MobileUser = {
 
 let realDataSnapshot: VisualRealDataSnapshot | null = null;
 let realDataLoadPromise: Promise<VisualRealDataSnapshot | null> | null = null;
+let preparedContextPromise: Promise<DeviceLinkContextValue> | null = null;
 let didWarnRealDataLoad = false;
 const deletedDeviceIds = new Set<string>();
 const renamedDevices = new Map<string, string>();
@@ -148,6 +150,17 @@ export function seedVisualMockStore(): void {
   });
 }
 
+/** Import before mounting Home: otherwise its cached list races the default
+ * eight demo tasks and a presence snapshot with the placeholder device name.
+ * Sharing the preparation also avoids double seeding under StrictMode. */
+export function prepareVisualMockDeviceLinkContext(): Promise<DeviceLinkContextValue> {
+  preparedContextPromise ??= loadVisualRealDataSnapshot().then(() => {
+    seedVisualMockStore();
+    return createVisualMockDeviceLinkContext();
+  });
+  return preparedContextPromise;
+}
+
 export function createVisualMockDeviceLinkContext(): DeviceLinkContextValue {
   const realData = realDataSnapshot;
   const deviceId = realData?.device.deviceId
@@ -198,6 +211,23 @@ async function visualMockInvoke<T = unknown>(
   args: unknown[] = [],
 ): Promise<T> {
   const realData = await loadVisualRealDataSnapshot();
+  if (channel === 'local-db:task-tags:execute') {
+    const request = args[0] as TaskTagRequest;
+    if (request.action !== 'list' && request.action !== 'get') {
+      throw new Error('Task tag mutations are not implemented in visual mock');
+    }
+    const sessions = realData?.sessions ?? visualMockSessions();
+    const tags = [...new Map(sessions.flatMap((session) => session.tags ?? [])
+      .map((tag) => [tag.id, tag])).values()];
+    return {
+      tags,
+      supportedColors: [...TASK_TAG_COLORS],
+      sessions: request.action === 'get'
+        ? sessions.filter((session) => request.sessionIds.includes(session.id))
+          .map((session) => ({ sessionId: session.id, tags: session.tags ?? [] }))
+        : [],
+    } satisfies TaskTagResult as T;
+  }
   if (realData) {
     switch (channel) {
       case 'local-db:sessions:list':

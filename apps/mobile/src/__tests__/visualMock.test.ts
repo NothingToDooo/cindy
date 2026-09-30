@@ -10,7 +10,36 @@ vi.mock('@/session/remoteSessionStore', () => ({ remoteSessionStore: {
   setInputProjection: vi.fn(), setPendingInteractions: vi.fn(), setActiveSessionSnapshots: vi.fn(),
 } }));
 beforeEach(() => { vi.resetModules(); config.MOBILE_VISUAL_MOCK_REALDATA_URL = ''; });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); });
+
+it('waits for all 1,000 imported tasks before seeding and publishing their device identity', async () => {
+  config.MOBILE_VISUAL_MOCK_REALDATA_URL = 'https://fixture.invalid/snapshot.json';
+  let resolveFetch!: (value: unknown) => void;
+  vi.stubGlobal('fetch', vi.fn(() => new Promise(resolve => { resolveFetch = resolve; })));
+  const mock = await import('@/debug/visualMock');
+  const { remoteSessionStore: store } = await import('@/session/remoteSessionStore');
+  const ready = mock.prepareVisualMockDeviceLinkContext();
+  expect(mock.prepareVisualMockDeviceLinkContext()).toBe(ready);
+  expect(store.setDeviceSessions).not.toHaveBeenCalled();
+  const sessions = Array.from({ length: 1000 }, (_, i) => ({ id: `imported-${i}` }));
+  resolveFetch({ ok: true, json: async () => ({ schema: 'cindy-mobile-visual-realdata-v1',
+    device: { deviceId: 'real-device', name: 'Imported 1000' }, sessions, messagesBySession: {} }) });
+  const link = await ready;
+  expect(store.setDeviceSessions).toHaveBeenCalledExactlyOnceWith('real-device', 'Imported 1000', sessions);
+  expect(store.setMessages).toHaveBeenCalledTimes(1000);
+  expect(link.lastPresenceSnapshot).toMatchObject({ deviceId: 'real-device', deviceName: 'Imported 1000' });
+  expect((await link.readDeviceList()).devices.find(device => device.deviceId === 'real-device')?.name).toBe('Imported 1000');
+});
+
+it('supplies the task tag catalog required when opening session options', async () => {
+  const mock = await import('@/debug/visualMock');
+  const link = mock.createVisualMockDeviceLinkContext();
+  expect(await link.invoke(mock.VISUAL_MOCK_DEVICE_ID, 'local-db:task-tags:execute', [{ action: 'list' }]))
+    .toMatchObject({ tags: [], sessions: [] });
+  expect(await link.invoke(mock.VISUAL_MOCK_DEVICE_ID, 'local-db:task-tags:execute',
+    [{ action: 'get', sessionIds: ['session-primary'] }]))
+    .toMatchObject({ tags: [], sessions: [{ sessionId: 'session-primary', tags: [] }] });
+});
 
 it('projects imported history rows without falling back to synthetic messages', async () => {
   config.MOBILE_VISUAL_MOCK_REALDATA_URL = 'https://fixture.invalid/snapshot.json';
