@@ -473,10 +473,11 @@ export default function RemoteFilePreviewScreen() {
           return res;
         } catch (error) {
           // 慢失败同样留痕:抛错触发重试时恰好漏掉最慢的样本。
+          // 走 errorText() 脱敏:错误串可能携带路径或签名 URL,不得进入 files 日志。
           mobileDebugLog('debug', 'files', 'preview text read failed', {
             channel,
             ms: Date.now() - startedAt,
-            error: error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200),
+            error: errorText(error),
           });
           throw error;
         }
