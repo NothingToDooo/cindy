@@ -224,6 +224,9 @@ SSH 执行路径跳过本机启动，不会把本机模型安装到远端。
 2026-09-29 再次同步主干目录后，合并快照使用独立递增 revision `2026-09-29T19:00:00.002Z`，
 避免与主干 `2026-09-29T19:00:00.001Z` 同版本不同内容。
 此合并快照尚未同步 Server 工作树或部署，不能继续声称当前两边整表一致。
+2026-09-30 用户确认 Server 配置更新单独推进，不作为客户端 PR #5118 的合并前置。
+客户端可先使用随包目录；Server 完整目录同步、兼容下发及部署仍需分别核验，不能以客户端
+合并代替 Server 发布，也不因审查线程关闭而声称线上已更新。
 
 回归测试为 `llamaCppDownloads.test.ts`、`llamaCppService.test.ts`、`llamaCppIpc.test.ts`、
 `managedLlamaCppProvider.test.ts` 与 `LlamaCppProviderDetail.test.tsx`。
