@@ -91,6 +91,8 @@ describe('Pi pure BYOM auth without a Cindy account', () => {
     await resolvePiNativeProviders({ workingDir: '/tmp/project', providerId, model: 'local-model' });
     expect(ensureLocalReady).toHaveBeenCalledWith(expect.objectContaining({ providerId, remoteHostId: null }));
     ensureLocalReady.mockClear();
+    await resolvePiNativeProviders({ workingDir: '/tmp/project', providerId, model: 'local-model', purpose: 'preview' });
+    expect(ensureLocalReady).not.toHaveBeenCalled();
     await resolvePiNativeProviders({ workingDir: '/remote/project', providerId, model: 'local-model', remoteHostId: 'remote-1' });
     expect(ensureLocalReady).not.toHaveBeenCalled();
   });
