@@ -135,8 +135,8 @@ export function registerLlamaCppHandlers(
       throw new Error('INVALID_MODEL');
     const active = captureOwner();
     await service.download({ repo: value.repo, file: value.file });
-    // Publish immediately, like Ollama. The next session preflight refreshes the router;
-    // downloading must not restart a service that may be answering another task.
+    // Publish immediately, like Ollama. A running router applies new models only
+    // after an explicit restart; downloading must not interrupt another task.
     await publishModels(active);
   });
   handle(MAKER_INVOKE.LLAMACPP_START, async () => {

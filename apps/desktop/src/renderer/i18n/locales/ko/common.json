@@ -1872,6 +1872,7 @@
         "installDescription": "Cindy가 llama.cpp를 설치합니다. 모델을 다운로드하면 사용 시 서비스가 자동으로 시작됩니다.",
         "manualConnect": "기존 서비스 연결",
         "manageRuntime": "서비스 관리",
+        "restartHint": "모델을 다운로드하거나 컨텍스트를 변경한 후에는 ‘서비스 관리’에서 다시 시작해야 변경 사항이 적용됩니다. 다시 시작하면 진행 중인 생성이 중단됩니다.",
         "applyModels": "다운로드한 모델 사용",
         "startOnUse": "사용 시 시작"
       },
@@ -2332,7 +2333,7 @@
           "defaultEffortHint": "새 작업의 초기 추론 강도입니다. 작업 안에서도 변경할 수 있습니다.",
           "contextLimit": "컨텍스트 상한",
           "contextLimitHint": "이 모델의 모든 사용 가능한 엔진에 적용됩니다. 정수 K 단위로 편집합니다(1 K = 1,000 tokens). 수정하지 않은 값은 정밀도를 유지합니다. 저장한 변경 사항은 이후 실행에 적용되며 생성 중인 응답을 중단하지 않습니다. 실제로 사용할 수 있는 길이는 모델 서비스의 제한을 따릅니다.",
-          "contextLimitLocalMillionHint": "기본 256K(262,144 tokens)에서 1M(1,000,000) 확장을 선택할 수 있습니다. 다음 사용 시 Cindy가 로컬 서비스를 자동으로 설정합니다. 긴 입력은 더 많은 메모리와 처리 시간이 필요합니다.",
+          "contextLimitLocalMillionHint": "기본 256K(262,144 tokens)에서 1M(1,000,000) 확장을 선택할 수 있습니다. 서비스가 실행 중이면 ‘서비스 관리’에서 다시 시작해야 변경 사항이 적용되며, 중지된 상태라면 다음 사용 시 적용됩니다. 긴 입력은 더 많은 메모리와 처리 시간이 필요합니다.",
           "contextLimitAria": "컨텍스트 상한(천 tokens)",
           "contextLimitRoute": "현재 {{tokens}} tokens · 1 K = 1,000 tokens",
           "contextLimitOverWindow": "공급업체가 명시한 한도를 초과하여 요청이 실패할 수 있습니다.",

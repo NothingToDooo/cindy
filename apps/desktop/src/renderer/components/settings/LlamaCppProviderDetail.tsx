@@ -274,6 +274,11 @@ export function LlamaCppProviderDetail({ onChanged }: { onChanged: () => void })
         />
       )}
       {state?.running && state.canManageRuntime === true && (
+        <p className="text-12 text-[var(--text-secondary)]">
+          {t('settings.providers.llamacpp.restartHint')}
+        </p>
+      )}
+      {state?.running && state.canManageRuntime === true && (
         <details className="text-12" style={{ color: 'var(--text-secondary)' }}>
           <summary className="cursor-pointer">
             {t('settings.providers.llamacpp.manageRuntime')}

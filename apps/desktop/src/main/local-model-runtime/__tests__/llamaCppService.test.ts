@@ -526,16 +526,20 @@ describe('managed llama.cpp model lifecycle', () => {
         present = false;
       });
       await deleting;
-      let scanned!: () => void;
-      const scanning = new Promise<void>((resolve) => {
-        scanned = resolve;
+      let checked!: () => void;
+      const checking = new Promise<void>((resolve) => {
+        checked = resolve;
       });
-      mocks.readdir.mockImplementationOnce(async () => {
-        scanned();
-        return [];
+      const fs = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+      mocks.readFile.mockImplementationOnce(async (file, options) => {
+        try {
+          return await fs.readFile(file, options);
+        } finally {
+          checked();
+        }
       });
       const pending = starter.start(reload).catch((error) => error);
-      await scanning;
+      await checking;
       expect(validate).not.toHaveBeenCalled();
       release();
       await removal;
@@ -836,7 +840,7 @@ describe('managed llama.cpp model lifecycle', () => {
     expect(remove).not.toHaveBeenCalled();
     expect(child.kill).not.toHaveBeenCalled();
     await owner.download({ repo: 'owner/repo', file: 'model.gguf' });
-    await expect(borrower.start()).rejects.toThrow('BUSY');
+    await borrower.start();
     expect(mocks.spawn).toHaveBeenCalledOnce();
     expect(child.kill).not.toHaveBeenCalled();
     mocks.probeOwner.mockResolvedValue('ended');
@@ -852,7 +856,7 @@ describe('managed llama.cpp model lifecycle', () => {
     ['owner', true],
     ['borrower', true],
   ] as const)(
-    'serves matching runtime during a download from %s (cancel=%s)',
+    'keeps serving with pending configuration during a download from %s (cancel=%s)',
     async (who, cancel) => {
       const runtime = path.join(root, 'llamacpp-runtime');
       await mkdir(runtime);
@@ -900,41 +904,44 @@ describe('managed llama.cpp model lifecycle', () => {
         await expect(service.start(true)).rejects.toThrow('BUSY');
         const id = (await owner.snapshot()).models[0]!.id;
         limits[`pi:cindy-local-llamacpp:${id}`] = 1_000_000;
-        await expect(service.start()).rejects.toThrow('BUSY');
+        await service.start();
         delete limits[`pi:cindy-local-llamacpp:${id}`];
         if (who === 'borrower') {
           health.mockResolvedValueOnce(new Response('', { status: 503 }));
           await expect(service.start()).rejects.toThrow('BUSY');
         }
-        if (cancel) {
-          let scanned!: () => void;
-          const scanning = new Promise<void>((resolve) => {
-            scanned = resolve;
+        if (cancel && who === 'borrower') {
+          let checked!: () => void;
+          const checking = new Promise<void>((resolve) => {
+            checked = resolve;
           });
           let finish!: () => void;
-          mocks.readdir.mockImplementationOnce(
+          health.mockImplementationOnce(
             () =>
               new Promise((resolve) => {
-                finish = () => resolve([]);
-                scanned();
+                finish = () => resolve(Response.json({ status: 'ok' }));
+                checked();
               }),
           );
           const pending = service.start().catch((error) => error);
-          await scanning;
+          await checking;
           service.cancel();
           finish();
           expect((await pending).name).toBe('AbortError');
           expect(mocks.spawn).toHaveBeenCalledOnce();
           expect(child.kill).not.toHaveBeenCalled();
         }
+        if (cancel && who === 'owner') owner.cancel();
       } finally {
         release();
         const result = await transfer;
         if (cancel && who === 'owner') expect(result.name).toBe('AbortError');
         else expect(result).toBeUndefined();
       }
-      // Publication requires the existing reload path, never the read-only path.
-      if (who === 'borrower') await expect(service.start()).rejects.toThrow('BUSY');
+      // Publishing a model does not prevent continued use of the current service.
+      await service.start();
+      expect(mocks.spawn).toHaveBeenCalledOnce();
+      expect(child.kill).not.toHaveBeenCalled();
       await owner.dispose();
       if (who === 'borrower') await service.dispose();
     },
@@ -1150,7 +1157,7 @@ describe('managed llama.cpp model lifecycle', () => {
       expect((await service.snapshot()).operation).toBeUndefined();
     },
   );
-  it('refreshes the router on next use after a download, never during the download', async () => {
+  it('applies model and context changes only on explicit restart or a stopped service start', async () => {
     const runtime = path.join(root, 'llamacpp-runtime');
     await mkdir(runtime);
     await writeFile(path.join(runtime, 'server'), 'stub');
@@ -1184,10 +1191,15 @@ describe('managed llama.cpp model lifecycle', () => {
     const service = createLlamaCppService(root, () => limits);
     try {
       await service.start();
+      const initial = await readFile(path.join(runtime, 'models.ini'), 'utf8');
       await service.download({ repo: 'owner/repo', file: 'model.gguf' });
       await service.download({ repo: 'bartowski/Qwen3.8-Flash-Next-GGUF', file: 'model.gguf' });
       expect(mocks.spawn).toHaveBeenCalledOnce();
       await service.start();
+      expect(mocks.spawn).toHaveBeenCalledOnce();
+      expect(mocks.spawn.mock.results[0]!.value.kill).not.toHaveBeenCalled();
+      expect(await readFile(path.join(runtime, 'models.ini'), 'utf8')).toBe(initial);
+      await service.start(true);
       const ini = await readFile(path.join(runtime, 'models.ini'), 'utf8');
       expect(ini).toContain(
         `[${managedModelId('bartowski/Qwen3.8-Flash-Next-GGUF', 'model.gguf')}]\nctx-size = 262144`,
@@ -1201,11 +1213,18 @@ describe('managed llama.cpp model lifecycle', () => {
       const modelId = managedModelId('bartowski/Qwen3.8-Flash-Next-GGUF', 'model.gguf');
       limits = { [`pi:cindy-local-llamacpp:${modelId}`]: 1_000_000 };
       processing = true;
-      await expect(service.start()).rejects.toThrow('BUSY');
+      await service.start();
       expect(mocks.spawn).toHaveBeenCalledTimes(2);
       expect(await readFile(path.join(runtime, 'models.ini'), 'utf8')).toBe(ini);
       processing = false;
       await Promise.all([service.start(), service.start()]);
+      expect(mocks.spawn).toHaveBeenCalledTimes(2);
+      expect(mocks.spawn.mock.results[1]!.value.kill).not.toHaveBeenCalled();
+      expect(await readFile(path.join(runtime, 'models.ini'), 'utf8')).toBe(ini);
+      expect(vi.mocked(fetch).mock.calls.every(([url]) => String(url).endsWith('/health'))).toBe(
+        true,
+      );
+      await service.start(true);
       expect(mocks.spawn).toHaveBeenCalledTimes(3);
       const extended = await readFile(path.join(runtime, 'models.ini'), 'utf8');
       expect(extended).toContain(
@@ -1213,9 +1232,14 @@ describe('managed llama.cpp model lifecycle', () => {
       );
       limits = {};
       await service.start();
+      expect(await readFile(path.join(runtime, 'models.ini'), 'utf8')).toBe(extended);
+      expect(mocks.spawn).toHaveBeenCalledTimes(3);
+      await service.stop();
+      await service.start();
+      expect(mocks.spawn).toHaveBeenCalledTimes(4);
       expect(await readFile(path.join(runtime, 'models.ini'), 'utf8')).toBe(ini);
     } finally {
-      service.dispose();
+      await service.dispose();
     }
   });
   it('persists complete downloads across restarts without exposing partial files', async () => {

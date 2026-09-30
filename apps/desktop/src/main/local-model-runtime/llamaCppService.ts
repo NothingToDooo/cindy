@@ -86,8 +86,6 @@ export function createLlamaCppService(
   let operation: LlamaCppSnapshot['operation'];
   let controller: AbortController | undefined;
   let ready = false;
-  let modelsChanged = false;
-  let activePreset: string | undefined;
   let starting: Promise<void> | undefined;
   let transfer: AbortController | undefined;
   let wakeDownload: (() => void) | undefined;
@@ -404,7 +402,6 @@ export function createLlamaCppService(
           )
             throw error;
         }
-        modelsChanged = true;
       } finally {
         await rm(staging, { recursive: true, force: true });
       }
@@ -422,13 +419,10 @@ export function createLlamaCppService(
       '',
     ].join('\n');
   }
-  async function reuseRuntime(
-    preset: string,
-    reload: boolean,
-    signal: AbortSignal,
-  ): Promise<boolean> {
+  async function reuseRuntime(reload: boolean, signal: AbortSignal): Promise<boolean> {
     signal.throwIfAborted();
-    if (child) return ready && !reload && !modelsChanged && preset === activePreset;
+    // Running services keep their configuration until an explicit restart.
+    if (child) return ready && !reload;
     let owner;
     try {
       owner = JSON.parse(await readFile(path.join(root, 'server-owner.json'), 'utf8'));
@@ -447,7 +441,7 @@ export function createLlamaCppService(
     const status = await probeReviewOwnerLiveness(owner.identity);
     if (status === 'ended') return false;
     if (status !== 'alive') throw new Error('BUSY');
-    if (reload || owner.preset !== preset) throw new Error('BUSY');
+    if (reload) throw new Error('BUSY');
     const health = await fetch(`${LLAMACPP_MANAGED_ORIGIN}/health`, {
       signal: AbortSignal.any([signal, AbortSignal.timeout(3000)]),
       redirect: 'error',
@@ -464,8 +458,7 @@ export function createLlamaCppService(
     if (operation?.kind === 'download' && child && controller) {
       const signal = controller.signal;
       const running = child;
-      const preset = await currentPreset(signal);
-      if (child === running && (await reuseRuntime(preset, reload, signal))) return;
+      if (child === running && (await reuseRuntime(reload, signal))) return;
       throw new Error('BUSY');
     }
     if (starting) {
@@ -473,11 +466,10 @@ export function createLlamaCppService(
       return start(reload);
     }
     starting = exclusive('start', async (signal) => {
-      // Borrowing a matching service is read-only, even while its owner holds
+      // Borrowing a running service is read-only, even while its owner holds
       // the configuration lock for a large download. All reads remain canceled
       // by the existing start operation; mutations still recheck under the lock.
-      const preset = await currentPreset(signal);
-      if (await reuseRuntime(preset, reload, signal)) return;
+      if (await reuseRuntime(reload, signal)) return;
       signal.throwIfAborted();
       await mkdir(root, { recursive: true });
       return withCrossProcessLock(
@@ -492,37 +484,10 @@ export function createLlamaCppService(
           // start waited. Read the provider again under the same lock as delete.
           await validateStart();
           signal.throwIfAborted();
+          if (await reuseRuntime(reload, signal)) return;
           const preset = await currentPreset(signal);
-          if (await reuseRuntime(preset, reload, signal)) return;
           const runtime = await installed();
           if (!runtime) throw new Error('NOT_INSTALLED');
-          // Preference changes apply on demand. Never kill another task's active generation.
-          if (ready && child && !reload) {
-            const response = await fetch(`${LLAMACPP_MANAGED_ORIGIN}/v1/models`, {
-              signal: AbortSignal.any([signal, AbortSignal.timeout(3000)]),
-              redirect: 'error',
-            });
-            if (!response.ok) throw new Error('BUSY');
-            const listing = (await response.json()) as {
-              data?: Array<{ id: string; status?: { value?: string } }>;
-            };
-            if (!Array.isArray(listing.data)) throw new Error('BUSY');
-            for (const model of listing.data) {
-              if (model.status?.value === 'unloaded') continue;
-              if (model.status?.value !== 'loaded') throw new Error('BUSY');
-              const slotsResponse = await fetch(
-                `${LLAMACPP_MANAGED_ORIGIN}/slots?model=${encodeURIComponent(model.id)}&autoload=false`,
-                {
-                  signal: AbortSignal.any([signal, AbortSignal.timeout(3000)]),
-                  redirect: 'error',
-                },
-              );
-              if (!slotsResponse.ok) throw new Error('BUSY');
-              const slots = (await slotsResponse.json()) as Array<{ is_processing?: boolean }>;
-              if (!Array.isArray(slots) || slots.some((slot) => slot.is_processing !== false))
-                throw new Error('BUSY');
-            }
-          }
           await stopAndWait();
           await mkdir(modelsRoot, { recursive: true });
           const presets = path.join(root, 'models.ini');
@@ -614,10 +579,14 @@ export function createLlamaCppService(
                   const ownerFile = path.join(root, 'server-owner.json');
                   const temporary = `${ownerFile}.${randomUUID()}.tmp`;
                   try {
-                    await writeFile(temporary, JSON.stringify({ identity: proof.identity, preset }), {
-                      mode: 0o600,
-                      flag: 'wx',
-                    });
+                    await writeFile(
+                      temporary,
+                      JSON.stringify({ identity: proof.identity, preset }),
+                      {
+                        mode: 0o600,
+                        flag: 'wx',
+                      },
+                    );
                     signal.throwIfAborted();
                     if (failed || child !== running) throw new Error('START_FAILED');
                     // Never truncate the last probeable identity. A failed
@@ -630,8 +599,6 @@ export function createLlamaCppService(
                   if (failed || child !== running) throw new Error('START_FAILED');
                   ownerProof = proof;
                   ready = true;
-                  activePreset = preset;
-                  modelsChanged = false;
                   return;
                 } finally {
                   if (ownerProof !== proof) await proof.close();
