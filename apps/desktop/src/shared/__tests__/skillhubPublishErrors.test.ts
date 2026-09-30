@@ -6,6 +6,7 @@ describe('SkillHub publish error classification', () => {
     ['SKILL_DELETED', 409, '同名 Skill 已删除', 'SKILL_DELETED'],
     ['FORBIDDEN', 403, '已删除的 Skill 不能继续发布', 'SKILL_DELETED'],
     ['FORBIDDEN', 403, '没有权限', 'PERMISSION_DENIED'],
+    ['HTTP_403', 403, 'private diagnostic', 'PERMISSION_DENIED'],
     ['UNAUTHORIZED', 401, '登录过期', 'AUTH_REQUIRED'],
     ['INVALID_PARAMS', 400, 'tags 包含不存在的标签', 'INVALID_PARAMS'],
     ['MANIFEST_INVALID', 400, '缺少 description', 'MANIFEST_INVALID'],
@@ -27,7 +28,7 @@ describe('SkillHub publish error classification', () => {
   });
 
   it.each(['INTERNAL', 'PACK_FAILED', 'OSS_PUT_FAILED', 'NETWORK_ERROR', 'CANCELLED',
-    'SERVICE_UNAVAILABLE', 'RATE_LIMITED', 'AUTH_REQUIRED', 'PUBLISH_BUSY'] as const)(
+    'SERVICE_UNAVAILABLE', 'RATE_LIMITED', 'AUTH_REQUIRED', 'PERMISSION_DENIED', 'PUBLISH_BUSY'] as const)(
     'does not display raw diagnostics for %s', (code) => {
       expect(publishErrorDetail(code, 'private diagnostic')).toBe('');
     },

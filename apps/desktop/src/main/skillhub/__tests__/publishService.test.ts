@@ -776,6 +776,7 @@ describe('SkillPublishService', () => {
     ['SKILL_DELETED', 409, '同名 Skill 已删除，但名称仍被占用', 'SKILL_DELETED'],
     ['FORBIDDEN', 403, '已删除的 Skill 不能继续发布', 'SKILL_DELETED'],
     ['FORBIDDEN', 403, '当前账号无权发布', 'PERMISSION_DENIED'],
+    ['HTTP_403', 403, 'private diagnostic', 'PERMISSION_DENIED'],
     ['MANIFEST_INVALID', 400, '缺少 description', 'MANIFEST_INVALID'],
     ['INVALID_PARAMS', 400, '包含不存在的平台标签', 'INVALID_PARAMS'],
     ['SKILL_FILE_TOO_LARGE', 413, 'SKILL.md 超过 2 MiB', 'SKILL_FILE_TOO_LARGE'],
