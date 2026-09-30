@@ -331,9 +331,12 @@ of starting OSS. Cooldown has no background polling and does not stop another
 device's connection. Local diagnostics record selected direct/relay path, transport
 protocol, RTT, setup time, bytes, transfer time, throughput and fallback stage;
 candidate addresses, paths and payloads are not added to these metrics.
+The ICE configuration diagnostic counts TURN URLs by client transport (UDP, TCP, TLS)
+without hosts or credentials.
 Transfers that outlast one second also sample the runtime `stats` once per second on
 both ends (Desktop main log `device-link:filePeer`, Mobile opt-in Debug log): candidate
-kinds and relay protocol, selected-pair/transport byte and packet counters, bitrate
+kinds and relay protocol, gathered candidate / relay-transport / pair-state counts,
+selected-pair/transport byte and packet counters, bitrate
 estimates, data-channel `bufferedAmount`, and application progress — receiver
 arrived/written bytes, bridge write latency and idle time; sender reads and time spent
 waiting for credit. After EOF the sender keeps sampling until the channel buffer drains

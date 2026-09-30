@@ -654,14 +654,19 @@ export function createFilePeerRuntime(bridge: FilePeerRuntimeBridge) {
         local: {} as Record<string, number>,
         remote: {} as Record<string, number>,
         pairs: {} as Record<string, number>,
+        // Client→TURN transport of each gathered relay candidate (udp / tcp / tls).
+        localRelay: {} as Record<string, number>,
       };
       report.forEach((entry) => {
         if (entry.type === "transport" && entry.selectedCandidatePairId)
           transport = entry;
         if (entry.type === "data-channel" && entry.label === p.dc?.label)
           channel = entry;
-        if (entry.type === "local-candidate")
+        if (entry.type === "local-candidate") {
           count(candidates.local, entry.candidateType);
+          if (entry.candidateType === "relay")
+            count(candidates.localRelay, entry.relayProtocol);
+        }
         if (entry.type === "remote-candidate")
           count(candidates.remote, entry.candidateType);
         if (entry.type === "candidate-pair")

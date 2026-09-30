@@ -151,7 +151,8 @@ try {
               throw new Error("transport counters missing");
             if (receiver.local?.candidateType === undefined || receiver.path !== expectedPath ||
                 !(receiver.candidates?.local?.[receiver.local.candidateType] >= 1) ||
-                !(receiver.candidates?.pairs?.succeeded >= 1))
+                !(receiver.candidates?.pairs?.succeeded >= 1) ||
+                typeof receiver.candidates?.localRelay !== "object")
               throw new Error("candidate kind missing");
             diagnostics = {
               receive: r, send: s, pair: receiver.pair, local: receiver.local,
