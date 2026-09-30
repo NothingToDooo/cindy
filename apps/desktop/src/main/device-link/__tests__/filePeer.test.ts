@@ -348,6 +348,33 @@ describe('authorized file peer source', () => {
     mock.current = false;
     await expect(read(b.connection, fb.ticket, 5)).rejects.toThrow('CLOSED');
   });
+  it('keeps a connection alive while a long attachment request is handled, then idles out', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+    try {
+      let finish!: (value: unknown) => void;
+      const invoke = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
+      const { connection } = (await requestFilePeer(
+        'device-a',
+        { action: 'offer', sdp: 'v=0' },
+        invoke as never,
+      )) as { connection: string };
+      const payload = JSON.stringify({
+        channel: 'device-link:file-peer',
+        args: [{ action: 'attachment', connection, request: { op: 'finish' } }],
+      });
+      // 接收端整读重算大附件摘要可能远超 60 秒空闲时限。
+      const handled = mock.handlers.get('file-peer:host:invoke')!({}, connection, payload);
+      await vi.advanceTimersByTimeAsync(150_000);
+      finish({ ok: true });
+      await expect(handled).resolves.toBe(JSON.stringify({ ok: true }));
+      await vi.advanceTimersByTimeAsync(61_000);
+      await expect(
+        mock.handlers.get('file-peer:host:invoke')!({}, connection, payload),
+      ).rejects.toThrow('FILE_PEER_CLOSED');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it('keeps a stalled transfer alive past 30 seconds, renews on progress and closes after 60 idle seconds', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     try {
