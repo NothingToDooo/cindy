@@ -158,6 +158,40 @@ describe('prompt prediction completion revision guard', () => {
     expect(h.requestUtilityText).toHaveBeenCalledTimes(2);
   });
 
+  it.each([400, 401, 403, 422])('HTTP %i 与超时混合失败时不重跑整条链', async (httpStatus) => {
+    for (const permanentFirst of [true, false]) {
+      h.requestUtilityText.mockClear();
+      const permanent = { status: 'failed', reason: 'http_error', httpStatus };
+      const transient = timeout.attempts[0];
+      h.requestUtilityText.mockResolvedValueOnce({
+        ok: false,
+        reason: 'all_candidates_failed',
+        attempts: permanentFirst ? [permanent, transient] : [transient, permanent],
+      });
+      const pending = predict();
+      await vi.runAllTimersAsync();
+      await expect(pending).resolves.toBeNull();
+      expect(h.requestUtilityText).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('全部实际失败均为临时错误时仍可补试，跳过的候选不算执行失败', async () => {
+    h.requestUtilityText.mockResolvedValueOnce({
+      ok: false,
+      reason: 'all_candidates_failed',
+      attempts: [
+        { status: 'skipped', reason: 'api_key_missing' },
+        timeout.attempts[0],
+        { status: 'failed', reason: 'http_error', httpStatus: 429 },
+        { status: 'failed', reason: 'http_error', httpStatus: 503 },
+      ],
+    });
+    const pending = predict();
+    await vi.runAllTimersAsync();
+    await expect(pending).resolves.toBe('继续补测试');
+    expect(h.requestUtilityText).toHaveBeenCalledTimes(2);
+  });
+
   it.each([
     { ok: false, reason: 'no_candidate', attempts: [] },
     { ok: false, reason: 'all_candidates_failed', attempts: [{ status: 'failed', reason: 'http_error', httpStatus: 401 }] },

@@ -33,7 +33,9 @@ const PREDICTION_RECENT_PAIRS = 3;
 const PREDICTION_RETRY_DELAY_MS = 1_500;
 
 function isTransientPredictionFailure(result: UtilityTextFailure): boolean {
-  return result.attempts.some((attempt) => attempt.status === 'failed' && (
+  const failures = result.attempts.filter((attempt) => attempt.status === 'failed');
+  // 补试会重跑整条链，只有实际失败全部为临时错误时才允许，避免重复明确失败的请求。
+  return failures.length > 0 && failures.every((attempt) => (
     attempt.reason === 'timeout' ||
     attempt.reason === 'request_failed' ||
     attempt.reason === 'empty_response' ||
