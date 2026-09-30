@@ -1,3 +1,4 @@
+import { MountOnFirstOpen } from '@/session/MountOnFirstOpen';
 import { RunningTokenRatePopover } from '@/session/RunningTokenRatePopover';
 import { companionConversationItems } from '@/session/companionConversationPresentation';
 import { useRunningTokenRateHistory } from '@/session/useRunningTokenRateHistory';
@@ -113,6 +114,7 @@ import { hasSessionEntryPreviewMismatch } from '@/session/sessionEntrySyncIndica
 import { resolveEffectiveConnectionError } from '@/components/connectionBannerVisibility';
 import { PaperPlaneIcon } from '@/components/PaperPlaneIcon';
 import { useDeviceLink } from '@/device-link/DeviceLinkContext';
+import { subscribeCredentialSwitchOutcome } from '@/session/credentialSwitchOutcome';
 import { useRevokedDevices } from '@/device-link/revokedDevicesStore';
 import { useSharedTaskAccess } from '@/device-link/useSharedTaskAccess';
 import { useLeaveSharedTask } from '@/device-link/useLeaveSharedTask';
@@ -991,6 +993,10 @@ export default function SessionScreen() {
   const visualOpenSearch = MOBILE_VISUAL_MOCK_ENABLED && readRouteParam(params.visualOpenSearch) === '1';
   const visualSearchQuery = MOBILE_VISUAL_MOCK_ENABLED ? readRouteParam(params.visualSearchQuery) : null;
   const navigation = useNavigation<SessionRouteParamsNavigation & { isFocused(): boolean }>();
+  useEffect(() => subscribeCredentialSwitchOutcome((outcome) => {
+    if (outcome.deviceId !== deviceId || outcome.sessionId !== sessionId || !navigation.isFocused()) return;
+    Alert.alert(t(outcome.kind === 'applied' ? 'models.switchOutcome.applied' : 'models.switchOutcome.failed'));
+  }), [deviceId, navigation, sessionId, t]);
   const router = useRouter();
   // 完整消息读取权限按「会话 + 单调代际」登记。focus 与 AppState 正交：后台时
   // 导航仍可能保持 focused，必须立即撤权；重新聚焦/回前台会生成新代际，使旧
@@ -9023,7 +9029,8 @@ export default function SessionScreen() {
         </View>
         </SessionChromeLayer>
         {sharedTaskExit.dialog}
-        {currentSession ? (
+        <MountOnFirstOpen open={settingsOpen}>{() => (
+          currentSession ? (
           <SessionMenuSheet
             tagDeviceId={deviceId}
             onLeaveSharing={() => void sharedTaskExit.leave()}
@@ -9082,7 +9089,8 @@ export default function SessionScreen() {
             session={currentSession}
             visible={settingsOpen}
           />
-        ) : null}
+        ) : null
+        )}</MountOnFirstOpen>
         <SessionSearchSheet
           activeIndex={activeSearchIndex}
           hasOlderMessages={hasOlderMessages && !isScheduleDetail}
@@ -9104,7 +9112,8 @@ export default function SessionScreen() {
           shareBusy={chipShareBusy}
           target={chipMenuTarget}
         />
-        <ContextSheet
+        <MountOnFirstOpen open={contextSheetOpen}>{() => (
+          <ContextSheet
         media={contextSheetView === 'main' && contextSheetMediaLibraryEnabled ? (
               <RecentPhotosStrip
                 busyAssetIds={uploadingMediaAssetIds}
@@ -9278,7 +9287,9 @@ export default function SessionScreen() {
             />
           )}
         </ContextSheet>
-        {currentSession && !sessionManagedByHost && runtimeOptions && modelSheetSelection && modelSheetRuntimeOptions ? (
+        )}</MountOnFirstOpen>
+        <MountOnFirstOpen open={modelSheetOpen && canUseRemoteSessionControls}>{() => (
+          currentSession && !sessionManagedByHost && runtimeOptions && modelSheetSelection && modelSheetRuntimeOptions ? (
           <ModelPickerSheet
             unified={{
               currentSelection: { agentKind: sessionAgentKind, activeModelId: currentSession.model, selectedProviderId: currentSession.providerId ?? null, selectedEffort: currentSession.effort ?? '', selectedFastMode: !!currentSession.fastMode },
@@ -9335,8 +9346,9 @@ export default function SessionScreen() {
             testID="session.modelSheet"
             visible={modelSheetOpen && canUseRemoteSessionControls}
           />
-        ) : null}
-        {currentSession && collab.eligible ? (
+        ) : null
+        )}</MountOnFirstOpen>
+        <MountOnFirstOpen open={collab.workerForm.modelPicker.open}>{() => currentSession && collab.eligible ? (
           // 协同 Worker 的模型选择:与会话模型浮窗同一套统一模型目录,但只回写 Worker 表单,
           // 不触碰当前任务的模型。iOS 原生 sheet 不能叠开:打开前先收起 + 面板,关闭后再展开。
           <ModelPickerSheet
@@ -9386,7 +9398,7 @@ export default function SessionScreen() {
             testID="session.collabModelSheet"
             visible={collab.workerForm.modelPicker.open}
           />
-        ) : null}
+        ) : null}</MountOnFirstOpen>
         {/* 权限模式独立浮窗(composer 权限图标钮点开)。两端同一语义:点选先关浮窗,关闭完成后
             再走 confirmFullAccessChange + maker:set-permission-mode。 */}
         {currentSession && runtimeOptions ? (
