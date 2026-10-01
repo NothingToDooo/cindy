@@ -10,7 +10,6 @@ import {
   availableNewSessionAgentOptions,
   canResolveStoredAgentRuntime,
   isStoredAgentRestorePending,
-  resolveLateRecentRuntime,
   buildNewSessionCreatePreview,
   buildRecentWorkspaceOptions,
   buildRemoteCreateSessionOptions,
@@ -405,54 +404,17 @@ describe('stored agent restore gating', () => {
     })).toBe(true);
   });
 
-  it('wires the restore gate, keeps auto-default unblocked, and marks catalog-only defaults provisional', () => {
+  it('gates the stored agent restore on real data and leaves the auto-default unblocked', () => {
     const source = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
     const storedStart = source.indexOf('const storedAgentKind = newSessionPreferences?.agentKind;');
     const autoStart = source.indexOf('const result = resolveNewSessionAutoDefault({');
-    const storedSource = source.slice(storedStart, source.indexOf('const storedPermissionMode', storedStart));
-    const autoSource = source.slice(source.lastIndexOf('useEffect(() => {', autoStart), source.indexOf('let cancelled = false;', autoStart));
+    const storedSource = source.slice(storedStart, source.indexOf('appliedStoredAgentRef.current = storedAgentKind;', storedStart));
+    const autoGuardSource = source.slice(source.lastIndexOf('useEffect(() => {', autoStart), autoStart);
     expect(storedSource).toContain('isStoredAgentRestorePending({');
     expect(storedSource).toContain('canResolveStoredAgentRuntime({');
     expect(storedSource).not.toContain('deviceProviders.loading');
-    expect(storedSource).toContain('provisionalRuntimeDeviceRef.current = selectedDeviceId');
     // 恢复待落定时不阻断「跟随最近任务」(Greptile P1)。
-    expect(autoSource).not.toContain('isStoredAgentRestorePending(');
-    // 只凭目录选出的默认不锁定设备,迟到的最近任务(含跨 agent)仍可整套跟随(Codex P1)。
-    // 不锁定时也清掉上一台设备的锁,切回那台设备才能重新跟随它的最近任务(Codex P1)。
-    expect(autoSource).toContain('autoDefaultDeviceRef.current = result.basedOnRecentTask ? result.appliedDeviceId : null;');
-    expect(autoSource).not.toContain('provisionalRuntimeDeviceRef');
-    expect(source).toContain('const next = resolveLateRecentRuntime({');
-  });
-});
-
-describe('resolveLateRecentRuntime', () => {
-  it('waits until a recent task of the current agent appears on the device', () => {
-    const base = { agentKind: 'claude-code' as const, deviceId: 'mac', modelRows: [], currentEffort: 'medium', catalogReady: true };
-    expect(resolveLateRecentRuntime({ ...base, sessions: [] })).toBeNull();
-    expect(resolveLateRecentRuntime({
-      ...base,
-      sessions: [remoteSession('cx', { agentKind: 'codex', model: 'gpt-5.4', deviceLinkDeviceId: 'mac' })],
-    })).toBeNull();
-  });
-
-  it('upgrades a catalog-only default to the late-arriving recent task model (codex P2)', () => {
-    const rows = [
-      modelRow('claude-catalog-default', ['low', 'medium', 'high'], 'medium'),
-      modelRow('claude-opus-5-5', ['low', 'medium', 'high'], 'medium'),
-    ];
-    expect(resolveLateRecentRuntime({
-      agentKind: 'claude-code',
-      sessions: [remoteSession('recent', { deviceLinkDeviceId: 'mac', model: 'claude-opus-5-5', effort: 'high' })],
-      deviceId: 'mac',
-      modelRows: rows,
-      currentEffort: 'medium',
-      catalogReady: true,
-    })).toEqual({
-      agentKind: 'claude-code',
-      model: 'claude-opus-5-5',
-      effort: 'high',
-      providerId: 'prov-claude-opus-5-5',
-    });
+    expect(autoGuardSource).not.toContain('isStoredAgentRestorePending(');
   });
 });
 
@@ -861,7 +823,6 @@ describe('resolveNewSessionAutoDefault', () => {
     });
     expect(result).toEqual({
       appliedDeviceId: 'devA',
-      basedOnRecentTask: true,
       patch: {
         agentKind: 'codex',
         model: 'gpt-5.4',
@@ -980,44 +941,9 @@ describe('resolveNewSessionAutoDefault', () => {
     });
     expect(result).toEqual({
       appliedDeviceId: 'devA',
-      basedOnRecentTask: false,
       patch: { model: 'claude-sonnet-4-6', effort: 'low', providerId: 'prov-claude-sonnet-4-6' },
     });
     expect(result?.patch).not.toHaveProperty('agentKind');
-  });
-
-  it('intent ②-late: a catalog-only default stays unlocked so a late cross-agent recent task is followed in full (codex P1)', () => {
-    const rows = [modelRow('claude-catalog-default', ['low', 'medium'], 'medium')];
-    const first = resolveNewSessionAutoDefault({ ...baseInput, sessions: [], modelRows: rows });
-    expect(first?.basedOnRecentTask).toBe(false);
-    // 调用方不锁定(appliedDeviceId 仍为 null),任务列表随后到达且最近任务是 Codex。
-    const second = resolveNewSessionAutoDefault({
-      ...baseInput,
-      appliedDeviceId: null,
-      sessions: [remoteSession('cx', { agentKind: 'codex', model: 'gpt-5.4', effort: 'high', deviceLinkDeviceId: 'devA' })],
-      modelRows: rows,
-    });
-    expect(second).toMatchObject({
-      basedOnRecentTask: true,
-      patch: { agentKind: 'codex', model: 'gpt-5.4', effort: 'high' },
-    });
-  });
-
-  it('intent ②-switch-back: after a catalog-only default the lock is cleared, so returning to a device follows its recent task again (codex P1)', () => {
-    const rows = [modelRow('claude-catalog-default', ['low', 'medium'], 'medium')];
-    const recentOnA = remoteSession('a', { model: 'claude-opus-5-5', effort: 'high', deviceLinkDeviceId: 'devA' });
-    // devB 无最近任务 → 只凭目录,调用方据 basedOnRecentTask=false 把锁清为 null。
-    const onB = resolveNewSessionAutoDefault({
-      ...baseInput, appliedDeviceId: 'devA', selectedDeviceId: 'devB', sessions: [recentOnA], modelRows: rows,
-    });
-    expect(onB?.basedOnRecentTask).toBe(false);
-    // 切回 devA:锁已清空 → 重新跟随 devA 的最近任务;若仍残留 'devA' 则会被跳过。
-    expect(resolveNewSessionAutoDefault({
-      ...baseInput, appliedDeviceId: null, selectedDeviceId: 'devA', sessions: [recentOnA], modelRows: rows,
-    })).toMatchObject({ basedOnRecentTask: true, patch: { model: 'claude-opus-5-5' } });
-    expect(resolveNewSessionAutoDefault({
-      ...baseInput, appliedDeviceId: 'devA', selectedDeviceId: 'devA', sessions: [recentOnA], modelRows: rows,
-    })).toBeNull();
   });
 
   it('intent ②-wait: catalog not ready → do not copy the (stale) top row, wait for the real catalog (codex P1)', () => {
@@ -1130,7 +1056,6 @@ describe('resolveNewSessionAutoDefault', () => {
     // 目录明确不可用(旧被控端)→ 放行 capabilities 扁平回退;扁平列表无 provider 结构 → 默认路由
     expect(result).toEqual({
       appliedDeviceId: 'devA',
-      basedOnRecentTask: false,
       patch: {
         model: 'flat-default',
         effort: 'medium',
