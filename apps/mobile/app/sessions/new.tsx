@@ -1301,8 +1301,9 @@ export default function NewRemoteSessionScreen() {
     });
     if (!result) return;
     // 只凭目录选出的默认不锁定设备:任务列表晚于目录到达时,下次 effect 仍按最近任务
-    // 整套跟随(含跨 agent);跟随了最近任务才算落定。
-    if (result.basedOnRecentTask) autoDefaultDeviceRef.current = result.appliedDeviceId;
+    // 整套跟随(含跨 agent);跟随了最近任务才算落定。不锁定时同时清掉上一台设备留下的
+    // 锁,否则切回那台设备会被误判为已应用、停在本设备的目录默认(Codex P1)。
+    autoDefaultDeviceRef.current = result.basedOnRecentTask ? result.appliedDeviceId : null;
     const nextAgentKind = result.patch.agentKind ?? draft.agentKind;
     const storedPermissionMode = appliedPermissionMemoryRef.current
       ? undefined

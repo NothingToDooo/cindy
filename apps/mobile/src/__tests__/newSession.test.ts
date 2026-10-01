@@ -418,7 +418,8 @@ describe('stored agent restore gating', () => {
     // 恢复待落定时不阻断「跟随最近任务」(Greptile P1)。
     expect(autoSource).not.toContain('isStoredAgentRestorePending(');
     // 只凭目录选出的默认不锁定设备,迟到的最近任务(含跨 agent)仍可整套跟随(Codex P1)。
-    expect(autoSource).toContain('if (result.basedOnRecentTask) autoDefaultDeviceRef.current = result.appliedDeviceId;');
+    // 不锁定时也清掉上一台设备的锁,切回那台设备才能重新跟随它的最近任务(Codex P1)。
+    expect(autoSource).toContain('autoDefaultDeviceRef.current = result.basedOnRecentTask ? result.appliedDeviceId : null;');
     expect(autoSource).not.toContain('provisionalRuntimeDeviceRef');
     expect(source).toContain('const next = resolveLateRecentRuntime({');
   });
@@ -1000,6 +1001,23 @@ describe('resolveNewSessionAutoDefault', () => {
       basedOnRecentTask: true,
       patch: { agentKind: 'codex', model: 'gpt-5.4', effort: 'high' },
     });
+  });
+
+  it('intent ②-switch-back: after a catalog-only default the lock is cleared, so returning to a device follows its recent task again (codex P1)', () => {
+    const rows = [modelRow('claude-catalog-default', ['low', 'medium'], 'medium')];
+    const recentOnA = remoteSession('a', { model: 'claude-opus-5-5', effort: 'high', deviceLinkDeviceId: 'devA' });
+    // devB 无最近任务 → 只凭目录,调用方据 basedOnRecentTask=false 把锁清为 null。
+    const onB = resolveNewSessionAutoDefault({
+      ...baseInput, appliedDeviceId: 'devA', selectedDeviceId: 'devB', sessions: [recentOnA], modelRows: rows,
+    });
+    expect(onB?.basedOnRecentTask).toBe(false);
+    // 切回 devA:锁已清空 → 重新跟随 devA 的最近任务;若仍残留 'devA' 则会被跳过。
+    expect(resolveNewSessionAutoDefault({
+      ...baseInput, appliedDeviceId: null, selectedDeviceId: 'devA', sessions: [recentOnA], modelRows: rows,
+    })).toMatchObject({ basedOnRecentTask: true, patch: { model: 'claude-opus-5-5' } });
+    expect(resolveNewSessionAutoDefault({
+      ...baseInput, appliedDeviceId: 'devA', selectedDeviceId: 'devA', sessions: [recentOnA], modelRows: rows,
+    })).toBeNull();
   });
 
   it('intent ②-wait: catalog not ready → do not copy the (stale) top row, wait for the real catalog (codex P1)', () => {
