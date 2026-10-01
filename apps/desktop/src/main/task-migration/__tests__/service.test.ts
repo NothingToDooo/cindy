@@ -576,6 +576,26 @@ describe('resumable cross-computer copy', () => {
     expect(state.uploadedProgress).toHaveBeenCalled();
     expect(result.progress).toBeUndefined();
   });
+  it('cancels a running upload before the target receives it and removes source staging', async () => {
+    let cancel: Promise<Awaited<ReturnType<typeof requestTaskMigration>>> | undefined;
+    state.uploadedProgress.mockImplementation(async () => {
+      cancel ??= requestTaskMigration({ action: 'cancel', sessionId: 'fork' });
+    });
+    expect((await start()).cancellable).toBe(true);
+    const status = await settled();
+    expect(await cancel).toMatchObject({ running: true, cancelling: true });
+    expect(status.stage).toBe('cancelled');
+    expect(status.error).toBeUndefined();
+    expect(state.imports).not.toHaveBeenCalled();
+    expect(state.remove.mock.calls.map(([key]) => key)).toEqual([...state.files.keys()]);
+    await expect(
+      fs.stat(path.join(state.root, 'A', 'task-copies', 'outgoing', status.targetSessionId!)),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await fs.readFile(path.join(state.root, 'shared', 'draft'), 'utf8')).toBe('original');
+    state.uploadedProgress.mockReset();
+    await start();
+    expect((await settled()).stage).toBe('complete');
+  });
   it('closing a failed transfer removes source staging without deleting an already committed target', async () => {
     state.loseReply = 'receive';
     await start();
