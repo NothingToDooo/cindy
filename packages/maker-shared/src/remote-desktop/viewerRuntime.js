@@ -348,6 +348,8 @@ export function mountRemoteDesktopViewer(root, postMessage, config) {
   }
   // Native video renders beneath this WebView, so z-order cannot hide the
   // status behind the picture; cut the picture's rectangle out instead.
+  // Measure the status only after its text or the stage changes, not per frame.
+  let statusOrigin = null;
   function clipNetworkStatus(r = layout()) {
     const status = find("network-status");
     if (!status) return;
@@ -355,8 +357,10 @@ export function mountRemoteDesktopViewer(root, postMessage, config) {
       status.style.clipPath = "";
       return;
     }
-    const left = r.x - status.offsetLeft,
-      top = r.y - status.offsetTop,
+    if (!statusOrigin)
+      statusOrigin = { x: status.offsetLeft, y: status.offsetTop };
+    const left = r.x - statusOrigin.x,
+      top = r.y - statusOrigin.y,
       right = left + r.width,
       bottom = top + r.height;
     status.style.clipPath = `polygon(evenodd,0 0,100% 0,100% 100%,0 100%,0 0,${left}px ${top}px,${right}px ${top}px,${right}px ${bottom}px,${left}px ${bottom}px,${left}px ${top}px)`;
@@ -1553,6 +1557,7 @@ export function mountRemoteDesktopViewer(root, postMessage, config) {
     });
   }
   const observer = new ResizeObserver(() => {
+    statusOrigin = null;
     reportViewport();
     release();
     settlePan();
@@ -2108,6 +2113,7 @@ export function mountRemoteDesktopViewer(root, postMessage, config) {
         }
         if (/^#[0-9a-f]{3,8}$/i.test(message.color))
           status.style.color = message.color;
+        statusOrigin = null;
         clipNetworkStatus();
         break;
       }

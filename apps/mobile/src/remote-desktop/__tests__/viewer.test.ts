@@ -1180,9 +1180,11 @@ describe("remote desktop network status layer", () => {
 
   it("cuts the native video picture out of the status it would otherwise cover", () => {
     const v = viewer(false, true, true);
-    const status = Object.assign(v.elements["network-status"], {
-      offsetLeft: 250,
-      offsetTop: 60,
+    const status = v.elements["network-status"];
+    let layoutReads = 0;
+    Object.defineProperties(status, {
+      offsetLeft: { get: () => (layoutReads++, 250) },
+      offsetTop: { get: () => (layoutReads++, 60) },
     });
     v.send({ type: "init", epoch: "native", width: 1920, height: 1080 });
     v.send({ type: "networkStatus", text: "Direct\n1 KB/s", top: 60 });
@@ -1201,6 +1203,7 @@ describe("remote desktop network status layer", () => {
     );
     expect(status.style.clipPath.endsWith(hole())).toBe(true);
     const width = v.elements.image.style.width;
+    const readsBeforePinch = layoutReads;
     v.send({ type: "control", enabled: true });
     v.pointer("pointerdown", 1, 100, 200);
     v.pointer("pointerdown", 2, 300, 200);
@@ -1210,6 +1213,7 @@ describe("remote desktop network status layer", () => {
     v.frame(40);
     expect(v.elements.image.style.width).not.toBe(width);
     expect(status.style.clipPath.endsWith(hole())).toBe(true);
+    expect(layoutReads).toBe(readsBeforePinch);
     v.send({ type: "nativeVideo", epoch: "native", active: false });
     expect(status.style.clipPath).toBe("");
   });
