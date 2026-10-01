@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import path from 'node:path';
 import { parseAttachmentOssRef, parsePeerAttachmentRef } from '@cindy/device-link';
+import { isReviewSensitiveCredentialPath } from '@cindy/maker-core';
 import { throwIpcError } from '../utils/ipcValidate.js';
 import {
   assertReviewExplicitPathGranted,
@@ -38,6 +39,17 @@ export async function withPreparedOutboundReview<T>(
   deps = preparationDeps,
 ): Promise<T> {
   if (!request.attachments.length) return upload(request);
+  // Reject the whole batch before staging can erase filenames or path provenance.
+  // Cached/inline bytes may have a harmless storage path but a sensitive label.
+  for (const file of request.attachments) {
+    const refs = [file.url, file.path].filter((ref): ref is string => Boolean(ref));
+    const names = refs.map((ref) => (parseAttachmentOssRef(ref) ?? parsePeerAttachmentRef(ref))?.originalName);
+    if ([file.name, file.originalName, ...refs, ...names].some(
+      (candidate) => candidate && isReviewSensitiveCredentialPath(candidate),
+    )) {
+      throwIpcError('PERMISSION_DENIED', 'Review refused a credential or key attachment');
+    }
+  }
   if (!deps) throwIpcError('PERMISSION_DENIED', 'Review attachment authorization is unavailable');
   const local = request.attachments.filter((file) => {
     const ref = file.url || file.path || '';

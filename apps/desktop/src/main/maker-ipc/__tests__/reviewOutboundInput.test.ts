@@ -2,7 +2,8 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { buildPeerAttachmentRef } from '@cindy/device-link';
+import { buildAttachmentOssRef, buildPeerAttachmentRef } from '@cindy/device-link';
+import type { StartReviewRequest } from '../reviewStartHandler';
 import { withOutboundReviewConfirmation, withPreparedOutboundReview } from '../reviewOutboundInput';
 
 const roots: string[] = [];
@@ -25,6 +26,40 @@ async function setup(managed = false) {
 }
 
 describe('controller Review attachment authorization', () => {
+  const integrity = { size: 1, sha256: 'a'.repeat(64) };
+  const sensitiveAttachments: Array<[string, StartReviewRequest['attachments'][number]]> = [
+    ['inline dotenv', { name: '.env', base64: 'ZmFrZQ==' }],
+    ['inline key', { name: 'id_rsa', base64: 'ZmFrZQ==' }],
+    ['cached label', { name: '.env.local', url: 'xdt-image://task/ordinary.txt' }],
+    ['cached original name', { name: 'ordinary.txt', originalName: 'id_rsa', url: 'cindy-media://blobs/ordinary.txt' }],
+    ['masked name', { name: '.env', originalName: 'ordinary.txt', base64: 'ZmFrZQ==' }],
+    ['source path', { name: 'ordinary.txt', path: path.join(os.tmpdir(), 'fake-review-fixture', '.env') }],
+    ['alternate path', { name: 'ordinary.txt', url: 'xdt-image://task/ordinary.txt', path: path.join(os.tmpdir(), 'fake-review-fixture', 'id_rsa') }],
+    ['peer original name', { name: 'ordinary.txt', url: buildPeerAttachmentRef({ ...integrity, ticket: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', originalName: '.env' }) }],
+    ['OSS original name', { name: 'ordinary.txt', url: buildAttachmentOssRef({ ...integrity, ossKey: 'cindy/device-link/fake/ordinary.txt', originalName: 'id_rsa' }) }],
+  ];
+
+  it.each(sensitiveAttachments)('rejects %s before preparing or uploading any attachment', async (_label, attachment) => {
+    const { request, deps } = await setup();
+    deps.resolvePath = vi.fn();
+    const confirm = vi.fn(async () => true);
+    const upload = vi.fn();
+    const batch = { ...request, attachments: [...request.attachments, attachment] };
+    await expect(withOutboundReviewConfirmation(confirm, () => withPreparedOutboundReview(batch, upload, deps))).rejects.toThrow('PERMISSION_DENIED');
+    expect(deps.resolvePath).not.toHaveBeenCalled();
+    expect(deps.ensureOwnerReady).not.toHaveBeenCalled();
+    expect(confirm).not.toHaveBeenCalled();
+    expect(upload).not.toHaveBeenCalled();
+  });
+
+  it.each(['.environment', '.envrc', 'environment.ts'])('keeps ordinary similarly named attachments usable (%s)', async (name) => {
+    const { request, deps } = await setup();
+    const upload = vi.fn(async () => 'uploaded');
+    const batch = { ...request, attachments: [{ ...request.attachments[0], name }] };
+    await expect(withOutboundReviewConfirmation(async () => true, () => withPreparedOutboundReview(batch, upload, deps))).resolves.toBe('uploaded');
+    expect(upload).toHaveBeenCalledOnce();
+  });
+
   it.each([false, undefined])('uploads nothing when native confirmation is denied or unavailable (%s)', async (decision) => {
     const { request, deps } = await setup();
     const upload = vi.fn();
