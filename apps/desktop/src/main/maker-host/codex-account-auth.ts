@@ -120,10 +120,10 @@ export function codexAccountState(providerId: string): AuthState {
   }
 }
 
-export async function prepareCodexAccountHome(providerId: string): Promise<string> {
+export async function prepareCodexAccountHome(providerId: string, managedRoots: readonly string[]): Promise<string> {
   if (!codexAccountState(providerId).authenticated) throw new Error('Codex account requires login');
   const home = codexAccountHome(providerId);
-  await Promise.all([prepareCodexGlobalSkillsLinks(home), prepareCodexGlobalRulesCopy(home)]);
+  await Promise.all([prepareCodexGlobalSkillsLinks(home, { managedRoots }), prepareCodexGlobalRulesCopy(home)]);
   const plugins = await prepareCodexGlobalPluginsBridge(home, {
     capabilityRouting: DESKTOP_CAPABILITY_ROUTING_POLICY,
   });

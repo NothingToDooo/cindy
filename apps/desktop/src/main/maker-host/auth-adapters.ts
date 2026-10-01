@@ -2497,7 +2497,11 @@ export class DesktopCodexAuthAdapter implements AuthAdapter {
 
   async getAuthEnv(options?: AuthAdapterOptions): Promise<Record<string, string>> {
     if (isCodexAccountProvider(options?.providerId)) {
-      return { CODEX_HOME: await prepareCodexAccountHome(options!.providerId!) };
+      const ownerId = getActiveAppSession().dataOwnerId;
+      await desktopClaudeAuthAdapter.ensureSharedGlobalSkills();
+      return { CODEX_HOME: await withSharedGlobalSkillProjectionMutation(ownerId, async () =>
+        prepareCodexAccountHome(options!.providerId!, await cindyManagedSkillRoots()),
+      ) };
     }
     this.ensureInvalidationMarkerLoaded();
     await this.ensureGlobalCodexAssets();
