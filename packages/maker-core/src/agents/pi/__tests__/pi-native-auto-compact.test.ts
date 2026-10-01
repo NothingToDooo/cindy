@@ -3,7 +3,7 @@
  * events and only latches deterministic failures for the next-send rollover.
  */
 
-import { promises as fs, existsSync, mkdtempSync, mkdirSync, realpathSync, renameSync, symlinkSync, unlinkSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import fsSync, { promises as fs, existsSync, mkdtempSync, mkdirSync, realpathSync, renameSync, symlinkSync, unlinkSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -416,7 +416,7 @@ describe("PiAgent native auto-compaction ownership", () => {
     expect(skills.every((skill) => existsSync(skill.path))).toBe(true);
   });
 
-  it.each(['mkdir', 'symlink'] as const)('cleans startup resources when managed Skill %s fails', async (operation) => {
+  it.each(['discovery', 'realpath', 'mkdir', 'symlink'] as const)('cleans startup resources when managed Skill %s fails', async (operation) => {
     const skill = path.join(agentHome, 'managed', 'learn', 'SKILL.md');
     mkdirSync(path.dirname(skill), { recursive: true });
     writeFileSync(skill, '---\nname: learn\ndescription: fixture\n---\nLearn');
@@ -429,7 +429,15 @@ describe("PiAgent native auto-compaction ownership", () => {
     const originalMkdir = fs.mkdir;
     const originalSymlink = fs.symlink;
     let failedPath = '';
-    if (operation === 'mkdir') {
+    if (operation === 'discovery') {
+      deps.getManagedSkills = async () => { failedPath = skill; throw failure; };
+    } else if (operation === 'realpath') {
+      const originalRealpath = fsSync.realpathSync;
+      vi.spyOn(fsSync, 'realpathSync').mockImplementation(((target: string, options: unknown) => {
+        if (String(target) === skill) { failedPath = skill; throw failure; }
+        return originalRealpath(target, options as never);
+      }) as typeof fsSync.realpathSync);
+    } else if (operation === 'mkdir') {
       vi.spyOn(fs, 'mkdir').mockImplementation((async (target: string, options: unknown) => {
         if (String(target).endsWith('cindy-managed-skills')) { failedPath = String(target); throw failure; }
         return originalMkdir(target, options as never);
