@@ -6,6 +6,7 @@ import {
   isMobileMarkdownImageDirectUrl,
   mobileMarkdownImageTitle,
   mobileMarkdownImageUrlForWorkdir,
+  mobileMarkdownManagedImagePreviewUrl,
   mobileMarkdownImageAltChipText,
   MOBILE_MARKDOWN_IMAGE_ALT_CHIP_MAX_UTF16_LENGTH,
   mobileMarkdownInlineImageSize,
@@ -1591,7 +1592,72 @@ describe('bare file paths(正文纯文本形态)', () => {
   });
 });
 
+describe('automatic Markdown image fetch scope', () => {
+  const pathUrl = (file: string, extra = '') => `xdt-file://open?path=${encodeURIComponent(file)}${extra}`;
+
+  it.each(['/private/photo.png', '/repo-other/photo.png', '/repo/../private/photo.png'])(
+    'does not automatically fetch outside or escaping path %s', (file) => {
+      expect(mobileMarkdownManagedImagePreviewUrl(file, '/repo')).toBeNull();
+      expect(mobileMarkdownManagedImagePreviewUrl(pathUrl(file), '/repo')).toBeNull();
+      // Explicitly opening the chip still uses the established viewer path.
+      expect(mobileMarkdownImageUrlForWorkdir(file, '/repo')).not.toBeNull();
+    },
+  );
+
+  it('requires workdir for file previews but not for already managed media', () => {
+    expect(mobileMarkdownManagedImagePreviewUrl(pathUrl('/repo/a.png'))).toBeNull();
+    expect(mobileMarkdownManagedImagePreviewUrl('shot.png')).toBeNull();
+    expect(mobileMarkdownManagedImagePreviewUrl('cindy-media://blobs/a.png')).toBe('cindy-media://blobs/a.png');
+    expect(mobileMarkdownManagedImagePreviewUrl('xdt-image://session/a.png')).toBe('xdt-image://session/a.png');
+  });
+
+  it('overwrites supplied baseDir with the task root for Host realpath checks', () => {
+    const result = mobileMarkdownManagedImagePreviewUrl(pathUrl('/repo/link/a.png', '&baseDir=%2F&baseDir=%2Fprivate'), '/repo', 'message:2');
+    const parsed = new URL(result!);
+    expect(parsed.searchParams.getAll('baseDir')).toEqual(['/repo']);
+    expect(parsed.searchParams.get('path')).toBe('/repo/link/a.png');
+    expect(parsed.searchParams.get('v')).toBe('message:2');
+    expect(new URL(mobileMarkdownManagedImagePreviewUrl('out/a.png', '/repo')!).searchParams.get('baseDir')).toBe('/repo');
+  });
+
+  it('handles Windows separators and roots without treating neighboring directories as children', () => {
+    const root = 'C:\\Repo';
+    const preview = mobileMarkdownManagedImagePreviewUrl(pathUrl('c:\\repo\\out\\a.png'), root);
+    expect(new URL(preview!).searchParams.get('baseDir')).toBe(root);
+    expect(mobileMarkdownManagedImagePreviewUrl(pathUrl('C:\\Repo-other\\a.png'), root)).toBeNull();
+    expect(mobileMarkdownManagedImagePreviewUrl(pathUrl('D:\\Repo\\a.png'), root)).toBeNull();
+    expect(mobileMarkdownManagedImagePreviewUrl(pathUrl('C:\\Repo\\..\\private\\a.png'), root)).toBeNull();
+  });
+
+  it('keeps SSH task provenance and supplies the same remote root constraint', () => {
+    const result = mobileMarkdownManagedImagePreviewUrl(pathUrl('/srv/work/out/a.png', '&remoteHostId=other&baseDir=%2F'), '/srv/work', 'm', 'host', 'task');
+    const parsed = new URL(result!);
+    expect(parsed.searchParams.get('remoteHostId')).toBe('host');
+    expect(parsed.searchParams.get('sessionId')).toBe('task');
+    expect(parsed.searchParams.get('baseDir')).toBe('/srv/work');
+    expect(mobileMarkdownManagedImagePreviewUrl('a.png', '/srv/work', 'm', 'host')).toBeNull();
+  });
+});
+
 describe('groupMobileMarkdownSelectableBlocks', () => {
+  it('keeps fallback image chips and surrounding paragraphs in the selectable text run', () => {
+    const blocks = parseMobileMarkdown('前段\n\n正文 ![图](shot.png) 结尾\n\n后段');
+    // No resolver or no workdir: the renderer can only show the existing text chip.
+    for (const imageRendersPreview of [() => false, (image: { url: string }) => mobileMarkdownManagedImagePreviewUrl(image.url) !== null]) {
+      const groups = groupMobileMarkdownSelectableBlocks(blocks, { imageRendersPreview });
+      expect(groups).toHaveLength(1);
+      expect(groups[0].type).toBe('text_run');
+    }
+  });
+
+  it('separates actual managed previews while keeping outside-workdir chips selectable', () => {
+    const imageRendersPreview = (image: { url: string }) => mobileMarkdownManagedImagePreviewUrl(image.url, '/repo') !== null;
+    const groups = groupMobileMarkdownSelectableBlocks(
+      parseMobileMarkdown('前段\n\n![图](shot.png)\n\n说明 ![外部图](/private/photo.png) 结尾'),
+      { imageRendersPreview },
+    );
+    expect(groups.map((group) => group.type)).toEqual(['text_run', 'single', 'text_run']);
+  });
   it('merges consecutive text blocks into one run so native selection can cross paragraphs', () => {
     const blocks = parseMobileMarkdown([
       '# 标题',
@@ -1740,7 +1806,10 @@ describe('groupMobileMarkdownSelectableBlocks', () => {
   it('keeps managed image previews out of selectable text runs without splitting oversized alt text', () => {
     const alt = 'a'.repeat(MOBILE_MARKDOWN_IMAGE_ALT_CHIP_MAX_UTF16_LENGTH + 21);
     const blocks = parseMobileMarkdown(`![${alt}](docs/local-image.png)`);
-    const groups = groupMobileMarkdownSelectableBlocks(blocks, { maxTextRunUtf16Length: 1800 });
+    const groups = groupMobileMarkdownSelectableBlocks(blocks, {
+      maxTextRunUtf16Length: 1800,
+      imageRendersPreview: (image) => mobileMarkdownManagedImagePreviewUrl(image.url, '/repo') !== null,
+    });
     const imageInlines = blocks.flatMap((block) => 'inlines' in block ? block.inlines.filter((inline) => inline.type === 'image') : []);
 
     expect(groups.map((group) => group.type)).toEqual(['single']);

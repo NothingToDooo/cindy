@@ -12,9 +12,12 @@ const EXPIRY_SAFETY_WINDOW_MS = 60 * 1000;
 
 /** Match stable Host/transport codes, never expose raw errors containing local paths. */
 export function mediaLoadFailureKey(error: unknown): 'message.lightbox.sourceMissing' | 'message.lightbox.deviceOffline' | 'message.lightbox.loadFailed' {
+  const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
   const message = error instanceof Error ? error.message : String(error ?? '');
-  if (message.includes('[MEDIA_SOURCE_MISSING]')) return 'message.lightbox.sourceMissing';
-  if (/\b(?:DEVICE_LINK_NOT_CONNECTED|DEVICE_OFFLINE|PEER_OFFLINE)\b/.test(message)) return 'message.lightbox.deviceOffline';
+  if (code === 'MEDIA_SOURCE_MISSING' || message.includes('[MEDIA_SOURCE_MISSING]')) return 'message.lightbox.sourceMissing';
+  const offlineCodes = ['NOT_CONNECTED', 'DEVICE_LINK_NOT_CONNECTED', 'DEVICE_OFFLINE', 'PEER_OFFLINE'];
+  if ((typeof code === 'string' && offlineCodes.includes(code))
+    || /\b(?:NOT_CONNECTED|DEVICE_LINK_NOT_CONNECTED|DEVICE_OFFLINE|PEER_OFFLINE)\b/.test(message)) return 'message.lightbox.deviceOffline';
   return 'message.lightbox.loadFailed';
 }
 

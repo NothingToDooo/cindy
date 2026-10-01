@@ -200,6 +200,7 @@ import {
 } from '@/session/filePreview';
 import {
   groupMobileMarkdownSelectableBlocks,
+  mobileMarkdownManagedImagePreviewUrl,
   isMobileMarkdownImageDirectUrl,
   mobileMarkdownImageAltChipText,
   mobileMarkdownImageTitle,
@@ -5425,11 +5426,19 @@ function MarkdownBody({
     });
   }, [markdownParse]);
   const blocks = markdownParse.result.blocks;
+  const managedImagePreviewUrl = useCallback((url: string) => resolveMarkdownMedia
+    ? mobileMarkdownManagedImagePreviewUrl(
+      url, chatFilePathContext?.workdir, markdownImageCacheKey,
+      chatFilePathContext?.remoteHostId, chatFilePathContext?.sessionId,
+    ) : null, [chatFilePathContext, markdownImageCacheKey, resolveMarkdownMedia]);
+  const imageRendersPreview = useCallback((inline: Extract<MobileMarkdownInline, { type: 'image' }>) => (
+    isMobileMarkdownImageDirectUrl(inline.url) || managedImagePreviewUrl(inline.url) !== null
+  ), [managedImagePreviewUrl]);
   // 图片预览内嵌 View，不能放进 Android selectable Text 或 iOS UITextView。
   const inlinesSelectable = useCallback((inlines: readonly MobileMarkdownInline[]) => (
     selectable === true
-    && !inlines.some((inline) => inline.type === 'image')
-  ), [selectable]);
+    && !inlines.some((inline) => inline.type === 'image' && imageRendersPreview(inline))
+  ), [imageRendersPreview, selectable]);
   // 正文 Markdown 图片(![](url) / 安全 <img>)点击后走既有媒体 payload 查看器,与附件图片同一条链路。
   const openMarkdownImage = useCallback((url: string, alt?: string) => {
     if (!onOpenPayload) return;
@@ -5460,11 +5469,8 @@ function MarkdownBody({
     }
     : undefined, [onOpenPayload]);
   const renderManagedImage = useCallback((inline: Extract<MobileMarkdownInline, { type: 'image' }>) => {
-    const url = mobileMarkdownImageUrlForWorkdir(
-      inline.url, chatFilePathContext?.workdir, markdownImageCacheKey,
-      chatFilePathContext?.remoteHostId, chatFilePathContext?.sessionId,
-    );
-    if (!url || isMobileMarkdownImageDirectUrl(url) || !resolveMarkdownMedia) return null;
+    const url = managedImagePreviewUrl(inline.url);
+    if (!url) return null;
     const size = mobileMarkdownInlineImageSize(inline);
     const label = mobileMarkdownImageTitle(url, inline.alt);
     return (
@@ -5479,7 +5485,7 @@ function MarkdownBody({
         />
       </View>
     );
-  }, [chatFilePathContext, layout, markdownImageCacheKey, onOpenPayload, openMarkdownImage, resolveMarkdownMedia]);
+  }, [layout, managedImagePreviewUrl, onOpenPayload, openMarkdownImage, resolveMarkdownMedia]);
   // Preserve the inline renderer while streaming or unrelated task metadata
   // changes; referenced task title changes still refresh every affected chip.
   const remoteSessions = useRemoteSessions();
@@ -5517,9 +5523,10 @@ function MarkdownBody({
     // memoized text blocks when useTranslation refreshes its bound translator.
     [onOpenSessionLink, openMarkdownImage, openMarkdownMedia, renderManagedImage, sessionLinkTitles, sessionReferenceDetails, streaming, styles, t],
   );
-  const textRunGroupingOptions = Platform.OS === 'android'
-    ? ANDROID_SELECTABLE_TEXT_RUN_GROUPING_OPTIONS
-    : undefined;
+  const textRunGroupingOptions = useMemo(() => ({
+    ...(Platform.OS === 'android' ? ANDROID_SELECTABLE_TEXT_RUN_GROUPING_OPTIONS : {}),
+    imageRendersPreview,
+  }), [imageRendersPreview]);
   // 连续纯文本块合并为 text_run，图片预览保持独立。
   // Android selectable Text 在超长原生文本视图里会偶发高度/滚动协商异常,长 run 分块
   // 后仍保留块内跨段选择,同时避免单个 LegendList item 内出现巨型 selectable Text。

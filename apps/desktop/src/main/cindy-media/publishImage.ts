@@ -13,6 +13,23 @@ import { getDbClient } from '../localDb/client/current.js';
 import { getActiveAppSession, isAppSessionBoundaryPending } from '../appSessionState.js';
 
 const MAX_IMAGE_BYTES = 48 * 1024 * 1024;
+// Serialize only the check-and-pin for one owner/task/blob; do not share results
+// because each caller must retain its own permission and cancellation checks.
+const referenceLocks = new Map<string, Promise<void>>();
+
+async function withReferenceLock<T>(key: string, perform: () => Promise<T>): Promise<T> {
+  const previous = referenceLocks.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const next = new Promise<void>((resolve) => { release = resolve; });
+  referenceLocks.set(key, next);
+  try {
+    await previous;
+    return await perform();
+  } finally {
+    release();
+    if (referenceLocks.get(key) === next) referenceLocks.delete(key);
+  }
+}
 
 /** Import into this Host's store; never manufacture a reference to another profile's blob. */
 export async function publishImage(
@@ -76,12 +93,16 @@ export async function publishImage(
   try {
     const hash = createHash('sha256').update(buffer).digest('hex');
     const reference = { refKind: 'session-attachment' as const, refId: context.sessionId };
-    const exists = await hasRef({ hash, ...reference }, db);
-    assertCurrent();
-    const image = await ingestMedia({ buffer, mimeType, isCache: false,
-      refs: exists ? [] : [{ ...reference, originSessionId: context.sessionId, originKind: 'tool' }],
-      assertStillValid: assertCurrent, refCompensationScope: compensation,
-    }, db);
+    const key = JSON.stringify([owner.dataOwnerId, owner.generation, context.sessionId, hash]);
+    const image = await withReferenceLock(key, async () => {
+      assertCurrent();
+      const exists = await hasRef({ hash, ...reference }, db);
+      assertCurrent();
+      return ingestMedia({ buffer, mimeType, isCache: false,
+        refs: exists ? [] : [{ ...reference, originSessionId: context.sessionId, originKind: 'tool' }],
+        assertStillValid: assertCurrent, refCompensationScope: compensation,
+      }, db);
+    });
     assertCurrent();
     return { ok: true, xdt_image_urls: [image.url], url: image.url, filename: `${image.hash}${image.ext}`,
       message: '已导入当前 Host 并登记任务引用。请在回复中使用返回的受管地址嵌入图片。此结果不代表远端设备已完成下载。' };

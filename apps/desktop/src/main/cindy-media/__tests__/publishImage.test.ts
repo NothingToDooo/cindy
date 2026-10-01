@@ -34,6 +34,45 @@ beforeEach(async () => {
 afterEach(async () => { await fs.rm(root, { recursive: true, force: true }); });
 
 describe('publishImage', () => {
+  it('pins only once when the same task imports identical bytes concurrently', async () => {
+    await fs.writeFile(path.join(workdir, 'shot.png'), png);
+    let pinned = false;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    hasRef.mockImplementation(async () => pinned);
+    ingest.mockImplementation(async (params) => {
+      await gate;
+      if (params.refs.length) pinned = true;
+      return { url, hash: 'a'.repeat(64), ext: '.png' };
+    });
+    const imports = Array.from({ length: 8 }, () => publishImage('shot.png',
+      { workingDir: workdir, sessionId: 'task' }, { isCurrent: () => true, authorize: vi.fn() }));
+    try {
+      await vi.waitFor(() => expect(ingest).toHaveBeenCalledOnce());
+      expect(hasRef).toHaveBeenCalledOnce();
+    } finally { release(); }
+    expect((await Promise.all(imports)).every((result) => result.ok)).toBe(true);
+    expect(ingest.mock.calls.flatMap(([params]) => params.refs)).toHaveLength(1);
+  });
+
+  it('releases the reference lock after failure so a queued retry can pin', async () => {
+    await fs.writeFile(path.join(workdir, 'shot.png'), png);
+    ingest.mockRejectedValueOnce(new Error('failed'));
+    const results = await Promise.all(Array.from({ length: 2 }, () => publishImage('shot.png',
+      { workingDir: workdir, sessionId: 'task' }, { isCurrent: () => true, authorize: vi.fn() })));
+    expect(results.filter((result) => result.ok)).toHaveLength(1);
+    expect(results.filter((result) => result.errorCode === 'MEDIA_PUBLISH_FAILED')).toHaveLength(1);
+    expect(ingest.mock.calls[1][0].refs).toHaveLength(1);
+  });
+
+  it('does not share a pinned reference between tasks', async () => {
+    await fs.writeFile(path.join(workdir, 'shot.png'), png);
+    const results = await Promise.all(['first', 'second'].map((sessionId) => publishImage('shot.png',
+      { workingDir: workdir, sessionId }, { isCurrent: () => true, authorize: vi.fn() })));
+    expect(results.every((result) => result.ok)).toBe(true);
+    expect(ingest.mock.calls.flatMap(([params]) => params.refs.map((ref: { refId: string }) => ref.refId)).sort()).toEqual(['first', 'second']);
+  });
+
   it('reads the actual file and pins the returned Host URL before reporting success', async () => {
     const bytes = png;
     await fs.writeFile(path.join(workdir, 'shot.png'), bytes);
