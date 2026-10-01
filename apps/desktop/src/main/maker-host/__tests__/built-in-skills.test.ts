@@ -85,6 +85,16 @@ afterEach(() => {
 });
 
 describe('built-in Skills', () => {
+  it('publishes a fresh bundle without replacing an entry created in the same preparation', async () => {
+    const replaceDirectoryEntryAtomically = vi.fn(async () => {
+      throw new Error('fresh preparation must not need an existing-entry replacement');
+    });
+    const result = await prepareBuiltInSkills({ ...fixture(), replaceDirectoryEntryAtomically });
+    expect(result.warnings).toEqual([]);
+    expect(result.projectionSafe).toBe(true);
+    expect(replaceDirectoryEntryAtomically).not.toHaveBeenCalled();
+  });
+
   it('materializes immutable versioned bytes and exposes the active version', async () => {
     const input = fixture();
     const first = await prepareAndProjectBuiltInSkills(input);

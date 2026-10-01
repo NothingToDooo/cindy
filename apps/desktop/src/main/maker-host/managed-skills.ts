@@ -37,7 +37,7 @@ export const listCindyManagedSkills: NonNullable<AgentDeps['getManagedSkills']> 
   const addSkill = (directory: string, name: string, namespace: string, description?: string) => {
     try {
       // Bind the verified source itself, not a mutable discovery projection.
-      const file = fs.realpathSync(path.join(directory, 'SKILL.md'));
+      const file = fs.realpathSync.native(path.join(directory, 'SKILL.md'));
       const { data } = matter(fs.readFileSync(file, 'utf8'));
       skills.push({
         kind: 'agent-skill',

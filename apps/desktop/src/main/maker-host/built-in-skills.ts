@@ -768,9 +768,7 @@ export function activeCindyBuiltInAgentSkills(
 }
 
 async function refreshBuiltInClaudeSkillLinksUnlocked(
-  options: Omit<RefreshBuiltInClaudeSkillLinksOptions, 'withSharedMutation'> & {
-    allowUnresolvedManagedSharedTarget?: boolean;
-  },
+  options: Omit<RefreshBuiltInClaudeSkillLinksOptions, 'withSharedMutation'>,
 ): Promise<RefreshBuiltInClaudeSkillLinksResult> {
   const descriptors = options.descriptors
     ?? builtInSkillDescriptors(options.userDataDir, options.appDataDir);
@@ -987,29 +985,15 @@ async function removeInactiveBuiltInProjections(
 async function projectBuiltInSkillLinksUnlocked(
   options: PrepareBuiltInSkillsOptions,
   descriptors: readonly BuiltInSkillDescriptor[],
-  allowUnresolvedManagedSharedTarget = false,
 ): Promise<{ changed: boolean; complete: boolean; warnings: string[] }> {
-  const homeDir = options.homeDir ?? os.homedir();
-  const shared = await refreshBuiltInSharedSkillLinksUnlocked({
+  // All harnesses now share one private projection. Preparing the old shared
+  // and Claude branches twice would replace our own still-dangling entry.
+  return refreshBuiltInClaudeSkillLinksUnlocked({
     userDataDir: options.userDataDir,
     appDataDir: options.appDataDir,
-    homeDir,
     descriptors,
     replaceDirectoryEntryAtomically: options.replaceDirectoryEntryAtomically,
   });
-  const claude = await refreshBuiltInClaudeSkillLinksUnlocked({
-    userDataDir: options.userDataDir,
-    appDataDir: options.appDataDir,
-    homeDir,
-    descriptors,
-    allowUnresolvedManagedSharedTarget,
-    replaceDirectoryEntryAtomically: options.replaceDirectoryEntryAtomically,
-  });
-  return {
-    changed: shared.changed || claude.changed,
-    complete: shared.complete && claude.complete,
-    warnings: [...shared.warnings, ...claude.warnings],
-  };
 }
 
 /**
@@ -1227,7 +1211,6 @@ export async function prepareBuiltInSkills(
       const candidateProjection = await projectBuiltInSkillLinksUnlocked(
         options,
         stableDescriptors,
-        true,
       );
       warnings.push(...candidateProjection.warnings);
       if (!candidateProjection.complete) {
