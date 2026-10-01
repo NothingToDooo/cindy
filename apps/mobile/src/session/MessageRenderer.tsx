@@ -5442,7 +5442,9 @@ function MarkdownBody({
   // 正文 Markdown 图片(![](url) / 安全 <img>)点击后走既有媒体 payload 查看器,与附件图片同一条链路。
   const openMarkdownImage = useCallback((url: string, alt?: string) => {
     if (!onOpenPayload) return;
-    const resolvedUrl = mobileMarkdownImageUrlForWorkdir(
+    // Match the scoped preview/gallery URL; outside-workdir chips remain
+    // explicitly openable through the existing single-image fallback.
+    const resolvedUrl = managedImagePreviewUrl(url) ?? mobileMarkdownImageUrlForWorkdir(
       url,
       chatFilePathContext?.workdir,
       markdownImageCacheKey,
@@ -5461,6 +5463,7 @@ function MarkdownBody({
     chatFilePathContext?.sessionId,
     chatFilePathContext?.workdir,
     markdownImageCacheKey,
+    managedImagePreviewUrl,
     onOpenPayload,
   ]);
   const openMarkdownMedia = useMemo(() => onOpenPayload
