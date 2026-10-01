@@ -178,6 +178,16 @@ async function startBotSession(input: {
 
 afterEach(async () => {
   await Promise.all(liveHandles.splice(0).map((handle) => handle.close()));
+  // The session owns its plugin staging directories. Wait for asynchronous
+  // disposal instead of racing a second rm against it (EPERM on Windows).
+  for (const [call] of sdkMock.query.mock.calls) {
+    for (const plugin of call.options.plugins ?? []) {
+      if (plugin.path === OWN_SKILL_ROOT) continue;
+      await vi.waitFor(async () => {
+        await expect(fs.stat(path.dirname(plugin.path))).rejects.toMatchObject({ code: 'ENOENT' });
+      });
+    }
+  }
   sdkMock.forkSession.mockReset();
   sdkMock.query.mockReset();
   if (originalClaudeConfigDir === undefined) {
@@ -250,7 +260,6 @@ describe('Cindy managed skills use Claude session plugins', () => {
     const options = await startBotSession({ ordinary: true, managed: true });
     expect(options.plugins).toHaveLength(1);
     expect(await fs.readdir(path.join(options.plugins![0]!.path, 'skills'))).toEqual(['learn']);
-    tempDirs.push(path.dirname(options.plugins![0]!.path));
     expect(options.settingSources).toEqual(['user', 'project', 'local']);
   });
   it('reclaims the session plugin when the handle closes, preserving its source skill', async () => {
@@ -258,7 +267,7 @@ describe('Cindy managed skills use Claude session plugins', () => {
     const root = options.plugins![0]!.path;
     const source = await fs.realpath(path.join(root, 'skills', 'learn'));
     await liveHandles.at(-1)!.close();
-    await vi.waitFor(async () => { await expect(fs.stat(root)).rejects.toMatchObject({ code: 'ENOENT' }); });
+    await vi.waitFor(async () => { await expect(fs.stat(path.dirname(root))).rejects.toMatchObject({ code: 'ENOENT' }); });
     expect(await fs.readFile(path.join(source, 'SKILL.md'), 'utf8')).toContain('Fixture');
   });
 
@@ -271,7 +280,6 @@ describe('Cindy managed skills use Claude session plugins', () => {
     const options = await startBotSession({ managed: true, allowManaged });
     if (allowManaged) {
       expect(options.plugins).toHaveLength(1);
-      tempDirs.push(path.dirname(options.plugins![0]!.path));
       expect(await fs.readdir(path.join(options.plugins![0]!.path, 'skills'))).toEqual(['learn']);
     } else expect(options.plugins).toBeUndefined();
   });

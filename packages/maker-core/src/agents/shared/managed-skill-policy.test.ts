@@ -66,8 +66,8 @@ describe("managed skill Bot grants", () => {
       const mounted = await prepareManagedSkillPlugins(selected);
       try {
         expect(
-          fs.realpathSync(path.join(mounted.roots[0]!, "skills", "learn")),
-        ).toBe(fs.realpathSync(approved));
+          fs.realpathSync.native(path.join(mounted.roots[0]!, "skills", "learn")),
+        ).toBe(fs.realpathSync.native(approved));
       } finally {
         await mounted.dispose();
       }
