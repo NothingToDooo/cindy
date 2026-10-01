@@ -14,7 +14,14 @@ const desktopTransform = vm.runInNewContext(
   fx: number,
   fy: number,
   fillHeight?: boolean,
-) => { x: number; y: number; width: number; height: number; scale: number };
+) => {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  scale: number;
+  maxZoom: number;
+};
 
 function viewer(rtc = false, frameCallback = true, nativeMedia = false) {
   const messages: Array<{
@@ -839,6 +846,20 @@ describe("remote desktop viewport", () => {
       expect(rect.x + rect.width).toBeLessThanOrEqual(w);
       expect(rect.y + rect.height).toBeLessThanOrEqual(h);
     }
+  });
+  it("caps pinch zoom at two viewer points per desktop point", () => {
+    for (const [w, h] of [
+      [393, 760],
+      [852, 340],
+    ]) {
+      const rect = desktopTransform(w, h, 1512, 982, 100, 0.5, 0.5);
+      expect(rect.scale).toBeCloseTo(2);
+      expect(rect.width).toBeCloseTo(1512 * 2);
+    }
+    // A display already shown larger than 2x at fit cannot zoom further.
+    const small = desktopTransform(1366, 1024, 400, 320, 5, 0.5, 0.5);
+    expect(small.maxZoom).toBe(1);
+    expect(small.scale).toBeCloseTo(3.2);
   });
   it("preserves the focus at the viewport center across rotation and keyboard resize", () => {
     for (const [w, h] of [
