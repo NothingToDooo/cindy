@@ -763,8 +763,7 @@ export function pickAgentDefaultRuntime(args: {
 
 /**
  * 「恢复上次选过的 agent」是否仍待落定:有记忆的 agent、尚未应用,且当前设备就是恢复目标
- * (没有偏好设备 = 不限设备)。恢复 effect 与自动默认 effect 共用这一个判据——待落定期间
- * 自动默认不得抢先把设备标记为已应用,否则恢复延后到数据就绪时会被跳过或弹两次确认。
+ * (没有偏好设备 = 不限设备)。待落定期间自动默认照常跟随最近任务;恢复落定时覆盖它。
  */
 export function isStoredAgentRestorePending(input: {
   storedAgentKind: NewSessionAgentKind | null | undefined;
@@ -800,6 +799,33 @@ export function canResolveStoredAgentRuntime(input: {
 }
 
 /**
+ * 迟到的最近任务补正:默认值只凭目录选出(当时该设备还没有最近任务)时只算临时。
+ * 任务列表没有「首拉完成」信号,冷启动时目录可能先到;之后该设备出现当前 agent 的
+ * 最近任务,就按它重算一次 model / effort / providerId。不改 agent 与权限——
+ * 恢复上次 agent 与权限记忆已落定,这里只补模型。无同 agent 最近任务 → null(继续等)。
+ */
+export function resolveLateRecentRuntime(input: {
+  agentKind: NewSessionAgentKind;
+  sessions: readonly RemoteSession[];
+  deviceId: string;
+  modelRows: readonly ProviderModelRow[];
+  currentEffort: string;
+  catalogReady: boolean;
+}): NewSessionRuntime | null {
+  if (!pickMostRecentSessionRuntime(input.sessions, { deviceId: input.deviceId, agentKind: input.agentKind })) {
+    return null;
+  }
+  return pickAgentDefaultRuntime({
+    agentKind: input.agentKind,
+    sessions: input.sessions,
+    deviceId: input.deviceId,
+    modelRows: input.modelRows,
+    currentEffort: input.currentEffort,
+    catalogReady: input.catalogReady,
+  });
+}
+
+/**
  * 新建对话「自动默认运行配置」effect 的决策核心(纯函数,从 new.tsx 那个 effect 内联逻辑抽出,便于单测)。
  * 返回 null = 本次不动 draft(已手动选过 / 无 selectedDevice / 该设备已应用过 / modelRows 未就绪且无 recent);
  * 返回 { patch, appliedDeviceId } = 调用方 setDraft(prev => ({ ...prev, ...patch })) 并记录 appliedDeviceId。
@@ -829,7 +855,7 @@ export function resolveNewSessionAutoDefault(input: {
   /** 仅在 provider-aware 列表不可用时传入,避免绕过被控端的模型可见性设置(上游 main 移植)。 */
   availableModels?: readonly MobileModelOption[];
   currentEffort: string;
-}): { patch: Partial<NewSessionDraft>; appliedDeviceId: string } | null {
+}): { patch: Partial<NewSessionDraft>; appliedDeviceId: string; basedOnRecentTask: boolean } | null {
   const {
     userTouched,
     appliedDeviceId,
@@ -864,6 +890,7 @@ export function resolveNewSessionAutoDefault(input: {
       : undefined;
     return {
       appliedDeviceId: selectedDeviceId,
+      basedOnRecentTask: true,
       patch: {
         agentKind: recent.agentKind,
         model,
@@ -896,6 +923,7 @@ export function resolveNewSessionAutoDefault(input: {
   if (!defaultModel) return null;
   return {
     appliedDeviceId: selectedDeviceId,
+    basedOnRecentTask: false,
     patch: {
       model: defaultModel.id,
       effort: reconcileEffortForModel(defaultModel, currentEffort),

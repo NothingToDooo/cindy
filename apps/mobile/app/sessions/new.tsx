@@ -196,7 +196,9 @@ import {
   parseNewSessionDeviceOptions,
   pickAgentDefaultRuntime,
   pickInitialNewSessionWorkspace,
+  pickMostRecentSessionRuntime,
   pickNewSessionDefaultDevice,
+  resolveLateRecentRuntime,
   resolveNewSessionAutoDefault,
   sessionFromCreateResult,
   compensatePrecreatedWorktree,
@@ -983,6 +985,8 @@ export default function NewRemoteSessionScreen() {
   // 持久草稿不会写入该 ref，因此已下架模型仍走 mobile 的首项降级。
   const explicitProviderModelSelectionRef = useRef<string | null>(null);
   const autoDefaultDeviceRef = useRef<string | null>(null);
+  // 默认模型只凭目录选出(该设备当时没有当前 agent 的最近任务)时记下设备:迟到的最近任务可补正一次。
+  const provisionalRuntimeDeviceRef = useRef<string | null>(null);
   // selectedDeviceId 的渲染期镜像:异步回调(权限确认 .then)提交前比对触发时捕获的设备,
   // 不一致即放弃写入 —— 防止确认弹窗期间用户切了设备,回调把旧设备的来源/配置写进草稿
   // (Greptile review P1:异步切换写入旧设备来源)。
@@ -1173,6 +1177,11 @@ export default function NewRemoteSessionScreen() {
     // 该路径同时负责恢复 agent 权限，下面的通用权限记忆 effect 不再重复弹框。
     appliedPermissionMemoryRef.current = true;
     if (selectedDeviceId) autoDefaultDeviceRef.current = selectedDeviceId;
+    // 没有该 agent 的最近任务、只凭目录选出的模型只算临时,迟到的最近任务还能补正。
+    provisionalRuntimeDeviceRef.current = selectedDeviceId
+      && !pickMostRecentSessionRuntime(sessions, { deviceId: selectedDeviceId, agentKind: storedAgentKind })
+      ? selectedDeviceId
+      : null;
     const storedPermissionMode = newSessionPreferences?.permissionModeByAgent[storedAgentKind];
     const nextPermissionMode =
       storedPermissionMode ??
@@ -1272,13 +1281,6 @@ export default function NewRemoteSessionScreen() {
   // 最近会话路径同步可得(sessions 在内存);列表最上面依赖 providers 异步,故 modelRows 就绪后此 effect 再触发。
   useEffect(() => {
     if (!newSessionPreferencesLoaded) return;
-    // 上次选过的 agent 还在等数据恢复时让路,由上面的恢复 effect 落定(它会标记设备已应用)。
-    if (!userTouchedRuntimeRef.current && isStoredAgentRestorePending({
-      storedAgentKind: newSessionPreferences?.agentKind,
-      appliedStoredAgentKind: appliedStoredAgentRef.current,
-      expectedDeviceId: preferredDefaultDevice?.deviceId ?? '',
-      selectedDeviceId,
-    })) return;
     const result = resolveNewSessionAutoDefault({
       userTouched: userTouchedRuntimeRef.current,
       appliedDeviceId: autoDefaultDeviceRef.current,
@@ -1298,6 +1300,7 @@ export default function NewRemoteSessionScreen() {
     });
     if (!result) return;
     autoDefaultDeviceRef.current = result.appliedDeviceId;
+    provisionalRuntimeDeviceRef.current = result.basedOnRecentTask ? null : result.appliedDeviceId;
     const nextAgentKind = result.patch.agentKind ?? draft.agentKind;
     const storedPermissionMode = appliedPermissionMemoryRef.current
       ? undefined
@@ -1338,7 +1341,40 @@ export default function NewRemoteSessionScreen() {
     return () => {
       cancelled = true;
     };
-  }, [capabilities?.availableModels, deviceProviders.loading, draft.effort, draft.permissionMode, draft.agentKind, modelRows, deviceProviders.ready, deviceProviders.unsupported, modelSections.connected.length, newSessionPreferences, newSessionPreferencesLoaded, preferredDefaultDevice?.deviceId, selectedDeviceId, sessions]);
+  }, [capabilities?.availableModels, deviceProviders.loading, draft.effort, draft.permissionMode, draft.agentKind, modelRows, deviceProviders.ready, deviceProviders.unsupported, modelSections.connected.length, newSessionPreferences, newSessionPreferencesLoaded, selectedDeviceId, sessions]);
+
+  // 迟到的最近任务补正:默认模型只凭目录选出时(冷启动目录先于任务列表到达),该设备
+  // 之后出现当前 agent 的最近任务就按它重算一次模型;用户手动改过运行配置则放弃。
+  useEffect(() => {
+    if (!selectedDeviceId || provisionalRuntimeDeviceRef.current !== selectedDeviceId) return;
+    if (userTouchedRuntimeRef.current) {
+      provisionalRuntimeDeviceRef.current = null;
+      return;
+    }
+    const agentKind = draft.agentKind;
+    const next = resolveLateRecentRuntime({
+      agentKind,
+      sessions,
+      deviceId: selectedDeviceId,
+      modelRows,
+      currentEffort: draft.effort,
+      catalogReady: deviceProviders.ready,
+    });
+    if (!next) return;
+    provisionalRuntimeDeviceRef.current = null;
+    setDraft((current) => {
+      if (current.agentKind !== agentKind) return current;
+      const comboChanged = next.model !== current.model || next.providerId !== current.providerId;
+      if (!comboChanged && next.effort === current.effort) return current;
+      return {
+        ...current,
+        model: next.model,
+        providerId: next.providerId,
+        effort: next.effort,
+        ...(comboChanged ? { fastMode: false } : {}),
+      };
+    });
+  }, [deviceProviders.ready, draft.agentKind, draft.effort, modelRows, selectedDeviceId, sessions]);
 
   // 目录就绪后的来源终检(codex review P1):自动默认/恢复在目录加载期信任的来源可能已失效
   // (provider 被删/断开/模型下架),就绪后必须复核——联合回退整对 (model, providerId)

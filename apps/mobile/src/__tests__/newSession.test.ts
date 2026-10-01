@@ -10,6 +10,7 @@ import {
   availableNewSessionAgentOptions,
   canResolveStoredAgentRuntime,
   isStoredAgentRestorePending,
+  resolveLateRecentRuntime,
   buildNewSessionCreatePreview,
   buildRecentWorkspaceOptions,
   buildRemoteCreateSessionOptions,
@@ -404,16 +405,51 @@ describe('stored agent restore gating', () => {
     })).toBe(true);
   });
 
-  it('wires both new-session effects through the shared gates instead of the loading flag', () => {
+  it('wires the restore gate, keeps auto-default unblocked, and marks catalog-only defaults provisional', () => {
     const source = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
     const storedStart = source.indexOf('const storedAgentKind = newSessionPreferences?.agentKind;');
     const autoStart = source.indexOf('const result = resolveNewSessionAutoDefault({');
-    const storedSource = source.slice(storedStart, source.indexOf('appliedStoredAgentRef.current = storedAgentKind;', storedStart));
-    const autoGuardSource = source.slice(source.lastIndexOf('useEffect(() => {', autoStart), autoStart);
+    const storedSource = source.slice(storedStart, source.indexOf('const storedPermissionMode', storedStart));
+    const autoSource = source.slice(source.lastIndexOf('useEffect(() => {', autoStart), source.indexOf('let cancelled = false;', autoStart));
     expect(storedSource).toContain('isStoredAgentRestorePending({');
     expect(storedSource).toContain('canResolveStoredAgentRuntime({');
     expect(storedSource).not.toContain('deviceProviders.loading');
-    expect(autoGuardSource).toContain('isStoredAgentRestorePending({');
+    expect(storedSource).toContain('provisionalRuntimeDeviceRef.current = selectedDeviceId');
+    // 恢复待落定时不阻断「跟随最近任务」(Greptile P1)。
+    expect(autoSource).not.toContain('isStoredAgentRestorePending(');
+    expect(autoSource).toContain('provisionalRuntimeDeviceRef.current = result.basedOnRecentTask ? null : result.appliedDeviceId;');
+    expect(source).toContain('const next = resolveLateRecentRuntime({');
+  });
+});
+
+describe('resolveLateRecentRuntime', () => {
+  it('waits until a recent task of the current agent appears on the device', () => {
+    const base = { agentKind: 'claude-code' as const, deviceId: 'mac', modelRows: [], currentEffort: 'medium', catalogReady: true };
+    expect(resolveLateRecentRuntime({ ...base, sessions: [] })).toBeNull();
+    expect(resolveLateRecentRuntime({
+      ...base,
+      sessions: [remoteSession('cx', { agentKind: 'codex', model: 'gpt-5.4', deviceLinkDeviceId: 'mac' })],
+    })).toBeNull();
+  });
+
+  it('upgrades a catalog-only default to the late-arriving recent task model (codex P2)', () => {
+    const rows = [
+      modelRow('claude-catalog-default', ['low', 'medium', 'high'], 'medium'),
+      modelRow('claude-opus-5-5', ['low', 'medium', 'high'], 'medium'),
+    ];
+    expect(resolveLateRecentRuntime({
+      agentKind: 'claude-code',
+      sessions: [remoteSession('recent', { deviceLinkDeviceId: 'mac', model: 'claude-opus-5-5', effort: 'high' })],
+      deviceId: 'mac',
+      modelRows: rows,
+      currentEffort: 'medium',
+      catalogReady: true,
+    })).toEqual({
+      agentKind: 'claude-code',
+      model: 'claude-opus-5-5',
+      effort: 'high',
+      providerId: 'prov-claude-opus-5-5',
+    });
   });
 });
 
@@ -822,6 +858,7 @@ describe('resolveNewSessionAutoDefault', () => {
     });
     expect(result).toEqual({
       appliedDeviceId: 'devA',
+      basedOnRecentTask: true,
       patch: {
         agentKind: 'codex',
         model: 'gpt-5.4',
@@ -940,6 +977,7 @@ describe('resolveNewSessionAutoDefault', () => {
     });
     expect(result).toEqual({
       appliedDeviceId: 'devA',
+      basedOnRecentTask: false,
       patch: { model: 'claude-sonnet-4-6', effort: 'low', providerId: 'prov-claude-sonnet-4-6' },
     });
     expect(result?.patch).not.toHaveProperty('agentKind');
@@ -1055,6 +1093,7 @@ describe('resolveNewSessionAutoDefault', () => {
     // 目录明确不可用(旧被控端)→ 放行 capabilities 扁平回退;扁平列表无 provider 结构 → 默认路由
     expect(result).toEqual({
       appliedDeviceId: 'devA',
+      basedOnRecentTask: false,
       patch: {
         model: 'flat-default',
         effort: 'medium',
