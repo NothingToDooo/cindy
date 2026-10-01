@@ -82,6 +82,14 @@ export async function writeMigratedTranscript(
       await fsp.rm(target, { force: true });
       await fsp.rename(temp, target);
     }
+    // The import may have lost ownership during the rename; the caller then throws before
+    // journaling `target`, so withdraw it here instead of leaving it orphaned.
+    try {
+      assertStillValid?.();
+    } catch (error) {
+      await fsp.rm(target, { force: true });
+      throw error;
+    }
   } finally {
     await fsp.rm(temp, { force: true });
   }

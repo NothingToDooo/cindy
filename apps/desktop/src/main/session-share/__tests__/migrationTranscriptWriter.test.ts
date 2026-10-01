@@ -89,4 +89,17 @@ describe('writeMigratedTranscript', () => {
     ).rejects.toThrow('MIGRATION_OWNER_CHANGED');
     expect(fs.readdirSync(dir)).toEqual([]);
   });
+
+  it('withdraws the published file when the import stops being current during the rename', async () => {
+    const target = path.join(dir, 'copy.jsonl');
+    let checks = 0;
+    await expect(
+      writeMigratedTranscript(chunked(Buffer.from(ccRow), 4), target, null, () => {
+        checks += 1;
+        if (checks > 1) throw new Error('MIGRATION_OWNER_CHANGED');
+      }),
+    ).rejects.toThrow('MIGRATION_OWNER_CHANGED');
+    expect(checks).toBe(2);
+    expect(fs.readdirSync(dir)).toEqual([]);
+  });
 });
