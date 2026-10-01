@@ -558,9 +558,12 @@ it('isolates conflicts, preserves personal files, and applies a resolved merge i
     expect(await h.git(['diff', '--name-only', '--diff-filter=U'], worktree)).toContain(
       'feature.txt',
     );
-    await expect(applyUpstreamMerge(h.userData, result, h.git)).rejects.toMatchObject({
-      code: 'dirty',
+    // A resolver turn that ended with conflicts left waits for the user's answer in its task.
+    await expect(applyUpstreamMerge(h.userData, result, h.git)).resolves.toMatchObject({
+      status: 'conflict',
+      needsInput: true,
     });
+    expect(await readFile(path.join(h.source, 'feature.txt'), 'utf8')).toBe('local feature\n');
     await writeFile(path.join(worktree, 'feature.txt'), 'local feature\nupstream fix\n');
     await h.git(['add', '.'], worktree);
     const applied = await applyUpstreamMerge(h.userData, result, h.git);

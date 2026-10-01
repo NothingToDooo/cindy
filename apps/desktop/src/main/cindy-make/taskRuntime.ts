@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { normalizeDbAgentKind, dbToMakerAgentKind } from '../../shared/agentKindConversion.js';
 import { and, desc, eq, gt, isNull, like, or } from 'drizzle-orm';
 import { app } from 'electron';
+import { syncPersonalRemoteBeforeTask } from './personalRemoteRuntime.js';
 import { cindyMakeManager } from './manager.js';
 import {
   createMakeToolchainEnvironment,
@@ -539,8 +540,34 @@ export async function startCindyMakeTask(raw: unknown, sender: number): Promise<
       // The task worktree must branch from the latest verified personal source.
       // Keep the visible task shell while this runs so conflicts and Stop remain recoverable.
       phase('updatingSource', publish);
-      const { syncSourceBeforeCindyMakeTask } = await import('./upstreamMergeRuntime.js');
-      await syncSourceBeforeCindyMakeTask(signal, taskOptions);
+      const { syncSourceBeforeCindyMakeTask, hasRetainedSourceOperation } = await import(
+        './upstreamMergeRuntime.js'
+      );
+      for (let attempt = 0; ; attempt += 1) {
+        // A Sync in progress finishes first; the task then starts from its result.
+        await cindyMakeManager.whenManualSourceSyncIdle(signal);
+        checkPreparationCurrent();
+        // A conflict still waiting in its task leaves the personal version as it is: the new
+        // task starts from it instead of waiting for (or failing on) that conflict.
+        if (hasRetainedSourceOperation()) break;
+        try {
+          // Changes saved from another computer come first, so the official update replays them too.
+          await untilAborted(syncPersonalRemoteBeforeTask(), signal);
+          checkPreparationCurrent();
+          await syncSourceBeforeCindyMakeTask(signal, taskOptions);
+          break;
+        } catch (error) {
+          // A Sync that started meanwhile owns the source: wait for it, then decide again.
+          if (
+            attempt < 2 &&
+            !signal.aborted &&
+            (error as { code?: string })?.code === 'busy' &&
+            cindyMakeManager.isManualSourceSyncRunning()
+          )
+            continue;
+          throw error;
+        }
+      }
       checkPreparationCurrent();
       signal.throwIfAborted();
       source = await readCurrentCindySourceStatus(root, env);

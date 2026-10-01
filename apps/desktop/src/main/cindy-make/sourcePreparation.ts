@@ -12,6 +12,7 @@ import { runSourceGit } from './sourceGit.js';
 import { runSourcePnpm } from './sourcePnpm.js';
 import { readSourceRevisions, type SourceRevisions } from './sourceRevisions.js';
 import { CINDY_PERSONAL_BRANCH } from './sourcePaths.js';
+import { PERSONAL_UPSTREAM_REF } from './sourceContent.js';
 import { checkMakeToolVersion, untilAborted } from './doctor.js';
 export const CINDY_SOURCE_REPOSITORY = 'https://github.com/makecindy/cindy.git';
 export { makeSourceRoot, makeSourceCheckoutPath } from './sourcePaths.js';
@@ -39,6 +40,17 @@ async function persistSourceStatus(root: string, status: MakeSourceStatus): Prom
   } catch {
     // Status is auxiliary UI state; a failed write must not block source preparation.
   }
+}
+
+/**
+ * An official update was adopted: the personal version is now on this official ref,
+ * so Settings names it (and resolves its commit) instead of the ref it was created from.
+ */
+export async function recordCindySourceRef(root: string, ref: string): Promise<void> {
+  if (!/^(?:main|v\d[0-9A-Za-z.+-]{0,63})$/.test(ref)) return;
+  const status = await readCindySourceStatus(root);
+  if (status.status !== 'ready' || status.ref === ref) return;
+  await persistSourceStatus(root, { ...status, ref });
 }
 
 /** Read the last managed checkout summary without invoking Git or exposing arbitrary paths. */
@@ -617,6 +629,13 @@ async function prepareCindySourceInternal(
     );
     if (!hasPersonal.trim()) {
       await git(env, ['branch', CINDY_PERSONAL_BRANCH, upstreamCommit], sourcePath, signal);
+      // Sync, combine and upload all read the official base of the personal version here.
+      await git(
+        env,
+        ['update-ref', PERSONAL_UPSTREAM_REF, upstreamCommit.trim(), ''],
+        sourcePath,
+        signal,
+      ).catch(() => undefined);
     }
     await emitProgress({
       status: 'preparing',
