@@ -43,6 +43,26 @@ beforeEach(() => {
 });
 
 describe('rewriteOutboundMedia — channel gating', () => {
+  it('uploads Review attachments and strips controller-local paths without mutating the request', async () => {
+    const request = { sourceSessionId: 'source', focus: 'docs', attachments: [
+      { name: 'notes.md', path: '/controller/notes.md', category: 'text' },
+    ] };
+    const result = await rewriteOutboundMedia('maker:review:start', [request]);
+    const rewritten = result[0] as typeof request;
+    expect(rewritten.sourceSessionId).toBe('source');
+    expect(rewritten.focus).toBe('docs');
+    expect(isAttachmentOssRef(rewritten.attachments[0].path)).toBe(true);
+    expect(JSON.stringify(result)).not.toContain('/controller/notes.md');
+    expect(request.attachments[0].path).toBe('/controller/notes.md');
+    expect(uploadLocalFile).toHaveBeenCalledOnce();
+  });
+
+  it('rejects Review when attachment upload fails', async () => {
+    uploadLocalFile.mockRejectedValue(new Error('upload failed'));
+    await expect(rewriteOutboundMedia('maker:review:start', [{
+      sourceSessionId: 'source', attachments: [{ name: 'notes.md', path: '/controller/notes.md' }],
+    }])).rejects.toThrow('upload failed');
+  });
   it('uses peer staging for exact file bytes, preserves the name and retains OSS fallback', async () => {
     const direct = vi.fn(async () => buildPeerAttachmentRef({ ticket: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', size: 10, sha256: SHA256, mimeType: 'text/plain' }));
     const args = ['session', { type: 'user', content: [{ type: 'file', path: '/controller/a.txt', originalName: 'a.txt' }] }];

@@ -380,6 +380,14 @@ async function rewriteQueued(item: unknown, existing: ReadonlySet<string> = new 
  * 抛错由 handleInvoke 转 MEDIA_TRANSFER_FAILED。
  */
 export async function rewriteOutboundMedia(channel: string, args: unknown[], existing: ReadonlySet<string> = new Set()): Promise<unknown[]> {
+  if (channel === 'maker:review:start') {
+    const request = args[0];
+    if (!request || typeof request !== 'object' || Array.isArray(request)) return args;
+    const attachments = (request as { attachments?: unknown }).attachments;
+    if (!Array.isArray(attachments) || !attachments.length) return args;
+    const rewritten = await rewriteQueued({ files: attachments }) as { files: unknown[] };
+    return [{ ...request, attachments: rewritten.files }, ...args.slice(1)];
+  }
   const steerOpts = args[2];
   if (
     channel === 'maker:input:steer' &&

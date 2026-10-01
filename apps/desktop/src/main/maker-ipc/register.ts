@@ -770,6 +770,7 @@ import {
   materializeQueuedOssAttachmentsDeferred,
 } from './normalizeAttachments.js';
 import { QueuedAttachmentOwnershipRegistry } from './queuedAttachmentOwnership.js';
+import { prepareRemoteReviewAttachments } from './reviewRemoteInput.js';
 import { AGENT_ISLAND_DISPLAY_CONFIG } from '../agent-island/displayConfig.js';
 import {
   shouldClearAgentIslandSessionForOrcaWorker,
@@ -4979,6 +4980,9 @@ async function confirmReviewExternalArtifacts(
   event: IpcMainInvokeEvent,
   items: ReviewArtifactConfirmationItem[],
 ): Promise<boolean> {
+  // Remote invokes have no Renderer sender. Until this confirmation has a
+  // remote UI, retain the explicit-grant requirement rather than auto-approve.
+  if (isDeviceLinkInvoke()) return false;
   const parent = BrowserWindow.fromWebContents(event.sender);
   if (!parent || parent.isDestroyed()) return false;
   return showReviewArtifactConfirmWindow(parent, buildReviewArtifactConfirmationDialog(items, t), {
@@ -7926,8 +7930,14 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   };
 
   const reviewRunControl = registerReviewStartHandler(makerSessionRegistry, {
-    assertCaller: (event) =>
-      assertTrustedAppRendererEvent(event as Parameters<typeof assertTrustedAppRendererEvent>[0]),
+    assertCaller: (event) => {
+      // A device-link invoke is already authenticated by the relay, controller
+      // lease and remote invoke allowlist. Its synthetic IPC event has no real
+      // BrowserWindow sender, so only local Renderer calls use the sender guard.
+      if (!isDeviceLinkInvoke()) {
+        assertTrustedAppRendererEvent(event as Parameters<typeof assertTrustedAppRendererEvent>[0]);
+      }
+    },
     waitUntilReady: async (sourceSessionId) => {
       await ensureReviewRuntimeReady();
       // Recover only this task when the user explicitly starts Review again.
@@ -7989,7 +7999,16 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       let sourceArtifactFingerprint = '';
       let authorizedArtifactPaths: string[] = [];
       let cleanupPreparedArtifacts: (() => Promise<void>) | null = null;
+      let cleanupRemoteAttachments: (() => Promise<void>) | null = null;
       try {
+        if (isDeviceLinkInvoke() && request.attachments.length) {
+          const remote = await prepareRemoteReviewAttachments(
+            request, reviewerSessionId, materializeQueuedOssAttachmentsDeferred,
+          );
+          request.attachments = remote.attachments;
+          cleanupRemoteAttachments = remote.cleanup;
+          cleanupPreparedArtifacts = remote.cleanup;
+        }
         const historicalAttachments = await listReviewHistoricalAttachments(source.id);
         const explicitArtifactGrant = await authorizeReviewExplicitArtifacts({
           workingDir: sourceWorkingDir,
@@ -8012,7 +8031,13 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
               explicitArtifactGrant: snapshotGrant,
             }),
         });
-        cleanupPreparedArtifacts = prepared.cleanup;
+        cleanupPreparedArtifacts = async () => {
+          try {
+            await prepared.cleanup();
+          } finally {
+            await cleanupRemoteAttachments?.();
+          }
+        };
         evidence = prepared.value;
         sourceArtifactFingerprint = prepared.fingerprint;
       } catch (error) {

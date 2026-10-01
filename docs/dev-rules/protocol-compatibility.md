@@ -11,6 +11,20 @@
 
 > **增量适用原则**：wire protocol 兼容对所有跨端改动生效，不因是小改而豁免。
 
+## Desktop 设备互联 Review
+
+桌面控制端的 /review 通过 maker:review:start 请求被控 Desktop 执行。证据收集、Reviewer
+任务创建、只读生命周期和 Review 卡片持久化始终发生在被控端；结果沿现有 session、message
+和 maker:event 推送回控制端，不新增独立结果协议。该 channel 仅加入
+packages/device-link 的 invoke allowlist，仍受控制租约、会话可见性和被控端 Review 输入
+保护约束；SSH remoteHostId 不因此获得 Review 能力。
+
+旧被控端不认识该 channel 时返回 CHANNEL_NOT_ALLOWED，控制端沿用 Review 失败提示，
+不得回退到控制端本机执行。Review Reviewer session 的后续输入仍被远程 Review 外部输入门禁拒绝。
+控制端附件复用现有上传／被控端物化链路，禁止把控制端本机路径当作被控端文件。仍需本机
+确认的工作区外成果不自动放行；确认尚无远控入口时返回权限错误。写请求不新增自动重试，
+90 秒超时仅作用于该请求，超时不代表被控端未创建 Reviewer，应先查看任务里的 Review 卡片。
+
 ## 电脑互联的消息文件与历史变更
 
 跨电脑任务复制使用同账号业务通道 `maker:task-copy`，受信 Renderer 使用 `task-copy:request`。
