@@ -1,6 +1,6 @@
 import { getPiExtensionUiCapability } from './extension-ui-capabilities.js';
 import { parsePiManagementArgs, parsePiManagementText } from './managed-command.js';
-import { snapshotDisabledSkillLaunch, currentDisabledSkillLaunchPaths, extendDisabledSkillLaunchPaths, type DisabledSkillLaunchSnapshot } from '../shared/skill-activation.js';
+import { canonicalSkillPath, isSkillDisabled, snapshotDisabledSkillLaunch, currentDisabledSkillLaunchPaths, extendDisabledSkillLaunchPaths, type DisabledSkillLaunchSnapshot } from '../shared/skill-activation.js';
 /**
  * PiAgent —— pi coding agent(earendil-works/pi)接入。
  *
@@ -210,6 +210,7 @@ import {
   unavailablePiProjectResourceAssembly,
 } from './project-resource-assembly.js';
 import { applyPiBotSkillPolicy } from './bot-skill-policy.js';
+import { snapshotManagedSkillGrants } from '../shared/managed-skill-policy.js';
 import {
   assertPiSpawnArgvFitsPlatform,
   collectPiProjectResourceCliPaths,
@@ -3656,6 +3657,13 @@ export class PiAgent extends BaseAgent {
       approvalRevision: projectResourceAssembly.diagnostic.approvalRevision,
       requestedSkillCount: projectResourceAssembly.diagnostic.requestedSkillCount,
     });
+    const managedSkillGrants = snapshotManagedSkillGrants(opts.botRuntimeProfile?.skillPolicy);
+    const managedSkills = opts.remoteHostId || reviewMode ? [] : await this.deps.getManagedSkills?.() ?? [];
+    const managedDisabledPaths = snapshotDisabledSkillLaunch(opts.remoteHostId || reviewMode ? [] : this.deps.getDisabledSkillPaths?.() ?? []);
+    const managedSkillPaths = managedSkills.filter((skill) => {
+      if (!skill.path || isSkillDisabled(skill.path, currentDisabledSkillLaunchPaths(managedDisabledPaths))) return false;
+      return managedSkillGrants === undefined || managedSkillGrants.has(canonicalSkillPath(skill.path));
+    }).map((skill) => skill.path!);
     const botSkillSelection = applyPiBotSkillPolicy(
       reviewMode ? undefined : opts.botRuntimeProfile?.skillPolicy,
       projectResourceAssembly,
@@ -3751,6 +3759,16 @@ export class PiAgent extends BaseAgent {
         }
       : collectedProjectResources;
 
+    const managedSourceIdentities = new Set(managedSkills.flatMap((skill) =>
+      skill.path ? [canonicalSkillPath(skill.path)] : []));
+    // The catalog path may alias a managed source. Apply the managed grant and
+    // activation checks once, including paths already selected by the Bot.
+    const additionalSkillPaths = [...new Map([
+      ...(loadProjectResourcesInPlace ? [] : botSkillSelection.explicitSkillPaths.filter((skillPath) =>
+        !managedSourceIdentities.has(canonicalSkillPath(skillPath)))),
+      ...managedSkillPaths,
+    ].map((skillPath) => [canonicalSkillPath(skillPath), skillPath])).values()];
+
     const args = [
       '--mode',
       'rpc',
@@ -3770,6 +3788,9 @@ export class PiAgent extends BaseAgent {
       // the cwd chain — their context is the Bot profile, not the workspace.
       ...(opts.botRuntimeProfile ? ['--no-context-files'] : []),
       ...(botSkillSelection.disableImplicitSkills ? ['--no-skills'] : []),
+      ...additionalSkillPaths.filter((skillPath) => !projectResourceCli.skills
+        .some((existing) => canonicalSkillPath(existing) === canonicalSkillPath(skillPath)))
+        .flatMap((skillPath) => ['--skill', skillPath]),
       ...(appendSystemPrompt.length > 0 ? ['--append-system-prompt', appendSystemPrompt] : []),
       '--extension',
       bridgeExtensionPath,
@@ -3777,7 +3798,7 @@ export class PiAgent extends BaseAgent {
       ...(!reviewMode && planModeExtAvailable ? ['--extension', planModeExtPath] : []),
       ...(loadProjectResourcesInPlace
         ? piProjectResourceCliArgs(projectResourceCli)
-        : botSkillSelection.explicitSkillPaths.flatMap((skillPath) => ['--skill', skillPath])),
+        : []),
     ];
     try {
       assertPiSpawnArgvFitsPlatform(args);
@@ -5686,6 +5707,7 @@ export class PiAgent extends BaseAgent {
         [
           ...managedPackageRoots,
           ...projectResourceCli.skills,
+          ...managedSkillPaths,
           ...projectResourceCli.promptTemplates,
           ...projectResourceCli.extensions,
         ],
@@ -7951,7 +7973,15 @@ export class PiAgent extends BaseAgent {
 
   /** SkillHub raw view; project items remain discovered until runtime truth says otherwise. */
   override async listCustomizations(opts: ListCustomizationsOptions): Promise<ListCustomizationsResult> {
-    return scanPiCustomizations(opts);
+    const result = await scanPiCustomizations(opts);
+    if (!opts.kinds || opts.kinds.includes('skill')) {
+      result.items.push(...(await this.deps.getManagedSkills?.() ?? []).filter((skill) => skill.path).map((skill) => ({
+        engine: 'pi' as const, kind: 'skill', scope: 'user', name: skill.name,
+        description: skill.description, absolutePath: path.dirname(skill.path!), mdPath: skill.path,
+        enabled: skill.enabled,
+      })));
+    }
+    return result;
   }
 
   /**
@@ -7974,6 +8004,8 @@ export class PiAgent extends BaseAgent {
     ]);
     const out: ListAgentSkillsResult = {
       skills: [
+        ...(await this.deps.getManagedSkills?.() ?? []).map(({ claudeCommandName: _command, ...skill }) =>
+          ({ ...skill, runtimeCommandName: `skill:${skill.name}` })),
         ...items
           .filter((it) => it.kind === 'skill' && it.enabled !== false)
           .map((it) => ({

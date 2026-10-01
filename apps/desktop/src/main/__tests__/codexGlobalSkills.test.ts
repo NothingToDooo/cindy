@@ -42,6 +42,21 @@ afterEach(async () => {
 });
 
 describe('prepareCodexGlobalSkillsLinks', () => {
+  it('loads private managed roots and retargets the owner without creating user skill directories', async () => {
+    const root = await makeTmpDir();
+    const homeDir = path.join(root, 'home');
+    const codexHome = path.join(root, 'codex');
+    const ownerA = path.join(root, 'owner-a'), ownerB = path.join(root, 'owner-b');
+    await writeSkill(path.join(ownerA, 'skills'), 'learn');
+    await writeSkill(path.join(ownerB, 'skills'), 'learn');
+    await prepareCodexGlobalSkillsLinks(codexHome, {homeDir, managedRoots:[ownerA]});
+    expect(await sameRealPath(path.join(codexHome,'skills/cindy-0/learn'), path.join(ownerA,'skills/learn'))).toBe(true);
+    await prepareCodexGlobalSkillsLinks(codexHome, {homeDir, managedRoots:[ownerB]});
+    expect(await sameRealPath(path.join(codexHome,'skills/cindy-0/learn'), path.join(ownerB,'skills/learn'))).toBe(true);
+    await expect(fs.stat(path.join(homeDir,'.agents'))).rejects.toMatchObject({code:'ENOENT'});
+    await expect(fs.stat(path.join(homeDir,'.claude'))).rejects.toMatchObject({code:'ENOENT'});
+  });
+
   it('links legacy Codex and shared agent skills directly under the custom CODEX_HOME skills root', async () => {
     const root = await makeTmpDir();
     const homeDir = path.join(root, 'home');

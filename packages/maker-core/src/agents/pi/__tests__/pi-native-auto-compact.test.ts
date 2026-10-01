@@ -9,6 +9,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const knobs = vi.hoisted(() => ({
+  spawnArgs: [] as string[],
   compactCalls: [] as Array<Record<string, unknown>>,
   compactHold: null as null | Promise<void>,
   rpcCalls: [] as Array<Record<string, unknown>>,
@@ -31,8 +32,10 @@ const knobs = vi.hoisted(() => ({
 
 vi.mock("../transport.js", () => ({
   createPiStdioTransport: (opts: {
+    args?: string[];
     onProcessSpawned?: (pid: number) => void | (() => void);
   }) => {
+    knobs.spawnArgs = opts.args ?? [];
     opts.onProcessSpawned?.(1234);
     return {
       writeLine: async () => {},
@@ -344,6 +347,32 @@ describe("PiAgent native auto-compaction ownership", () => {
     });
     knobs.onEvent?.({ type: "agent_settled" });
   }
+
+  it.each(['ordinary', 'disabled', 'bot-allow', 'bot-deny', 'bot-failed', 'bot-disabled', 'bot-missing', 'bot-user-collision', 'bot-global-disabled'] as const)('loads managed skills through explicit paths: %s', async (mode) => {
+    const skill = path.join(agentHome, 'managed', 'learn', 'SKILL.md');
+    mkdirSync(path.dirname(skill), {recursive:true}); writeFileSync(skill, '---\nname: learn\ndescription: fixture\n---\nLearn');
+    const deps = buildDeps();
+    deps.getManagedSkills = async () => [{kind:'agent-skill', name:'learn', source:'skill', path:skill,
+      claudeCommandName:'cindy:learn'}];
+    if(mode === 'disabled' || mode === 'bot-global-disabled') deps.getDisabledSkillPaths = () => [path.dirname(skill)];
+    const bot = mode.startsWith('bot');
+    const handle = await new PiAgent(deps).startSession({ sessionId:'managed-skills', workingDir:cwd, model:'m',
+      ...(bot ? {botRuntimeProfile:{botId:'fixture',profileVersion:1,
+        skillPolicy:{mode:'allowlist' as const, configured:mode === 'bot-deny' ? [] : ['skill:learn'],
+          catalog: mode === 'bot-missing' ? [] : [
+            { name: 'learn', runtimeCommandName: 'skill:learn', path: skill,
+              enabled: mode !== 'bot-disabled', runtimeStatus: mode === 'bot-failed' ? 'failed' as const : 'loaded' as const },
+            ...(mode === 'bot-user-collision' ? [{ name: 'learn', runtimeCommandName: 'skill:learn',
+              path: path.join(agentHome, 'user-learn', 'SKILL.md'), enabled: true }] : []),
+          ]},
+        mcpPolicy:{mode:'inherit' as const,configured:[],catalog:[]},
+        toolsetPolicy:{mode:'inherit' as const,configured:[],catalog:[]}}} : {})});
+    try {
+      expect(knobs.spawnArgs.includes(skill)).toBe(mode === 'ordinary' || mode === 'bot-allow');
+      if(bot) expect(knobs.spawnArgs).toContain('--no-skills');
+      if(mode === 'bot-allow') expect(knobs.spawnArgs.filter((arg) => arg === skill)).toHaveLength(1);
+    } finally {await handle.close();}
+  });
 
   it("enables Pi native auto-compaction during startup", async () => {
     const handle = await start();

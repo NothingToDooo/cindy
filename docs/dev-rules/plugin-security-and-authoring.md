@@ -218,6 +218,11 @@
   AI 审阅，Ask 弹确认卡，远程／缺会话／查询失败 fail closed），禁止在 Host 已放行
   后再因目录边界悄悄硬断。`ghost_forge_pack` 只负责校验与打包；只有用户明确
   要求后调用独立的 `ghost_forge_install` 才安装或更新，不因 scaffold／pack 成功而隐式安装。
+- 存量插件技能投影在当前账号的 `<状态根>/agent-skills`，不写 `~/.agents/skills`
+  或 `~/.claude/skills`。Claude 使用每插件独立的本地 plugin（命令带命名空间），
+  Codex 通过 Cindy 的 `CODEX_HOME/skills`，Pi 通过显式 `--skill` 加载；均保留技能
+  停用与 Bot 白名单。旧全局链接仅在能证明属于 Cindy 时迁移删除；用户文件与外来
+  链接保留。账号切换撤销私有投影与遗留全局投影。
 - `skill` 是唯一**越出沙箱**的能力：技能指令由主 Agent 以用户全部权限执行、全局
   生效、不随 workdir 级停用隐藏。其安全边界是**声明一致性**（manifest 里的
   name／description 必须与 SKILL.md frontmatter 逐字一致，`skillSlot.ts` 的
@@ -229,7 +234,7 @@
   内存投影**(inspect 时已被 `packageSha256` 钉住的那份字节),不从已发布的可变安装
   目录首读:publish 与首次 hash 之间被换的字节应当在快照对账时被拒,而不是被首读钉成
   固化基线；安装事务校验的 SKILL.md 必须就是 Agent 之后
-  读到的那份，所以共享技能根的链接指快照而不是可被改写的 `cindy-brain/<id>/<dir>`。
+  读到的那份，所以 Cindy 私有技能投影的链接指快照而不是可被改写的 `cindy-brain/<id>/<dir>`。
   快照缺失需要从安装目录重建时，**顺序本身就是安全性质**：先把字节复制进状态根的
   临时目录，再对**临时目录里那份即将成为快照的字节**做全部权威校验（尺寸上限 →
   指纹逐字节比对 → frontmatter 一致性），通过才 rename 就位。**不得改成"先校验安装
@@ -240,7 +245,7 @@
   喂入、不整份读进内存（技能目录里除 SKILL.md 之外的文件没有尺寸上限，整份读会被一个
   塞进来的超大辅助文件撑爆）。只靠 `checkSkillMdConsistency` 拦不住"frontmatter 不动、改写正文或塞
   辅助文件"，那会把一份未经合法安装／更新事务校验的指令在一次启用里固化成
-  宿主快照并全局挂链。对不上一律 fail closed，要求重新安装合法包，不许就地自愈成新固化状态；
+  宿主快照并挂载到 Cindy 会话。对不上一律 fail closed，要求重新安装合法包，不许就地自愈成新固化状态；
   `skillContentSha256` 因此是
   **运行期判据**，与只作审计用的 `packageSha256` 不同，且必填——留"字段缺失就跳过
   校验"的可选口子等于给漂移开一条绕过路径）+ **链接对账**（`reconcileGhostSkillLinks` 只增删"目标落在

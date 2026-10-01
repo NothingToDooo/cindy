@@ -179,3 +179,18 @@ Claude.ai 登录，也不得收集、存储或中转订阅凭证。Cindy 因此�
 [`desktop-development.md`](desktop-development.md) 或
 [`mobile-development.md`](mobile-development.md) 选择，并为路径回退、清理和秘密不外泄补
 定向测试。
+
+
+## Cindy 托管的预装技能
+
+内置技能字节仍在 Cindy 的 `shared-system-skills` 中随应用版本管理，当前实例在
+`<userData>/managed-agent-skills/cindy` 中建立私有入口。三套 Harness 分别通过本地
+Claude plugin、Cindy 的 `CODEX_HOME/skills`、Pi 显式 `--skill` 加载；不再安装到
+`~/.agents/skills` 或 `~/.claude/skills`。存量插件技能使用账号隔离的
+`<ghost-install-state>/agent-skills`，继续只指向已批准快照。
+
+Claude 的插件技能不受 `skillOverrides` 控制，因此每个本地 Query 只将已启用且
+符合 Bot 白名单的技能链接到临时插件入口；关闭 Query 时回收入口，源文件不变。
+
+升级清理只删除可确认由 Cindy 创建的旧软链接，不删除目标内容、不覆盖用户同名
+技能、不修改 Git ignore。旧版本 Cindy 实例仍可能重建旧链接，这是迁移的已知边界。

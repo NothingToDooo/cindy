@@ -4379,8 +4379,8 @@ if (!opened.ok) console.warn(opened.errorCode, opened.message);
   稳定原则进入 Manual。Manual 与 \`list_tools\` 用完整调用互相指路,不复制同一段规则。
 
 以下只解释存量包的兼容形态,用于维护与迁移,**不要照抄到新插件**。存量插件装入且
-启用后,主机仍会把每个技能目录链接进共享技能根
-\`~/.agents/skills/<插件id>--<技能name>\`(Windows 用 junction),停用/卸载即撤链。
+启用后,主机把每个技能目录投影到 Cindy 的账号隔离目录,分别接入 Claude Code、
+Codex、Pi,不写入用户的全局技能目录;停用/卸载即撤销这些入口。
 
 目录形态(每条 item 一个目录,内必须有 SKILL.md):
 

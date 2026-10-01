@@ -14,7 +14,7 @@ import {
 export const CODEX_LEGACY_CODEX_SKILLS_LINK_NAME = 'xdt-codex';
 export const CODEX_SHARED_AGENTS_SKILLS_LINK_NAME = 'xdt-agents';
 
-type SourceName = 'codex' | 'agents';
+type SourceName = 'codex' | 'agents' | `cindy-${number}`;
 type LinkStatus = ManagedLinkStatus;
 
 export interface CodexGlobalSkillSourceResult {
@@ -35,6 +35,7 @@ export interface CodexGlobalSkillsPrepareResult {
 
 interface PrepareOptions {
   homeDir?: string;
+  managedRoots?: readonly string[];
 }
 
 async function cleanupLegacyAggregate(codexHome: string): Promise<void> {
@@ -96,6 +97,10 @@ export async function prepareCodexGlobalSkillsLinks(
   const sourceDefs: Array<{ name: SourceName; source: string; link: string }> = [
     { name: 'codex', source: paths.legacyCodexSkillsDir, link: paths.legacyCodexSkillsLink },
     { name: 'agents', source: paths.sharedAgentsSkillsDir, link: paths.sharedAgentsSkillsLink },
+    ...(opts.managedRoots ?? []).map((root, index) => ({
+      name: `cindy-${index}` as const, source: path.join(root, 'skills'),
+      link: path.join(paths.skillsDir, `cindy-${index}`),
+    })),
   ];
 
   const sources: CodexGlobalSkillSourceResult[] = [];
