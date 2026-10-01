@@ -185,6 +185,17 @@ export async function prepareCodexGlobalSkillsLinks(
     }
   }
 
+  // All callers share the same success contract: a verified managed Skill must
+  // have its current entry. User compatibility roots retain warning semantics.
+  const failedManagedSource = sources.find(
+    (source) => source.name.startsWith('cindy-') && !['linked', 'kept'].includes(source.status),
+  );
+  if (failedManagedSource) {
+    throw new Error(
+      `Cannot prepare Codex managed Skill ${failedManagedSource.name}: ${failedManagedSource.reason ?? failedManagedSource.status}`,
+    );
+  }
+
   return {
     codexHome: paths.codexHome,
     skillsDir: paths.skillsDir,

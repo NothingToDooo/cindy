@@ -23,7 +23,7 @@ vi.mock('../../authBoundaryQuarantine.js', () => ({
 vi.mock('../built-in-skills.js', () => ({
   sharedBuiltInSkillsRoot: (root: string) => path.join(root, 'shared-system-skills'),
   builtInSkillDescriptors: () => [
-    { name: 'learn', absolutePath: path.join(state.root, 'official', 'skills', 'learn') },
+    { name: 'learn', absolutePath: path.join(state.root, 'shared-system-skills', 'skills', 'learn') },
   ],
 }));
 vi.mock('../../cindy-brain/index.js', () => ({
@@ -65,7 +65,7 @@ beforeEach(async () => {
   state.pending = false;
   state.enabled = true;
   state.verified = true;
-  await writeSkill(path.join(state.root, 'official'), 'learn', 'learn');
+  await writeSkill(path.join(state.root, 'shared-system-skills'), 'learn', 'learn');
   await writeSkill(
     path.join(state.root, 'a', 'ghost-install-state', 'skill-snapshots', 'rev'),
     'demo',
@@ -95,7 +95,7 @@ describe('Cindy managed skill catalog', () => {
     ]);
     expect(skills.map((skill) => skill.path)).toEqual(
       await Promise.all([
-        fs.realpath(path.join(state.root, 'official', 'skills', 'learn', 'SKILL.md')),
+        fs.realpath(path.join(state.root, 'shared-system-skills', 'skills', 'learn', 'SKILL.md')),
         fs.realpath(
           path.join(
             state.root,

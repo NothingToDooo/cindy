@@ -1,7 +1,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   CODEX_LEGACY_CODEX_SKILLS_LINK_NAME,
@@ -37,6 +37,7 @@ async function sameRealPath(a: string, b: string): Promise<boolean> {
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   const dirs = tmpDirs;
   tmpDirs = [];
   await Promise.all(dirs.map((dir) => fs.rm(dir, { recursive: true, force: true })));
@@ -105,12 +106,66 @@ describe('prepareCodexGlobalSkillsLinks', () => {
       (await fs.stat(path.join(codexHome, 'skills', 'cindy-user-directory'))).isDirectory(),
     ).toBe(true);
     await fs.symlink(foreign, link, linkType);
-    const conflict = await prepareCodexGlobalSkillsLinks(codexHome, options(ownerA));
-    expect(conflict.sources.find((source) => source.link === link)?.status).toBe('conflict');
+    await expect(prepareCodexGlobalSkillsLinks(codexHome, options(ownerA))).rejects.toThrow(
+      'foreign skill link is preserved',
+    );
     expect(await sameRealPath(link, foreign)).toBe(true);
     await expect(fs.stat(path.join(homeDir, '.agents'))).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(fs.stat(path.join(homeDir, '.claude'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
+
+  it.each(['directory-conflict', 'create-error', 'replace-error', 'missing', 'cycle'] as const)(
+    'rejects an incomplete managed projection (%s) instead of reporting a successful refresh',
+    async (failure) => {
+      const root = await makeTmpDir();
+      const codexHome = path.join(root, 'codex');
+      const snapshots = path.join(root, 'ghost-install-state', 'skill-snapshots');
+      const command = 'cindy-plugin-example:learn';
+      const link = path.join(codexHome, 'skills', codexManagedSkillLinkName(command));
+      await fs.mkdir(path.dirname(link), { recursive: true });
+      await writeSkill(snapshots, 'old');
+      await writeSkill(snapshots, 'current');
+      let source = path.join(snapshots, 'current');
+      if (failure === 'directory-conflict') {
+        await fs.mkdir(link);
+        await fs.writeFile(path.join(link, 'keep.txt'), 'user-owned');
+      } else if (failure === 'replace-error') {
+        await fs.symlink(
+          path.join(snapshots, 'old'),
+          link,
+          process.platform === 'win32' ? 'junction' : 'dir',
+        );
+        const rm = fs.rm;
+        vi.spyOn(fs, 'rm').mockImplementation(async (target, options) => {
+          if (target === link) throw Object.assign(new Error('locked entry'), { code: 'EPERM' });
+          return rm(target, options);
+        });
+      } else if (failure === 'create-error') {
+        vi.spyOn(fs, 'symlink').mockRejectedValue(
+          Object.assign(new Error('link denied'), { code: 'EACCES' }),
+        );
+      } else if (failure === 'missing') {
+        source = path.join(snapshots, 'missing');
+      } else {
+        source = path.join(codexHome, 'skills', 'cycle');
+        await writeSkill(path.dirname(source), 'cycle');
+      }
+      await expect(
+        prepareCodexGlobalSkillsLinks(codexHome, {
+          homeDir: path.join(root, 'home'),
+          managedRoots: [root],
+          managedSkills: [{ path: path.join(source, 'SKILL.md'), claudeCommandName: command }],
+        }),
+      ).rejects.toThrow('Cannot prepare Codex managed Skill');
+      if (failure === 'directory-conflict')
+        expect(await fs.readFile(path.join(link, 'keep.txt'), 'utf8')).toBe('user-owned');
+      if (failure === 'replace-error')
+        expect(await sameRealPath(link, path.join(snapshots, 'old'))).toBe(true);
+      expect(await fs.readFile(path.join(snapshots, 'current', 'SKILL.md'), 'utf8')).toContain(
+        'body',
+      );
+    },
+  );
 
   it('links legacy Codex and shared agent skills directly under the custom CODEX_HOME skills root', async () => {
     const root = await makeTmpDir();

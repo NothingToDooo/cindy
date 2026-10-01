@@ -193,6 +193,9 @@ Claude plugin、Cindy 的 `CODEX_HOME/skills`、Pi 显式 `--skill` 加载；不
 三套 Harness 均加载核验后的物理来源；Codex 在默认及独立账号的 `CODEX_HOME` 中
 逐个挂载这些技能，每次本地任务启动（包括复用 app-server）都刷新实际 home 的入口，
 并通过原生 `skills/list forceReload` 清除旧发现缓存；刷新失败则不提交新线程。
+投影函数统一要求每个托管来源为已建立或保持正确链接；缺失、冲突、扫描环及 I/O 错误
+直接抛出，默认账号、独立账号和复用进程均不能把 warning 当作成功。用户技能兼容根
+仍保留原有 warning 行为，用户实体目录及外来链接不被覆盖。
 不将整个私有目录交给扫描器。Bot 的路径授权与
 Claude/Pi 最终加载使用同一物理来源，目录别名重指不能替换已授权的技能。
 
