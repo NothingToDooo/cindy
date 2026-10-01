@@ -130,6 +130,8 @@ export type SessionShareExportOutcome =
       /** Breakdown for diagnostics; transcript bytes count only those kept in the zip. */
       messagesBytes?: number;
       transcriptBytes?: number;
+      /** Each in-zip transcript's size, so callers can tell which ones a threshold would move. */
+      transcriptFileBytes?: number[];
       externalTranscriptBytes?: number;
     };
 
@@ -725,7 +727,17 @@ export async function exportSessionShare(
   const mediaBytes = mediaCandidates.reduce((sum, f) => sum + f.bytes, 0);
   const totalBytes = messagesBytes + transcriptBytes + mediaBytes;
   const limitBytes = opts.sizeLimitBytes ?? SHARE_EXPORT_SIZE_LIMIT_BYTES;
-  const sizes = { mediaBytes, limitBytes, messagesBytes, transcriptBytes, externalTranscriptBytes };
+  const transcriptFileBytes = allA.flatMap((a) =>
+    a.candidates.filter((f) => !f.external).map((f) => f.bytes),
+  );
+  const sizes = {
+    mediaBytes,
+    limitBytes,
+    messagesBytes,
+    transcriptBytes,
+    transcriptFileBytes,
+    externalTranscriptBytes,
+  };
   if (totalBytes > limitBytes) {
     return { status: 'oversize', totalBytes, ...sizes };
   }

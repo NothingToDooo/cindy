@@ -51,6 +51,7 @@ const state = vi.hoisted(() => ({
     totalBytes: number;
     limitBytes: number;
     transcriptBytes: number;
+    transcriptFileBytes?: number[];
   },
   /** Target without the `externalTranscripts` capability. */
   oldTarget: false,
@@ -1066,12 +1067,34 @@ describe('resumable cross-computer copy', () => {
     expect(done.stage).toBe('complete');
     expect(done.errorSize).toBeUndefined();
   });
-  it('asks to update an older target when only its package format exceeds the budget', async () => {
+  it('asks to update an older target only when moving large transcripts would fit', async () => {
+    const MB = 1024 ** 2;
     state.oldTarget = true;
-    state.exportOversize = { totalBytes: 900, limitBytes: 100, transcriptBytes: 850 };
+    state.exportOversize = {
+      totalBytes: 900 * MB,
+      limitBytes: 100 * MB,
+      transcriptBytes: 850 * MB,
+      transcriptFileBytes: [850 * MB],
+    };
     await start();
     expect(await settled()).toMatchObject({ error: 'MIGRATION_UNSUPPORTED' });
     expect((await settled()).errorSize).toBeUndefined();
+  });
+  it('reports the size when an updated target would still keep small transcripts inside', async () => {
+    const MB = 1024 ** 2;
+    state.oldTarget = true;
+    // Thirty 28 MB transcripts stay in the package even on an updated target.
+    state.exportOversize = {
+      totalBytes: 900 * MB,
+      limitBytes: 100 * MB,
+      transcriptBytes: 840 * MB,
+      transcriptFileBytes: Array.from({ length: 30 }, () => 28 * MB),
+    };
+    await start();
+    expect(await settled()).toMatchObject({
+      error: 'MIGRATION_NO_MEMORY',
+      errorSize: { needed: 900 * MB, limit: 100 * MB },
+    });
   });
   it('serializes admission even without process-local route locks', async () => {
     const results = await Promise.allSettled([start(), start()]);

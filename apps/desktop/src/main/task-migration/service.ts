@@ -402,8 +402,12 @@ async function prepare(scope: Scope, record: MigrationHandoff) {
           ...sizes,
           budget: memoryBudgetDetail(),
         });
-        // An older target needs transcripts inside the package; updating it would fit this copy.
-        if (!external && result.totalBytes - (result.transcriptBytes ?? 0) <= result.limitBytes)
+        // An older target needs transcripts inside the package. Ask to update it only when the
+        // transcripts an updated target would move out actually bring the package within budget.
+        const movable = (result.transcriptFileBytes ?? [])
+          .filter((bytes) => bytes >= EXTERNAL_TRANSCRIPT_MIN_BYTES)
+          .reduce((sum, bytes) => sum + bytes, 0);
+        if (!external && movable > 0 && result.totalBytes - movable <= result.limitBytes)
           throw new Error('MIGRATION_UNSUPPORTED');
         throw new MigrationSizeError('MIGRATION_NO_MEMORY', result.totalBytes, result.limitBytes);
       }
