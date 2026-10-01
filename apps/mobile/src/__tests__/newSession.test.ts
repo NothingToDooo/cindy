@@ -8,6 +8,8 @@ import {
   DEFAULT_NEW_SESSION_DRAFT,
   NEW_SESSION_AGENT_OPTIONS,
   availableNewSessionAgentOptions,
+  canResolveStoredAgentRuntime,
+  isStoredAgentRestorePending,
   buildNewSessionCreatePreview,
   buildRecentWorkspaceOptions,
   buildRemoteCreateSessionOptions,
@@ -321,6 +323,97 @@ describe('resolveSubmitGuardCatalog —— 提交终检目录取信(代际安全
     const res = await pending;
     expect(fetchSpy).toHaveBeenCalledTimes(3); // 循环上限 3
     expect(res).toMatchObject({ rows: [], catalogKnown: false });
+  });
+});
+
+describe('stored agent restore gating', () => {
+  const recentOpus = remoteSession('recent', {
+    deviceLinkDeviceId: 'mac',
+    model: 'claude-opus-5-5',
+    effort: 'high',
+  });
+
+  it('waits while neither the catalog nor a recent task for the agent is available', () => {
+    // 冷启动:目录未就绪、任务列表还没到 —— 此刻恢复只能落到内置 Sonnet 4.6。
+    expect(canResolveStoredAgentRuntime({
+      agentKind: 'claude-code',
+      sessions: [],
+      deviceId: 'mac',
+      catalogReady: false,
+      providersUnsupported: false,
+    })).toBe(false);
+    expect(pickAgentDefaultRuntime({
+      agentKind: 'claude-code',
+      sessions: [],
+      modelRows: [],
+      currentEffort: 'medium',
+      deviceId: 'mac',
+      catalogReady: false,
+    })).toMatchObject({ model: 'claude-sonnet-4-6', effort: 'medium' });
+  });
+
+  it('proceeds once a recent task of the stored agent exists on the device', () => {
+    expect(canResolveStoredAgentRuntime({
+      agentKind: 'claude-code',
+      sessions: [recentOpus],
+      deviceId: 'mac',
+      catalogReady: false,
+      providersUnsupported: false,
+    })).toBe(true);
+    // 其他设备或其他 agent 的任务不算。
+    expect(canResolveStoredAgentRuntime({
+      agentKind: 'codex',
+      sessions: [recentOpus],
+      deviceId: 'mac',
+      catalogReady: false,
+      providersUnsupported: false,
+    })).toBe(false);
+    expect(canResolveStoredAgentRuntime({
+      agentKind: 'claude-code',
+      sessions: [recentOpus],
+      deviceId: 'studio',
+      catalogReady: false,
+      providersUnsupported: false,
+    })).toBe(false);
+  });
+
+  it('proceeds once the catalog is ready or explicitly unsupported, or without a device', () => {
+    const base = { agentKind: 'claude-code' as const, sessions: [], deviceId: 'mac' };
+    expect(canResolveStoredAgentRuntime({ ...base, catalogReady: true, providersUnsupported: false })).toBe(true);
+    expect(canResolveStoredAgentRuntime({ ...base, catalogReady: false, providersUnsupported: true })).toBe(true);
+    expect(canResolveStoredAgentRuntime({ ...base, deviceId: '', catalogReady: false, providersUnsupported: false })).toBe(true);
+  });
+
+  it('reports a pending restore only for an unapplied stored agent on the target device', () => {
+    const base = { expectedDeviceId: 'mac', selectedDeviceId: 'mac' };
+    expect(isStoredAgentRestorePending({ ...base, storedAgentKind: 'claude-code', appliedStoredAgentKind: null })).toBe(true);
+    expect(isStoredAgentRestorePending({ ...base, storedAgentKind: 'claude-code', appliedStoredAgentKind: 'claude-code' })).toBe(false);
+    expect(isStoredAgentRestorePending({ ...base, storedAgentKind: null, appliedStoredAgentKind: null })).toBe(false);
+    // 显式路由到别的设备时不恢复,自动默认照常工作。
+    expect(isStoredAgentRestorePending({
+      storedAgentKind: 'claude-code',
+      appliedStoredAgentKind: null,
+      expectedDeviceId: 'mac',
+      selectedDeviceId: 'studio',
+    })).toBe(false);
+    expect(isStoredAgentRestorePending({
+      storedAgentKind: 'codex',
+      appliedStoredAgentKind: null,
+      expectedDeviceId: '',
+      selectedDeviceId: 'studio',
+    })).toBe(true);
+  });
+
+  it('wires both new-session effects through the shared gates instead of the loading flag', () => {
+    const source = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+    const storedStart = source.indexOf('const storedAgentKind = newSessionPreferences?.agentKind;');
+    const autoStart = source.indexOf('const result = resolveNewSessionAutoDefault({');
+    const storedSource = source.slice(storedStart, source.indexOf('appliedStoredAgentRef.current = storedAgentKind;', storedStart));
+    const autoGuardSource = source.slice(source.lastIndexOf('useEffect(() => {', autoStart), autoStart);
+    expect(storedSource).toContain('isStoredAgentRestorePending({');
+    expect(storedSource).toContain('canResolveStoredAgentRuntime({');
+    expect(storedSource).not.toContain('deviceProviders.loading');
+    expect(autoGuardSource).toContain('isStoredAgentRestorePending({');
   });
 });
 

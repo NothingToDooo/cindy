@@ -762,6 +762,44 @@ export function pickAgentDefaultRuntime(args: {
 }
 
 /**
+ * 「恢复上次选过的 agent」是否仍待落定:有记忆的 agent、尚未应用,且当前设备就是恢复目标
+ * (没有偏好设备 = 不限设备)。恢复 effect 与自动默认 effect 共用这一个判据——待落定期间
+ * 自动默认不得抢先把设备标记为已应用,否则恢复延后到数据就绪时会被跳过或弹两次确认。
+ */
+export function isStoredAgentRestorePending(input: {
+  storedAgentKind: NewSessionAgentKind | null | undefined;
+  appliedStoredAgentKind: NewSessionAgentKind | null;
+  expectedDeviceId: string;
+  selectedDeviceId: string;
+}): boolean {
+  if (!input.storedAgentKind) return false;
+  if (input.appliedStoredAgentKind === input.storedAgentKind) return false;
+  return !input.expectedDeviceId || input.selectedDeviceId === input.expectedDeviceId;
+}
+
+/**
+ * 恢复上次的 agent 时,是否已有足够数据选模型(pickAgentDefaultRuntime 的输入):
+ * 供应商目录已就绪 / 被控端明确不支持目录,或该设备上已有这个 agent 的最近任务。
+ * 两者都没有时 pickAgentDefaultRuntime 只能落到内置兜底模型(Claude 为 Sonnet 4.6),
+ * 而恢复只跑一次、还会把设备标记为已应用——冷启动或目录拉取失败时就会卡在兜底模型。
+ * 不能用 `loading === false` 代替:useDeviceProviders 的 loading 初值就是 false,拉取失败后也是。
+ */
+export function canResolveStoredAgentRuntime(input: {
+  agentKind: NewSessionAgentKind;
+  sessions: readonly RemoteSession[];
+  deviceId: string;
+  catalogReady: boolean;
+  providersUnsupported: boolean;
+}): boolean {
+  if (!input.deviceId) return true;
+  if (input.catalogReady || input.providersUnsupported) return true;
+  return pickMostRecentSessionRuntime(input.sessions, {
+    deviceId: input.deviceId,
+    agentKind: input.agentKind,
+  }) !== null;
+}
+
+/**
  * 新建对话「自动默认运行配置」effect 的决策核心(纯函数,从 new.tsx 那个 effect 内联逻辑抽出,便于单测)。
  * 返回 null = 本次不动 draft(已手动选过 / 无 selectedDevice / 该设备已应用过 / modelRows 未就绪且无 recent);
  * 返回 { patch, appliedDeviceId } = 调用方 setDraft(prev => ({ ...prev, ...patch })) 并记录 appliedDeviceId。
