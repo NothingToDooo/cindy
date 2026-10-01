@@ -506,16 +506,17 @@ async function checkTargetResources(
   scope.assertCurrent();
 }
 async function transfer(scope: Scope, record: MigrationHandoff) {
+  const live = running.get(`${scope.root}:${record.sessionId}`)!;
+  // A retried transfer may follow a lost receive reply; until the target proves it has
+  // no receipt for this copy, it may be importing or already committed.
+  live.committing = true;
   const existing = await invoke(
     record.targetDeviceId,
     { action: 'receipt', id: record.id, sourceSessionId: record.sessionId },
     scope,
   );
-  const live = running.get(`${scope.root}:${record.sessionId}`)!;
-  if (existing.stage === 'active') {
-    live.committing = true;
-    return;
-  }
+  if (existing.stage === 'active') return;
+  if (!existing.stage) live.committing = false;
   const directory = path.join(scope.root, 'outgoing', record.id);
   const workspace = JSON.parse(
     readAtomicFileSync(path.join(directory, 'workspace.json')) ?? 'null',
@@ -613,7 +614,8 @@ async function cleanupOutgoing(scope: Scope, record: MigrationHandoff) {
 function launch(scope: Scope, record: MigrationHandoff & { kind: 'outgoing' }) {
   const key = `${scope.root}:${record.sessionId}`;
   if (running.has(key)) return;
-  const live: RunningCopy = {};
+  // See transfer(): a resumed transfer stays non-cancellable until its receipt is checked.
+  const live: RunningCopy = { committing: record.stage !== 'preparing' };
   running.set(key, live);
   // Every existing checkpoint doubles as a cancellation point for this copy.
   const copyScope: Scope = {

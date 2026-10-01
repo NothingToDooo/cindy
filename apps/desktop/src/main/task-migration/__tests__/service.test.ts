@@ -781,6 +781,19 @@ describe('resumable cross-computer copy', () => {
     expect((await settled()).stage).toBe('complete');
     expect(state.imports).toHaveBeenCalledTimes(1);
   });
+  it('refuses to cancel a resumed transfer before its receipt rules out a target import', async () => {
+    state.loseReply = 'receive';
+    await start();
+    expect((await settled()).stage).toBe('transferring');
+    const retry = await requestTaskMigration({ action: 'retry', sessionId: 'fork' });
+    expect(retry.running).toBe(true);
+    expect(retry.cancellable).toBeUndefined();
+    await expect(requestTaskMigration({ action: 'cancel', sessionId: 'fork' })).rejects.toThrow(
+      'MIGRATION_CANNOT_CANCEL',
+    );
+    expect((await settled()).stage).toBe('complete');
+    expect(state.imports).toHaveBeenCalledTimes(1);
+  });
   it('allows another independent copy after completion', async () => {
     await start();
     const first = await settled();
@@ -902,7 +915,10 @@ describe('resumable cross-computer copy', () => {
   it('stops copying when source media exists but could not be packaged', async () => {
     state.exportMedia = { mediaMissing: 1, mediaDropped: 1 };
     await start();
-    expect(await settled()).toMatchObject({ stage: 'preparing', error: 'MIGRATION_INCOMPLETE_CONTEXT' });
+    expect(await settled()).toMatchObject({
+      stage: 'preparing',
+      error: 'MIGRATION_INCOMPLETE_CONTEXT',
+    });
     expect(state.imports).not.toHaveBeenCalled();
   });
   it('discards a snapshot when a new turn finishes during preparation', async () => {
