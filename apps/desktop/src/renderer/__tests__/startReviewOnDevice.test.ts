@@ -15,7 +15,7 @@ describe('Review execution device', () => {
 
   it('creates local Reviews through the local Main handler', async () => {
     const { invoke, startReview } = setup();
-    await startReviewOnDevice(request);
+    await startReviewOnDevice(request, null);
     expect(startReview).toHaveBeenCalledWith(request);
     expect(invoke).not.toHaveBeenCalled();
   });
@@ -28,6 +28,13 @@ describe('Review execution device', () => {
     }] };
     await startReviewOnDevice(remoteRequest, 'controlled-device');
     expect(invoke).toHaveBeenCalledWith('controlled-device', 'maker:review:start', [remoteRequest]);
+    expect(startReview).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, ''])('does not dispatch before task ownership resolves (%s)', async (deviceId) => {
+    const { invoke, startReview } = setup();
+    await expect(startReviewOnDevice(request, deviceId)).rejects.toThrow('DEVICE_LINK_NOT_CONNECTED');
+    expect(invoke).not.toHaveBeenCalled();
     expect(startReview).not.toHaveBeenCalled();
   });
 

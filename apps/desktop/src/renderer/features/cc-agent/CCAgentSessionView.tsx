@@ -3306,7 +3306,7 @@ export function CCAgentSessionView({
             ...(args.trim() ? { focus: args.trim() } : {}),
             ...(attachments?.length ? { attachments } : {}),
           };
-          await startReviewOnDevice(request, remoteDeviceId);
+          await startReviewOnDevice(request, rightSidebarDeviceLinkDeviceId);
           return { handled: true, accepted: true, message };
         } catch (err) {
           const ipcError = extractIpcError(err);
@@ -3347,6 +3347,7 @@ export function CCAgentSessionView({
       session?.workingDir,
       sessionId,
       remoteDeviceId,
+      rightSidebarDeviceLinkDeviceId,
       t,
     ],
   );

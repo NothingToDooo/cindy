@@ -329,8 +329,8 @@ import {
   ReviewArtifactAuthorizationError,
   type ReviewArtifactConfirmationItem,
 } from '../reviewer/reviewArtifactAuthorization.js';
-import { buildReviewArtifactConfirmationDialog } from '../reviewer/reviewArtifactDialog.js';
-import { showReviewArtifactConfirmWindow } from '../reviewer/reviewArtifactConfirmWindow.js';
+import { confirmReviewArtifacts } from '../reviewer/confirmReviewArtifacts.js';
+import { configureOutboundReviewPreparation } from './reviewOutboundInput.js';
 import {
   cleanupOrphanedReviewArtifactSnapshots,
   prepareStableReviewArtifactSnapshots,
@@ -3505,6 +3505,11 @@ const ensureReviewOwnerLivenessReady = createRetryableReviewInitialization(async
   await sessionTurnLeaseTracker.refreshActiveLeaseOwners();
 });
 configureTempAttachmentOwner(reviewRunOwner, ensureReviewOwnerLivenessReady);
+configureOutboundReviewPreparation({
+  owner: reviewRunOwner,
+  ensureOwnerReady: ensureReviewOwnerLivenessReady,
+  resolvePath: resolveReviewArtifactPath,
+});
 const silentStopTurnLeaseGate = new SilentStopTurnLeaseGate();
 function providerTurnLeaseId(sessionInstanceId: string, turnGeneration: number): string {
   return `${sessionInstanceId}:${turnGeneration}`;
@@ -5071,11 +5076,7 @@ async function confirmReviewExternalArtifacts(
   // Remote invokes have no Renderer sender. Until this confirmation has a
   // remote UI, retain the explicit-grant requirement rather than auto-approve.
   if (isDeviceLinkInvoke()) return false;
-  const parent = BrowserWindow.fromWebContents(event.sender);
-  if (!parent || parent.isDestroyed()) return false;
-  return showReviewArtifactConfirmWindow(parent, buildReviewArtifactConfirmationDialog(items, t), {
-    log,
-  });
+  return confirmReviewArtifacts(event, items);
 }
 
 export interface RegisterMakerIpcOptions {

@@ -31,6 +31,8 @@ import {
   mayCompressOutboundImage,
 } from './outboundImageCompress';
 import { buildLegacyAttachmentOssRef, parseAttachmentOssRef } from '../../shared/attachmentOssRef';
+import { readStartReviewRequest } from '../maker-ipc/reviewStartHandler.js';
+import { withPreparedOutboundReview } from '../maker-ipc/reviewOutboundInput.js';
 
 const log = createLogger('device-link:outboundMedia');
 
@@ -381,12 +383,12 @@ async function rewriteQueued(item: unknown, existing: ReadonlySet<string> = new 
  */
 export async function rewriteOutboundMedia(channel: string, args: unknown[], existing: ReadonlySet<string> = new Set()): Promise<unknown[]> {
   if (channel === 'maker:review:start') {
-    const request = args[0];
-    if (!request || typeof request !== 'object' || Array.isArray(request)) return args;
-    const attachments = (request as { attachments?: unknown }).attachments;
-    if (!Array.isArray(attachments) || !attachments.length) return args;
-    const rewritten = await rewriteQueued({ files: attachments }) as { files: unknown[] };
-    return [{ ...request, attachments: rewritten.files }, ...args.slice(1)];
+    // Validate the complete batch before any compression, disk read or upload.
+    const request = readStartReviewRequest(args[0]);
+    return withPreparedOutboundReview(request, async (prepared) => {
+      const rewritten = await rewriteQueued({ files: prepared.attachments }) as { files: unknown[] };
+      return [{ ...prepared, attachments: rewritten.files }, ...args.slice(1)];
+    });
   }
   const steerOpts = args[2];
   if (

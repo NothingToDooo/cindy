@@ -18,7 +18,7 @@ describe('/review command dispatch', () => {
   it('crosses the Main boundary with this invocation attachment snapshot before returning', () => {
     expect(dispatchSource).toContain("if (hit.name === 'review')");
     expect(dispatchSource).toContain('serializeAttachedFiles(files)');
-    expect(dispatchSource).toContain('await startReviewOnDevice(request, remoteDeviceId)');
+    expect(dispatchSource).toContain('await startReviewOnDevice(request, rightSidebarDeviceLinkDeviceId)');
     expect(dispatchSource).not.toContain('if (remoteDeviceId || session?.remoteHostId)');
     expect(dispatchSource).toContain('return { handled: true, accepted: true, message }');
     expect(dispatchSource).toContain('return { handled: true, accepted: false, message }');
