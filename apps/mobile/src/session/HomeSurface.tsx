@@ -85,6 +85,7 @@ import { HomeChromeFrost } from '@/session/HomeChromeFrost';
 import { HomeGlassMenuPanel, HomeMenuScrim } from '@/session/HomeGlassMenuPanel';
 import { HomeHeaderGlassButton } from '@/session/HomeHeaderGlassButton';
 import { useAdaptiveWindow } from '@/platform/AdaptiveWindowContext';
+import { useBalancedTitle } from '@/platform/chrome/balancedTitle';
 import { HomeSearchBar } from '@/session/HomeSearchBar';
 import { HomeProjectMachineLabel } from '@/session/HomeProjectMachineLabel';
 import { buildHomeProjectMachineIdentities, type HomeProjectMachineIdentity } from '@/session/homeProjectMachineIdentity';
@@ -2062,6 +2063,19 @@ function HomeScreenContent({ active = true, onModeChange, width, onDismiss, newS
       ?? restoredDeviceName
       ?? t('devices.list.thisComputer');
   }, [home.deviceFilters, restoredDeviceName, selectedDeviceId, t]);
+  // 设备名放得下时居中在顶栏中线;放不下时贴住右侧按钮,向左侧富余空间伸展后才截断。
+  const homeTitle = useBalancedTitle();
+  const reportHomeTitleSlot = homeTitle.reportSlot;
+  const [homeHeaderWidth, setHomeHeaderWidth] = useState(0);
+  const [homeTitleSlotFrame, setHomeTitleSlotFrame] = useState<{ x: number; width: number } | null>(null);
+  useEffect(() => {
+    if (!homeHeaderWidth || !homeTitleSlotFrame) return;
+    reportHomeTitleSlot({
+      center: homeHeaderWidth / 2,
+      end: homeTitleSlotFrame.x + homeTitleSlotFrame.width - spacing.sm,
+      start: homeTitleSlotFrame.x + spacing.sm,
+    });
+  }, [homeHeaderWidth, homeTitleSlotFrame, reportHomeTitleSlot]);
 
   const openSession = useCallback((item: RemoteSessionListItem) => {
     // 有行处于滑开状态时,点击(本行或他行)只负责收起,不进会话(iOS 列表滑动操作惯例)。
@@ -2891,7 +2905,7 @@ function HomeScreenContent({ active = true, onModeChange, width, onDismiss, newS
         <HomeChromeFrost disabled={nativeHomeHeader} visible={headerFrosted}>
         <View style={{ paddingTop: nativeHomeHeader ? 0 : embedded ? spacing.lg : edgePadding.paddingTop }}>
         {nativeHomeHeader ? null : (
-        <View style={styles.homeHeader}>
+        <View onLayout={(e) => setHomeHeaderWidth(e.nativeEvent.layout.width)} style={styles.homeHeader}>
         <View style={[styles.headerLeadingActions, embedded && styles.headerEmbeddedActions]}>
         <HomeHeaderGlassButton
           accessibilityLabel={onDismiss ? t('home.drawer.closeA11y') : t('devices.list.a11y.openMenu')}
@@ -2907,26 +2921,36 @@ function HomeScreenContent({ active = true, onModeChange, width, onDismiss, newS
             <Text style={styles.headerTitle} numberOfLines={1}>Cindy</Text>
           </View>
         ) : (
+          <View
+            onLayout={(e) => {
+              const { x, width } = e.nativeEvent.layout;
+              setHomeTitleSlotFrame(prev => prev && prev.x === x && prev.width === width ? prev : { x, width });
+            }}
+            style={styles.headerTitleSlot}
+          >
           <NativePullDownMenu
             actions={homeScopePullDownActions}
             onAction={handleHomeScopeAction}
-            style={styles.headerTitleSlot}
           >
             <Pressable
               accessibilityLabel={t('devices.list.a11y.selectScope')}
               accessibilityRole="button"
               onPress={nativeHomeMenus ? () => undefined : openDeviceMenu}
               onPressIn={nativeHomeMenus ? undefined : openDeviceMenu}
-              style={({ pressed }) => [styles.headerTitleWrap, pressed && styles.pressed]}
+              style={({ pressed }) => [styles.headerTitleWrap, homeTitle.shift != null && styles.headerTitleWrapTrailing, pressed && styles.pressed]}
               testID="devices.title"
             >
-              <View style={styles.headerTitleCluster}>
+              <View
+                onLayout={homeTitle.onContentLayout}
+                style={[styles.headerTitleCluster, homeTitle.shift != null && { transform: [{ translateX: homeTitle.shift }] }]}
+              >
                 <Text style={styles.headerTitle} numberOfLines={1}>{selectedDeviceLabel}</Text>
                 <ChevronDown color={colors.textSecondary} size={iconSize.xs} strokeWidth={iconStroke.medium} />
                 <QuietSyncIndicator active={quietSyncing} />
               </View>
             </Pressable>
           </NativePullDownMenu>
+          </View>
         )}
         {showRemoteGuide ? (
           <View style={[styles.headerActions, embedded && styles.headerEmbeddedActions]} />
@@ -4691,13 +4715,13 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     paddingHorizontal: spacing.lg,
   },
   headerLeadingActions: {
-    // Match the trailing two-button slot so the title is centered on the
-    // screen, even when selecting a device reveals the remote-desktop action.
+    // Only the menu button lives here. The title centers itself on the header
+    // midline and may use the spare room on this side when the name is long.
     alignItems: 'flex-start',
     flexShrink: 0,
     height: navigationChrome.target,
     justifyContent: 'center',
-    width: navigationChrome.target * 2 + spacing.xs,
+    width: navigationChrome.target,
   },
   headerActions: {
     alignItems: 'center',
@@ -4708,8 +4732,8 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     width: navigationChrome.target * 2 + spacing.xs,
   },
   headerEmbeddedActions: {
-    // Embedded drawers never show the remote-desktop action. Keep both sides
-    // symmetric without reserving space for a second button that cannot appear.
+    // Embedded drawers never show the remote-desktop action, so the trailing
+    // side holds one button like the leading side.
     width: navigationChrome.target,
   },
   // 菜单外层替标题占住顶栏中间的剩余宽度,长设备名在这里截断而不是挤开右侧按钮。
@@ -4724,6 +4748,9 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     minHeight: 44,
     minWidth: 0,
     paddingHorizontal: spacing.sm,
+  },
+  headerTitleWrapTrailing: {
+    alignItems: 'flex-end',
   },
   headerTitleCluster: {
     alignItems: 'center',
