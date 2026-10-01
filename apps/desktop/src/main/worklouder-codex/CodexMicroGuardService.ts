@@ -156,6 +156,7 @@ export class CodexMicroGuardService {
 
   private async initializeInternal(): Promise<void> {
     if (this.platform !== 'darwin') return;
+    this.preserveLegacyOptOut();
     const enabled = this.settingsStore.read().enabled;
     try {
       if (enabled) {
@@ -178,6 +179,20 @@ export class CodexMicroGuardService {
       log.warn('Codex Micro guard initialization failed');
     }
     this.emitIfChanged();
+  }
+
+  /**
+   * Default-off releases stored nothing when the user turned protection off,
+   * because off matched the old default. Their leftover hook (without the
+   * default-on marker) identifies that opt-out, so keep it off once.
+   */
+  private preserveLegacyOptOut(): void {
+    try {
+      if (this.settingsStore.readState().isCustomized || !this.store.hasLegacyHook()) return;
+      this.settingsStore.writePatch({ enabled: false });
+    } catch {
+      log.warn('Codex Micro guard legacy opt-out migration failed');
+    }
   }
 
   private async enable(): Promise<void> {

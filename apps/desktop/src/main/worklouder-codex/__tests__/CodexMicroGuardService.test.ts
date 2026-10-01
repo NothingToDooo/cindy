@@ -249,6 +249,45 @@ describe('CodexMicroGuardService', () => {
     await next.dispose();
   });
 
+  it('keeps default protection on across launches once this release installed the hook', async () => {
+    const locations = paths('default');
+    const runner = new EnvironmentRunner(null);
+    const first = service(locations, runner);
+    expect(await first.getState()).toMatchObject({ enabled: true, status: 'protecting' });
+    expect(fs.existsSync(path.join(locations.supportPath, 'default-on'))).toBe(true);
+    await first.dispose();
+
+    const second = service(locations, runner);
+    expect(await second.getState()).toMatchObject({ enabled: true, status: 'protecting' });
+    expect(fs.existsSync(locations.settingsPath)).toBe(false);
+    await second.dispose();
+  });
+
+  it('keeps a default-off release opt-out after upgrading', async () => {
+    // Default-off releases left the hook behind and stored nothing on opt-out.
+    const locations = paths('default');
+    fs.mkdirSync(locations.supportPath, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(locations.supportPath, 'guard-hook.cjs'), '// old hook\n', {
+      mode: 0o600,
+    });
+    const runner = new EnvironmentRunner(null);
+    const instance = service(locations, runner);
+
+    expect(await instance.getState()).toMatchObject({ enabled: false, status: 'disabled' });
+    expect(runner.nodeOptions).toBeNull();
+    expect(JSON.parse(fs.readFileSync(locations.settingsPath, 'utf8'))).toEqual({
+      enabled: false,
+    });
+
+    // Turning it back on records the new default and the marker for later launches.
+    expect(await instance.setEnabled(true)).toMatchObject({ enabled: true, status: 'protecting' });
+    expect(fs.existsSync(locations.settingsPath)).toBe(false);
+    await instance.dispose();
+    const next = service(locations, runner);
+    expect(await next.getState()).toMatchObject({ enabled: true, status: 'protecting' });
+    await next.dispose();
+  });
+
   it('keeps shared protection until the final live instance exits', async () => {
     const locations = paths();
     const runner = new EnvironmentRunner(null);
