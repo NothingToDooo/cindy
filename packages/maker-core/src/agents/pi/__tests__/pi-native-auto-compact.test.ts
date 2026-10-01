@@ -3,10 +3,12 @@
  * events and only latches deterministic failures for the next-send rollover.
  */
 
-import { mkdtempSync, mkdirSync, realpathSync, renameSync, symlinkSync, unlinkSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, realpathSync, renameSync, symlinkSync, unlinkSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { assertPiSpawnArgvFitsPlatform } from '../project-resource-cli.js';
+import { preparePinnedPiSkillInvocation } from '../runtime-capabilities.js';
 
 const knobs = vi.hoisted(() => ({
   spawnArgs: [] as string[],
@@ -368,10 +370,48 @@ describe("PiAgent native auto-compaction ownership", () => {
         mcpPolicy:{mode:'inherit' as const,configured:[],catalog:[]},
         toolsetPolicy:{mode:'inherit' as const,configured:[],catalog:[]}}} : {})});
     try {
-      expect(knobs.spawnArgs.includes(realpathSync(skill))).toBe(mode === 'ordinary' || mode === 'bot-allow');
+      const projection = knobs.spawnArgs.find((arg) => path.basename(arg) === 'cindy-managed-skills');
+      expect(!!projection).toBe(mode === 'ordinary' || mode === 'bot-allow');
+      expect(knobs.spawnArgs).not.toContain(realpathSync(skill));
+      if (projection) {
+        const entries = readdirSync(projection);
+        expect(entries).toHaveLength(1);
+        const projectedFile = path.join(projection, entries[0]!, 'SKILL.md');
+        expect(realpathSync(projectedFile)).toBe(realpathSync(skill));
+        expect(preparePinnedPiSkillInvocation('/learn', { name: 'learn', path: skill }, {
+          capturedAt: '2026-10-01T00:00:00.000Z', generation: 1, status: 'loaded', source: 'pi:get_commands',
+          commands: [{ name: 'skill:learn', source: 'skill', sourceInfo: { path: projectedFile, baseDir: path.dirname(projectedFile) } }],
+        })).toBe('/skill:learn');
+      }
       if(bot) expect(knobs.spawnArgs).toContain('--no-skills');
-      if(mode === 'bot-allow') expect(knobs.spawnArgs.filter((arg) => arg === realpathSync(skill))).toHaveLength(1);
+      if(mode === 'bot-allow') expect(knobs.spawnArgs.filter((arg) => arg === '--skill')).toHaveLength(1);
     } finally {await handle.close();}
+  });
+
+  it('keeps hundreds of long managed skill paths out of Windows argv and cleans only session links', async () => {
+    const skills = Array.from({ length: 350 }, (_, index) => {
+      const file = path.join(agentHome, 'approved', 'revision-'.repeat(12), String(index), 'SKILL.md');
+      mkdirSync(path.dirname(file), { recursive: true });
+      writeFileSync(file, `---\nname: fixture-${index}\ndescription: fixture\n---\nBody`);
+      return { kind: 'agent-skill' as const, name: `fixture-${index}`, source: 'skill' as const,
+        path: file, claudeCommandName: `cindy-plugin-example:fixture-${index}` };
+    });
+    expect(() => assertPiSpawnArgvFitsPlatform(skills.flatMap((skill) => ['--skill', skill.path]), 'win32')).toThrow();
+    const deps = buildDeps();
+    deps.getManagedSkills = async () => skills;
+    const handle = await new PiAgent(deps).startSession({ sessionId: 'many-skills', workingDir: cwd, model: 'm' });
+    const projection = knobs.spawnArgs.find((arg) => path.basename(arg) === 'cindy-managed-skills')!;
+    try {
+      expect(() => assertPiSpawnArgvFitsPlatform(knobs.spawnArgs, 'win32')).not.toThrow();
+      expect(knobs.spawnArgs.filter((arg) => arg === '--skill')).toHaveLength(1);
+      expect(knobs.spawnArgs.some((arg) => skills.some((skill) => arg === skill.path))).toBe(false);
+      const entries = readdirSync(projection).sort();
+      expect(entries).toHaveLength(skills.length);
+      expect(entries.map((entry) => realpathSync(path.join(projection, entry, 'SKILL.md'))))
+        .toEqual(skills.map((skill) => realpathSync(skill.path)));
+    } finally { await handle.close(); }
+    await vi.waitFor(() => expect(existsSync(projection)).toBe(false));
+    expect(skills.every((skill) => existsSync(skill.path))).toBe(true);
   });
 
   it("enables Pi native auto-compaction during startup", async () => {

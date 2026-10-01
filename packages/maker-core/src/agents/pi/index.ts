@@ -3765,8 +3765,22 @@ export class PiAgent extends BaseAgent {
     const additionalSkillPaths = [...new Map([
       ...(loadProjectResourcesInPlace ? [] : botSkillSelection.explicitSkillPaths.filter((skillPath) =>
         !managedSourcePaths.has(path.resolve(skillPath)) && !managedSourceIdentities.has(canonicalSkillPath(skillPath)))),
-      ...managedSkillPaths,
     ].map((skillPath) => [canonicalSkillPath(skillPath), skillPath])).values()];
+
+    // One explicit directory also works with --no-skills. Keep its lifetime in
+    // the existing per-session configHome and link only already-authorized
+    // physical sources; argv size must not grow with installed plugin count.
+    const managedLaunchSkills = managedSkillPaths.filter((skillPath) => !projectResourceCli.skills
+      .some((existing) => canonicalSkillPath(existing) === canonicalSkillPath(skillPath)));
+    const managedSkillRoot = managedLaunchSkills.length ? path.join(configHome, 'cindy-managed-skills') : undefined;
+    if (managedSkillRoot) {
+      await fs.mkdir(managedSkillRoot);
+      for (const [index, skillPath] of managedLaunchSkills.entries()) {
+        // Preserve discovery order for same-name skills without long filenames.
+        await fs.symlink(path.dirname(skillPath), path.join(managedSkillRoot, String(index).padStart(12, '0')),
+          process.platform === 'win32' ? 'junction' : 'dir');
+      }
+    }
 
     const args = [
       '--mode',
@@ -3790,6 +3804,7 @@ export class PiAgent extends BaseAgent {
       ...additionalSkillPaths.filter((skillPath) => !projectResourceCli.skills
         .some((existing) => canonicalSkillPath(existing) === canonicalSkillPath(skillPath)))
         .flatMap((skillPath) => ['--skill', skillPath]),
+      ...(managedSkillRoot ? ['--skill', managedSkillRoot] : []),
       ...(appendSystemPrompt.length > 0 ? ['--append-system-prompt', appendSystemPrompt] : []),
       '--extension',
       bridgeExtensionPath,
@@ -5707,6 +5722,7 @@ export class PiAgent extends BaseAgent {
           ...managedPackageRoots,
           ...projectResourceCli.skills,
           ...managedSkillPaths,
+          ...(managedSkillRoot ? [managedSkillRoot] : []),
           ...projectResourceCli.promptTemplates,
           ...projectResourceCli.extensions,
         ],
