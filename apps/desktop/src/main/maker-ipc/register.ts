@@ -331,6 +331,7 @@ import {
 } from '../reviewer/reviewArtifactAuthorization.js';
 import { confirmReviewArtifacts } from '../reviewer/confirmReviewArtifacts.js';
 import { configureOutboundReviewPreparation } from './reviewOutboundInput.js';
+import { assertRemoteBotInvocationAllowed } from '../device-link/remoteBotSessionBoundary.js';
 import {
   cleanupOrphanedReviewArtifactSnapshots,
   prepareStableReviewArtifactSnapshots,
@@ -8059,6 +8060,16 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   };
 
   const reviewRunControl = registerReviewStartHandler(makerSessionRegistry, {
+    captureSourceAccessGuard: (sourceSessionId) => {
+      // Capture trusted origin while still in the invoke context, including for
+      // a later provider-start callback that may run outside that await chain.
+      const remote = isDeviceLinkInvoke();
+      return async () => {
+        if (remote) {
+          await assertRemoteBotInvocationAllowed([{ sourceSessionId }], MAKER_INVOKE.START_REVIEW);
+        }
+      };
+    },
     assertCaller: (event) => {
       // A device-link invoke is already authenticated by the relay, controller
       // lease and remote invoke allowlist. Its synthetic IPC event has no real
