@@ -799,10 +799,12 @@ export function canResolveStoredAgentRuntime(input: {
 }
 
 /**
- * 迟到的最近任务补正:默认值只凭目录选出(当时该设备还没有最近任务)时只算临时。
- * 任务列表没有「首拉完成」信号,冷启动时目录可能先到;之后该设备出现当前 agent 的
- * 最近任务,就按它重算一次 model / effort / providerId。不改 agent 与权限——
- * 恢复上次 agent 与权限记忆已落定,这里只补模型。无同 agent 最近任务 → null(继续等)。
+ * 恢复上次 agent 的迟到补正:恢复时模型只凭目录选出(当时该设备还没有该 agent 的最近任务)
+ * 只算临时。任务列表没有「首拉完成」信号,冷启动时目录可能先到;之后该设备出现这个 agent
+ * 的最近任务,就按它重算一次 model / effort / providerId。不改 agent 与权限——用户上次选的
+ * agent 已落定,这里只补模型。无同 agent 最近任务 → null(继续等)。
+ * 无记忆 agent 的自动默认不走这里:resolveNewSessionAutoDefault 只凭目录时不锁定设备,
+ * 任务列表到达后会整套跟随最近任务(含跨 agent)。
  */
 export function resolveLateRecentRuntime(input: {
   agentKind: NewSessionAgentKind;
@@ -828,7 +830,9 @@ export function resolveLateRecentRuntime(input: {
 /**
  * 新建对话「自动默认运行配置」effect 的决策核心(纯函数,从 new.tsx 那个 effect 内联逻辑抽出,便于单测)。
  * 返回 null = 本次不动 draft(已手动选过 / 无 selectedDevice / 该设备已应用过 / modelRows 未就绪且无 recent);
- * 返回 { patch, appliedDeviceId } = 调用方 setDraft(prev => ({ ...prev, ...patch })) 并记录 appliedDeviceId。
+ * 返回 { patch, appliedDeviceId, basedOnRecentTask } = 调用方 setDraft(prev => ({ ...prev, ...patch }));
+ * 只有 basedOnRecentTask(跟随了最近任务)才记录 appliedDeviceId 锁定该设备——只凭目录选出的默认
+ * 不锁定,任务列表晚于目录到达时下次调用仍可整套跟随最近任务(含跨 agent)。
  * 三条意图与 effect 完全一致:
  *   1) 有最近会话(按 selectedDeviceId scope)→ 整套跟随(agentKind + model + effort + providerId,
  *      effort reconcile 同 pickAgentDefaultRuntime 口径:SectionModel 按 (providerId, modelId)

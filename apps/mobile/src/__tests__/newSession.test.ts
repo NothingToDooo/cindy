@@ -417,7 +417,9 @@ describe('stored agent restore gating', () => {
     expect(storedSource).toContain('provisionalRuntimeDeviceRef.current = selectedDeviceId');
     // 恢复待落定时不阻断「跟随最近任务」(Greptile P1)。
     expect(autoSource).not.toContain('isStoredAgentRestorePending(');
-    expect(autoSource).toContain('provisionalRuntimeDeviceRef.current = result.basedOnRecentTask ? null : result.appliedDeviceId;');
+    // 只凭目录选出的默认不锁定设备,迟到的最近任务(含跨 agent)仍可整套跟随(Codex P1)。
+    expect(autoSource).toContain('if (result.basedOnRecentTask) autoDefaultDeviceRef.current = result.appliedDeviceId;');
+    expect(autoSource).not.toContain('provisionalRuntimeDeviceRef');
     expect(source).toContain('const next = resolveLateRecentRuntime({');
   });
 });
@@ -981,6 +983,23 @@ describe('resolveNewSessionAutoDefault', () => {
       patch: { model: 'claude-sonnet-4-6', effort: 'low', providerId: 'prov-claude-sonnet-4-6' },
     });
     expect(result?.patch).not.toHaveProperty('agentKind');
+  });
+
+  it('intent ②-late: a catalog-only default stays unlocked so a late cross-agent recent task is followed in full (codex P1)', () => {
+    const rows = [modelRow('claude-catalog-default', ['low', 'medium'], 'medium')];
+    const first = resolveNewSessionAutoDefault({ ...baseInput, sessions: [], modelRows: rows });
+    expect(first?.basedOnRecentTask).toBe(false);
+    // 调用方不锁定(appliedDeviceId 仍为 null),任务列表随后到达且最近任务是 Codex。
+    const second = resolveNewSessionAutoDefault({
+      ...baseInput,
+      appliedDeviceId: null,
+      sessions: [remoteSession('cx', { agentKind: 'codex', model: 'gpt-5.4', effort: 'high', deviceLinkDeviceId: 'devA' })],
+      modelRows: rows,
+    });
+    expect(second).toMatchObject({
+      basedOnRecentTask: true,
+      patch: { agentKind: 'codex', model: 'gpt-5.4', effort: 'high' },
+    });
   });
 
   it('intent ②-wait: catalog not ready → do not copy the (stale) top row, wait for the real catalog (codex P1)', () => {

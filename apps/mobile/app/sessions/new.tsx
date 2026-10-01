@@ -985,7 +985,8 @@ export default function NewRemoteSessionScreen() {
   // 持久草稿不会写入该 ref，因此已下架模型仍走 mobile 的首项降级。
   const explicitProviderModelSelectionRef = useRef<string | null>(null);
   const autoDefaultDeviceRef = useRef<string | null>(null);
-  // 默认模型只凭目录选出(该设备当时没有当前 agent 的最近任务)时记下设备:迟到的最近任务可补正一次。
+  // 恢复上次 agent 时模型只凭目录选出(该设备当时没有该 agent 的最近任务)则记下设备:
+  // 迟到的同 agent 最近任务可补正一次模型。自动默认路径不用它——它只凭目录时不锁定设备。
   const provisionalRuntimeDeviceRef = useRef<string | null>(null);
   // selectedDeviceId 的渲染期镜像:异步回调(权限确认 .then)提交前比对触发时捕获的设备,
   // 不一致即放弃写入 —— 防止确认弹窗期间用户切了设备,回调把旧设备的来源/配置写进草稿
@@ -1299,8 +1300,9 @@ export default function NewRemoteSessionScreen() {
       currentEffort: draft.effort,
     });
     if (!result) return;
-    autoDefaultDeviceRef.current = result.appliedDeviceId;
-    provisionalRuntimeDeviceRef.current = result.basedOnRecentTask ? null : result.appliedDeviceId;
+    // 只凭目录选出的默认不锁定设备:任务列表晚于目录到达时,下次 effect 仍按最近任务
+    // 整套跟随(含跨 agent);跟随了最近任务才算落定。
+    if (result.basedOnRecentTask) autoDefaultDeviceRef.current = result.appliedDeviceId;
     const nextAgentKind = result.patch.agentKind ?? draft.agentKind;
     const storedPermissionMode = appliedPermissionMemoryRef.current
       ? undefined
@@ -1343,8 +1345,8 @@ export default function NewRemoteSessionScreen() {
     };
   }, [capabilities?.availableModels, deviceProviders.loading, draft.effort, draft.permissionMode, draft.agentKind, modelRows, deviceProviders.ready, deviceProviders.unsupported, modelSections.connected.length, newSessionPreferences, newSessionPreferencesLoaded, selectedDeviceId, sessions]);
 
-  // 迟到的最近任务补正:默认模型只凭目录选出时(冷启动目录先于任务列表到达),该设备
-  // 之后出现当前 agent 的最近任务就按它重算一次模型;用户手动改过运行配置则放弃。
+  // 迟到的最近任务补正:恢复上次 agent 时模型只凭目录选出(冷启动目录先于任务列表到达),
+  // 该设备之后出现这个 agent 的最近任务就按它重算一次模型;用户手动改过运行配置则放弃。
   useEffect(() => {
     if (!selectedDeviceId || provisionalRuntimeDeviceRef.current !== selectedDeviceId) return;
     if (userTouchedRuntimeRef.current) {
