@@ -3773,14 +3773,6 @@ export class PiAgent extends BaseAgent {
     const managedLaunchSkills = managedSkillPaths.filter((skillPath) => !projectResourceCli.skills
       .some((existing) => canonicalSkillPath(existing) === canonicalSkillPath(skillPath)));
     const managedSkillRoot = managedLaunchSkills.length ? path.join(configHome, 'cindy-managed-skills') : undefined;
-    if (managedSkillRoot) {
-      await fs.mkdir(managedSkillRoot);
-      for (const [index, skillPath] of managedLaunchSkills.entries()) {
-        // Preserve discovery order for same-name skills without long filenames.
-        await fs.symlink(path.dirname(skillPath), path.join(managedSkillRoot, String(index).padStart(12, '0')),
-          process.platform === 'win32' ? 'junction' : 'dir');
-      }
-    }
 
     const args = [
       '--mode',
@@ -3815,15 +3807,23 @@ export class PiAgent extends BaseAgent {
         : []),
     ];
     try {
+      if (managedSkillRoot) {
+        await fs.mkdir(managedSkillRoot);
+        for (const [index, skillPath] of managedLaunchSkills.entries()) {
+          // Preserve discovery order for same-name skills without long filenames.
+          await fs.symlink(path.dirname(skillPath), path.join(managedSkillRoot, String(index).padStart(12, '0')),
+            process.platform === 'win32' ? 'junction' : 'dir');
+        }
+      }
       assertPiSpawnArgvFitsPlatform(args);
     } catch (error) {
       try {
         disposeSessionCtx?.();
       } catch {
-        /* best-effort: cleanup failure must not mask argv budget failure */
+        /* best-effort: cleanup failure must not mask Skill setup / argv failure */
       }
       disposeSessionCtx = undefined;
-      cleanupConfigHome();
+      await cleanupConfigHome();
       cleanupRuntimeFiles();
       throw error;
     }

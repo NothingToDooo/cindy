@@ -13,7 +13,12 @@ const state = vi.hoisted(() => ({
 vi.mock('electron', () => ({ app: { getPath: () => state.root } }));
 vi.mock('../../appSessionState.js', () => ({
   activeOwnerScopeKey: () => state.owner,
+  getActiveAppSession: () => ({ dataOwnerId: state.owner }),
   isAppSessionBoundaryPending: () => state.pending,
+}));
+vi.mock('../../authBoundaryQuarantine.js', () => ({
+  withSharedGlobalSkillProjectionMutation: async (_owner: string, work: () => Promise<unknown>) =>
+    work(),
 }));
 vi.mock('../built-in-skills.js', () => ({
   sharedBuiltInSkillsRoot: (root: string) => path.join(root, 'shared-system-skills'),
@@ -26,7 +31,13 @@ vi.mock('../../cindy-brain/index.js', () => ({
   listAvailableGhostsForAuthorization: () => [
     {
       enabled: state.enabled,
-      approvedSkillRoot: path.join(state.root, state.owner, 'approved'),
+      approvedSkillRoot: path.join(
+        state.root,
+        state.owner,
+        'ghost-install-state',
+        'skill-snapshots',
+        'rev',
+      ),
       manifest: {
         id: 'my-plugin',
         skill: {
@@ -36,7 +47,8 @@ vi.mock('../../cindy-brain/index.js', () => ({
     },
   ],
 }));
-import { listCindyManagedSkills } from '../managed-skills.js';
+import { listCindyManagedSkills, prepareCindyCodexSkills } from '../managed-skills.js';
+import { codexManagedSkillLinkName } from '../codex-global-skills.js';
 
 async function writeSkill(root: string, slot: string, name: string) {
   const dir = path.join(root, 'skills', slot);
@@ -54,9 +66,15 @@ beforeEach(async () => {
   state.enabled = true;
   state.verified = true;
   await writeSkill(path.join(state.root, 'official'), 'learn', 'learn');
-  await writeSkill(path.join(state.root, 'a', 'approved'), 'demo', ' demo ');
+  await writeSkill(
+    path.join(state.root, 'a', 'ghost-install-state', 'skill-snapshots', 'rev'),
+    'demo',
+    ' demo ',
+  );
+  vi.spyOn(os, 'homedir').mockReturnValue(path.join(state.root, 'user-home'));
 });
 afterEach(async () => {
+  vi.restoreAllMocks();
   await fs.rm(state.root, { recursive: true, force: true });
 });
 
@@ -78,7 +96,18 @@ describe('Cindy managed skill catalog', () => {
     expect(skills.map((skill) => skill.path)).toEqual(
       await Promise.all([
         fs.realpath(path.join(state.root, 'official', 'skills', 'learn', 'SKILL.md')),
-        fs.realpath(path.join(state.root, 'a', 'approved', 'skills', 'demo', 'SKILL.md')),
+        fs.realpath(
+          path.join(
+            state.root,
+            'a',
+            'ghost-install-state',
+            'skill-snapshots',
+            'rev',
+            'skills',
+            'demo',
+            'SKILL.md',
+          ),
+        ),
       ]),
     );
     expect(skills[1]?.description).toBe('Approved description');
@@ -107,5 +136,38 @@ describe('Cindy managed skill catalog', () => {
   it('refuses discovery during an account boundary', async () => {
     state.pending = true;
     await expect(listCindyManagedSkills()).rejects.toThrow('Skill owner is changing');
+  });
+
+  it('revokes disabled plugin projections from default and independent Codex homes without deleting sources', async () => {
+    const homes = ['default', 'account-a', 'account-b'].map((name) => path.join(state.root, name));
+    const linkName = codexManagedSkillLinkName('cindy-plugin-my-plugin:demo');
+    const source = path.join(
+      state.root,
+      'a',
+      'ghost-install-state',
+      'skill-snapshots',
+      'rev',
+      'skills',
+      'demo',
+      'SKILL.md',
+    );
+    for (const home of homes) {
+      await prepareCindyCodexSkills(home);
+      expect(await fs.realpath(path.join(home, 'skills', linkName, 'SKILL.md'))).toBe(
+        await fs.realpath(source),
+      );
+      await fs.mkdir(path.join(home, 'skills', 'cindy-user-owned'));
+    }
+    state.enabled = false;
+    for (const home of homes) {
+      await prepareCindyCodexSkills(home);
+      await expect(fs.lstat(path.join(home, 'skills', linkName))).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+      expect((await fs.stat(path.join(home, 'skills', 'cindy-user-owned'))).isDirectory()).toBe(
+        true,
+      );
+    }
+    expect(await fs.readFile(source, 'utf8')).toContain('Fixture');
   });
 });

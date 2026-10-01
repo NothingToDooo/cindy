@@ -2,10 +2,27 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { app } from 'electron';
 import matter from 'gray-matter';
-import { activeOwnerScopeKey, isAppSessionBoundaryPending } from '../appSessionState.js';
+import {
+  activeOwnerScopeKey,
+  getActiveAppSession,
+  isAppSessionBoundaryPending,
+} from '../appSessionState.js';
 import type { AgentDeps } from '@cindy/maker-core';
 import { builtInSkillDescriptors, sharedBuiltInSkillsRoot } from './built-in-skills.js';
 import { getGhostManager, listAvailableGhostsForAuthorization } from '../cindy-brain/index.js';
+import { withSharedGlobalSkillProjectionMutation } from '../authBoundaryQuarantine.js';
+import { prepareCodexGlobalSkillsLinks } from './codex-global-skills.js';
+
+/** Reconcile the selected app-server home, including independently routed accounts. */
+export async function prepareCindyCodexSkills(codexHome: string): Promise<void> {
+  const ownerId = getActiveAppSession().dataOwnerId;
+  await withSharedGlobalSkillProjectionMutation(ownerId, async () => {
+    await prepareCodexGlobalSkillsLinks(codexHome, {
+      managedRoots: await cindyManagedSkillRoots(),
+      managedSkills: await listCindyManagedSkills(),
+    });
+  });
+}
 
 /** Ownership roots for retiring private Codex links, never directories to scan. */
 export async function cindyManagedSkillRoots(): Promise<string[]> {

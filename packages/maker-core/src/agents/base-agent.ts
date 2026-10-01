@@ -696,6 +696,8 @@ export interface AgentDeps {
   getManagedSkills?: () => Promise<Array<AgentSkillCommand & {
     claudeCommandName: string;
   }>>;
+  /** Refresh host-owned Skill links in the actual local Codex home before each thread, including reused servers. */
+  prepareCodexSkills?: (codexHome: string) => Promise<void>;
   /** Optional low-I/O, provider-neutral turn change recorder supplied by the host. */
   turnChangeCapture?: TurnChangeCaptureHooks;
   auth: AuthAdapter;
