@@ -10,6 +10,8 @@ import {
   availableNewSessionAgentOptions,
   canResolveStoredAgentRuntime,
   isStoredAgentRestorePending,
+  nextStoredAgentRestoreStep,
+  type StoredAgentRestoreState,
   buildNewSessionCreatePreview,
   buildRecentWorkspaceOptions,
   buildRemoteCreateSessionOptions,
@@ -404,14 +406,44 @@ describe('stored agent restore gating', () => {
     })).toBe(true);
   });
 
+  it('restores the remembered agent immediately and fills its model exactly once when data arrives (codex P1)', () => {
+    // 事件序列:偏好到 → 数据未到 → 数据到 → 之后再有数据变化。
+    let restored: StoredAgentRestoreState | null = null;
+    const apply = (modelReady: boolean) => {
+      const step = nextStoredAgentRestoreStep({ storedAgentKind: 'codex', restored, modelReady });
+      if (step) restored = { agentKind: 'codex', phase: step === 'agent' ? 'agent' : 'done' };
+      return step;
+    };
+    // 目录拉不到、也没有 Codex 最近任务:仍先恢复 agent(旧补丁在这里返回不恢复,草稿停在 Claude)。
+    expect(apply(false)).toBe('agent');
+    expect(apply(false)).toBeNull();
+    expect(apply(true)).toBe('model');
+    expect(apply(true)).toBeNull();
+    expect(apply(false)).toBeNull();
+  });
+
+  it('restores agent and model together when data is already there, and restarts for a different remembered agent', () => {
+    expect(nextStoredAgentRestoreStep({ storedAgentKind: 'pi', restored: null, modelReady: true })).toBe('full');
+    expect(nextStoredAgentRestoreStep({
+      storedAgentKind: 'pi',
+      restored: { agentKind: 'codex', phase: 'done' },
+      modelReady: false,
+    })).toBe('agent');
+  });
+
   it('gates the stored agent restore on real data and leaves the auto-default unblocked', () => {
     const source = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
     const storedStart = source.indexOf('const storedAgentKind = newSessionPreferences?.agentKind;');
     const autoStart = source.indexOf('const result = resolveNewSessionAutoDefault({');
-    const storedSource = source.slice(storedStart, source.indexOf('appliedStoredAgentRef.current = storedAgentKind;', storedStart));
+    const storedSource = source.slice(storedStart, source.indexOf('storedAgentRestoreRef.current = {', storedStart));
     const autoGuardSource = source.slice(source.lastIndexOf('useEffect(() => {', autoStart), autoStart);
     expect(storedSource).toContain('isStoredAgentRestorePending({');
     expect(storedSource).toContain('canResolveStoredAgentRuntime({');
+    expect(storedSource).toContain('nextStoredAgentRestoreStep({');
+    // model 步只补模型,不写 agent / 权限。
+    const modelStep = source.slice(source.indexOf("if (step === 'model') {"), source.indexOf('const storedPermissionMode', storedStart));
+    expect(modelStep).not.toContain('permissionMode');
+    expect(modelStep).toContain('current.agentKind === storedAgentKind');
     expect(storedSource).not.toContain('deviceProviders.loading');
     // 恢复待落定时不阻断「跟随最近任务」(Greptile P1)。
     expect(autoGuardSource).not.toContain('isStoredAgentRestorePending(');
