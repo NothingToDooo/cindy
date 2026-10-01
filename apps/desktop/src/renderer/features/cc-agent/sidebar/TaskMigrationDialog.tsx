@@ -275,14 +275,19 @@ export function TaskMigrationDialog({
       ? t('taskMigration.estimateTimeout')
       : estimateError === 'MIGRATION_TOO_MANY_FILES'
         ? t('taskMigration.estimateTooManyFiles', { limit: TASK_MIGRATION_MAX_FILES })
-        : estimateError
+        : estimateError === 'MIGRATION_FAILED'
           ? t('taskMigration.estimateFailed')
-          : estimate
-            ? t('taskMigration.fileSummary', {
-                count: estimate.fileCount,
-                size: bytes(estimate.bytes),
+          : estimateError
+            ? // The source refused for a stated reason (e.g. queued input); never blame the connection.
+              t(`taskMigration.errors.${estimateError}`, {
+                defaultValue: t('taskMigration.estimateFailedWithCode', { code: estimateError }),
               })
-            : t('taskMigration.estimating');
+            : estimate
+              ? t('taskMigration.fileSummary', {
+                  count: estimate.fileCount,
+                  size: bytes(estimate.bytes),
+                })
+              : t('taskMigration.estimating');
   const errorKey =
     failure &&
     t(`taskMigration.errors.${failure}`, {

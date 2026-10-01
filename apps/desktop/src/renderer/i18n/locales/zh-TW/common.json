@@ -73,6 +73,7 @@
     "fileSummary": "專案檔案：{{count}} 個，共 {{size}}",
     "estimateNote": "複製前估算，含隱藏檔案；不含另行複製的 Git 歷史、任務對話及附件。檔案變化可能影響最終大小。",
     "estimateFailed": "無法統計檔案。請檢查任務所在電腦的連線和版本，然後關閉重試。",
+    "estimateFailedWithCode": "無法統計檔案。請檢查任務所在電腦的連線和版本，然後關閉重試。（{{code}}）",
     "estimateTimeout": "統計逾時：專案檔案過多，任務所在電腦未能在時限內完成統計。可以改為複製檔案較少的專案。",
     "estimateTooManyFiles": "專案檔案超過 {{limit, number}} 個，無法複製。請改為複製檔案較少的專案。"
   },

@@ -73,6 +73,7 @@
     "fileSummary": "项目文件：{{count}} 个，共 {{size}}",
     "estimateNote": "复制前估算，含隐藏文件；不含另行复制的 Git 历史、任务对话及附件。文件变化可能影响最终大小。",
     "estimateFailed": "无法统计文件。请检查任务所在电脑的连接和版本，然后关闭重试。",
+    "estimateFailedWithCode": "无法统计文件。请检查任务所在电脑的连接和版本，然后关闭重试。（{{code}}）",
     "estimateTimeout": "统计超时：项目文件过多，任务所在电脑未能在时限内完成统计。可以改为复制文件更少的项目。",
     "estimateTooManyFiles": "项目文件超过 {{limit, number}} 个，无法复制。请改为复制文件更少的项目。"
   },

@@ -23,27 +23,36 @@ vi.mock('@/features/device-link/remoteProjectsStore', () => ({
 const source = { id: 'task', title: 'Task', status: 'active', deviceLinkDeviceId: 'A' } as Session;
 let failure = '';
 let failurePath: string | undefined;
+let estimateFailure = '';
 beforeEach(() => {
+  failure = '';
   failurePath = undefined;
+  estimateFailure = '';
   setDataOwnerGeneration('owner');
   Object.assign(window, {
     electronAPI: {
       deviceLink: {
-        // A copy that stopped with an error, as the source reports it after a failure.
-        taskMigration: async (device: string | null, command: { action: string }) => ({
-          supported: true,
-          deviceId: device ?? 'local',
-          ...(command.action === 'status'
-            ? {
-                stage: 'preparing',
-                running: false,
-                error: failure,
-                ...(failurePath ? { errorPath: failurePath } : {}),
-                targetDeviceId: 'B',
-                targetSessionId: 'migrated',
-              }
-            : {}),
-        }),
+        taskMigration: async (device: string | null, command: { action: string }) => {
+          // Same encoding the main-process IPC error reaches the renderer with.
+          if (command.action === 'estimate' && estimateFailure)
+            throw new Error(`[PRECONDITION_FAILED] ${estimateFailure}`);
+          return {
+            supported: true,
+            deviceId: device ?? 'local',
+            ...(command.action === 'caps' ? { copyEstimate: true } : {}),
+            // A copy that stopped with an error, as the source reports it after a failure.
+            ...(command.action === 'status' && failure
+              ? {
+                  stage: 'preparing',
+                  running: false,
+                  error: failure,
+                  ...(failurePath ? { errorPath: failurePath } : {}),
+                  targetDeviceId: 'B',
+                  targetSessionId: 'migrated',
+                }
+              : {}),
+          };
+        },
         invoke: vi.fn(),
         openLink: vi.fn(),
         listDevices: async () => ({ devices: [] }),
@@ -107,3 +116,27 @@ it.each(resources)('names the blocking project entry in %s', async (locale, reso
       resource.taskMigration.errorPath.replace('{{path}}', 'apps/desktop/C:'),
   );
 });
+
+it.each(resources)(
+  'shows why the source refused to count files instead of blaming the connection in %s',
+  async (locale, resource) => {
+    const copy = resource.taskMigration;
+    const cases = [
+      // Queued input on the source task: its own reason, no connection/version hint.
+      ['MIGRATION_TASK_QUEUED', copy.errors.MIGRATION_TASK_QUEUED],
+      // No dedicated copy: keep the generic hint but name the code.
+      [
+        'MIGRATION_OWNER_CHANGED',
+        copy.estimateFailedWithCode.replace('{{code}}', 'MIGRATION_OWNER_CHANGED'),
+      ],
+      // Old or unreachable source: the original connection/version hint.
+      ['MIGRATION_FAILED', copy.estimateFailed],
+    ] as const;
+    for (const [code, text] of cases) {
+      estimateFailure = code;
+      await mount(locale, resource);
+      expect((await screen.findByText(text)).getAttribute('role')).toBe('status');
+      cleanup();
+    }
+  },
+);

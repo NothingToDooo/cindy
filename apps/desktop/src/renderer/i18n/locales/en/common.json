@@ -73,6 +73,7 @@
     "fileSummary": "Project files: {{count}}, totaling {{size}}",
     "estimateNote": "Pre-copy estimate including hidden files. Git history, conversation and attachments are copied separately and excluded from this size. Files may change before copying.",
     "estimateFailed": "Could not count files. Check the source computer’s connection and version, then close and try again.",
+    "estimateFailedWithCode": "Could not count files. Check the source computer’s connection and version, then close and try again. ({{code}})",
     "estimateTimeout": "Counting timed out: the project has too many files for the source computer to finish in time. Try copying a project with fewer files.",
     "estimateTooManyFiles": "The project has more than {{limit, number}} files and cannot be copied. Copy a project with fewer files instead."
   },
