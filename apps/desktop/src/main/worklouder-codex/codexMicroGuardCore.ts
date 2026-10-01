@@ -82,7 +82,7 @@ export class CodexMicroGuardStore {
   readonly heartbeatPath: string;
   readonly hookPath: string;
   readonly receiptPath: string;
-  /** Written with every hook install by releases where protection defaults on. */
+  /** Written by releases where protection defaults on; legacy migration then never reruns. */
   readonly defaultOnPath: string;
 
   constructor(readonly supportPath: string) {
@@ -108,6 +108,10 @@ export class CodexMicroGuardStore {
     if (this.readPrivateFile('guard-hook.cjs') !== contents) {
       throw new Error('guard hook verification failed');
     }
+    this.markDefaultOn();
+  }
+
+  markDefaultOn(): void {
     this.atomicWrite('default-on', '');
   }
 

@@ -279,6 +279,26 @@ describe('CodexMicroGuardService', () => {
       enabled: false,
     });
 
+    expect(fs.existsSync(path.join(locations.supportPath, 'default-on'))).toBe(true);
+    await instance.dispose();
+
+    // Restoring defaults removes the override; the migration must not run again.
+    fs.rmSync(locations.settingsPath);
+    const restored = service(locations, runner);
+    expect(await restored.getState()).toMatchObject({ enabled: true, status: 'protecting' });
+    await restored.dispose();
+  });
+
+  it('turns a migrated opt-out back on and keeps it on after relaunch', async () => {
+    const locations = paths('default');
+    fs.mkdirSync(locations.supportPath, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(locations.supportPath, 'guard-hook.cjs'), '// old hook\n', {
+      mode: 0o600,
+    });
+    const runner = new EnvironmentRunner(null);
+    const instance = service(locations, runner);
+    expect(await instance.getState()).toMatchObject({ enabled: false, status: 'disabled' });
+
     // Turning it back on records the new default and the marker for later launches.
     expect(await instance.setEnabled(true)).toMatchObject({ enabled: true, status: 'protecting' });
     expect(fs.existsSync(locations.settingsPath)).toBe(false);

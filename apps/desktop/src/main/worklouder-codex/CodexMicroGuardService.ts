@@ -184,12 +184,17 @@ export class CodexMicroGuardService {
   /**
    * Default-off releases stored nothing when the user turned protection off,
    * because off matched the old default. Their leftover hook (without the
-   * default-on marker) identifies that opt-out, so keep it off once.
+   * default-on marker) identifies that opt-out, so keep it off once. The
+   * marker then records the migration, so a later restore-defaults follows
+   * the new default instead of re-running it.
    */
   private preserveLegacyOptOut(): void {
     try {
-      if (this.settingsStore.readState().isCustomized || !this.store.hasLegacyHook()) return;
-      this.settingsStore.writePatch({ enabled: false });
+      if (!this.store.hasLegacyHook()) return;
+      if (!this.settingsStore.readState().isCustomized) {
+        this.settingsStore.writePatch({ enabled: false });
+      }
+      this.store.markDefaultOn();
     } catch {
       log.warn('Codex Micro guard legacy opt-out migration failed');
     }
