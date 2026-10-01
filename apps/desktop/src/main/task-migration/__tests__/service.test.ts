@@ -11,6 +11,7 @@ import {
   TASK_MIGRATION_ESTIMATE_TIMEOUT_MS,
   TASK_MIGRATION_LOCAL_CHANNEL,
   TASK_MIGRATION_MAX_FILES,
+  TASK_MIGRATION_MAX_TRANSCRIPTS,
 } from '@cindy/device-link';
 
 const state = vi.hoisted(() => ({
@@ -47,6 +48,7 @@ const state = vi.hoisted(() => ({
   migrationWarn: vi.fn(),
   /** Native transcript the export streams beside the package when the target supports it. */
   transcript: '' as string,
+  transcriptCount: 1,
   exportOversize: null as null | {
     totalBytes: number;
     limitBytes: number;
@@ -188,14 +190,14 @@ vi.mock('../../session-share/sessionShareExport', () => ({
     const external = opts.externalTranscripts;
     const staged =
       external && state.transcript
-        ? [
-            {
-              path: 'transcripts/codex/rollout.jsonl',
-              file: 'transcript-0-0a1b2c3d.jsonl',
-              bytes: Buffer.byteLength(state.transcript),
-              sha256: createHash('sha256').update(state.transcript).digest('hex'),
-            },
-          ]
+        ? Array.from({ length: state.transcriptCount }, (_, index) => ({
+            path: index
+              ? `transcripts/codex/rollout-${index}.jsonl`
+              : 'transcripts/codex/rollout.jsonl',
+            file: `transcript-${index}-0a1b2c3d.jsonl`,
+            bytes: Buffer.byteLength(state.transcript),
+            sha256: createHash('sha256').update(state.transcript).digest('hex'),
+          }))
         : [];
     for (const transcript of staged)
       await fs.writeFile(path.join(external!.dir, transcript.file), state.transcript);
@@ -329,6 +331,7 @@ describe('resumable cross-computer copy', () => {
     state.timeoutAction = '';
     state.exclusions = [];
     state.transcript = '';
+    state.transcriptCount = 1;
     state.exportOversize = null;
     state.oldTarget = false;
     state.importedTranscripts = [];
@@ -1036,6 +1039,13 @@ describe('resumable cross-computer copy', () => {
     // Its upload is tracked with the others, so completing the copy deletes it too.
     const transcriptKey = [...state.files].find(([, file]) => file.includes('transcript-0-'))![0];
     expect(state.remove.mock.calls.map(([key]) => key)).toContain(transcriptKey);
+  });
+  it('stops before uploading more transcripts than the target accepts', async () => {
+    state.transcript = 'native history';
+    state.transcriptCount = TASK_MIGRATION_MAX_TRANSCRIPTS + 1;
+    await start();
+    expect(await settled()).toMatchObject({ stage: 'preparing', error: 'MIGRATION_NO_MEMORY' });
+    expect(state.files.size).toBe(0);
   });
   it('keeps transcripts inside the package for a target without the capability', async () => {
     state.transcript = 'native history';

@@ -6,6 +6,7 @@ import {
   TASK_MIGRATION_CHANNEL,
   TASK_MIGRATION_LOCAL_CHANNEL,
   TASK_MIGRATION_MAX_FILES,
+  TASK_MIGRATION_MAX_TRANSCRIPTS,
   TASK_MIGRATION_ESTIMATE_TIMEOUT_MS,
   DeviceLinkError,
   parseTaskMigrationRequest,
@@ -413,6 +414,9 @@ async function prepare(scope: Scope, record: MigrationHandoff) {
       }
       if (result.status !== 'ok' || result.fidelity !== 'full' || result.mediaDropped)
         throw new Error('MIGRATION_INCOMPLETE_CONTEXT');
+      // The target rejects more transcripts than the protocol allows; stop before uploading them.
+      if ((result.externalTranscripts?.length ?? 0) > TASK_MIGRATION_MAX_TRANSCRIPTS)
+        throw new Error('MIGRATION_NO_MEMORY');
       const snapshots: PortableWorkspace[] = [];
       for (const [index, dir] of sourceKeys.entries())
         snapshots.push(
