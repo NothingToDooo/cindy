@@ -462,6 +462,22 @@ function shellSingleQuote(value) {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
+// Terminal 的 `do script` 把命令当键盘输入送进新标签页的 tty;新窗口的 shell 还没接管
+// 输入时 tty 处于 canonical 模式,单行超过 MAX_CANON(1024 字节)会被截断,整条命令
+// 静默不执行(worktree 路径长、需清除的环境变量多时实测 ~1600 字节)。完整命令先写进
+// 临时脚本,Terminal 只收一条短的 source 命令;脚本第一行删掉自身,不留残留文件。
+export function writeDarwinTerminalLaunchScript(command, dir = os.tmpdir()) {
+  const scriptPath = path.join(dir, `cindy-desktop-dev-${randomBytes(6).toString('hex')}.sh`);
+  fs.writeFileSync(scriptPath, `rm -f -- ${shellSingleQuote(scriptPath)}\n${command}\n`, {
+    mode: 0o600,
+  });
+  return scriptPath;
+}
+
+export function darwinTerminalSourceCommand(scriptPath) {
+  return `. ${shellSingleQuote(scriptPath)}`;
+}
+
 function osascriptCloseDarwinTerminalTtyArgs(ttyPath) {
   return closeDarwinTerminalTtyScript
     .flatMap((line) => ['-e', line])
@@ -961,7 +977,8 @@ function launchInSystemTerminal(mode) {
 
   if (process.platform === 'darwin') {
     const command = `${darwinEnvPrefix()}${darwinStaleDevEnvUnset()}cd ${shellSingleQuote(rootDir)} && ${devEnvPrefix()}${packageManagerCommand(mode)}; exitCode=$?; exit $exitCode`;
-    const child = spawn('osascript', osascriptLaunchDarwinTerminalArgs(command), {
+    const scriptPath = writeDarwinTerminalLaunchScript(command);
+    const child = spawn('osascript', osascriptLaunchDarwinTerminalArgs(darwinTerminalSourceCommand(scriptPath)), {
       detached: true,
       stdio: 'ignore',
     });
