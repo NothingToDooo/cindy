@@ -1,8 +1,34 @@
+import fs from "node:fs";
 import type {
+  AgentDeps,
   BotRuntimeSkillPolicy,
   BotRuntimeSkillEntry,
 } from "../base-agent.js";
-import { canonicalSkillPath } from "./skill-activation.js";
+import { canonicalSkillPath, isSkillDisabled } from "./skill-activation.js";
+
+/** Check and mount the same physical file, even if a discovery alias moves later. */
+export function resolveAllowedManagedSkills(
+  skills: Awaited<ReturnType<NonNullable<AgentDeps["getManagedSkills"]>>>,
+  grants: ReadonlySet<string> | undefined,
+  disabledPaths: readonly string[],
+) {
+  return skills.flatMap((skill) => {
+    if (!skill.path) return [];
+    let source: string;
+    try {
+      source = fs.realpathSync(skill.path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
+    if (
+      (grants !== undefined && !grants.has(canonicalSkillPath(source))) ||
+      isSkillDisabled(source, disabledPaths)
+    )
+      return [];
+    return [{ ...skill, path: source }];
+  });
+}
 
 /** Freeze only resolved, usable Bot grants; names alone never grant a managed source. */
 export function snapshotManagedSkillGrants(

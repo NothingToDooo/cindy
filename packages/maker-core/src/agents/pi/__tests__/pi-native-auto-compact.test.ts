@@ -3,7 +3,7 @@
  * events and only latches deterministic failures for the next-send rollover.
  */
 
-import { mkdtempSync, mkdirSync, renameSync, symlinkSync, unlinkSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, renameSync, symlinkSync, unlinkSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -368,9 +368,9 @@ describe("PiAgent native auto-compaction ownership", () => {
         mcpPolicy:{mode:'inherit' as const,configured:[],catalog:[]},
         toolsetPolicy:{mode:'inherit' as const,configured:[],catalog:[]}}} : {})});
     try {
-      expect(knobs.spawnArgs.includes(skill)).toBe(mode === 'ordinary' || mode === 'bot-allow');
+      expect(knobs.spawnArgs.includes(realpathSync(skill))).toBe(mode === 'ordinary' || mode === 'bot-allow');
       if(bot) expect(knobs.spawnArgs).toContain('--no-skills');
-      if(mode === 'bot-allow') expect(knobs.spawnArgs.filter((arg) => arg === skill)).toHaveLength(1);
+      if(mode === 'bot-allow') expect(knobs.spawnArgs.filter((arg) => arg === realpathSync(skill))).toHaveLength(1);
     } finally {await handle.close();}
   });
 

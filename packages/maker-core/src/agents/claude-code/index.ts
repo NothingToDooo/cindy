@@ -191,10 +191,10 @@ import type {
   MemoryResetResult,
 } from '../../types/memory.js';
 import type { McpProviderContext } from '../../interfaces/mcp-provider.js';
-import { canonicalSkillPath, isSkillDisabled, claudeDisabledSkillOverrides, snapshotDisabledSkillLaunch, currentDisabledSkillLaunchPaths } from '../shared/skill-activation.js';
+import { claudeDisabledSkillOverrides, snapshotDisabledSkillLaunch, currentDisabledSkillLaunchPaths } from '../shared/skill-activation.js';
 import { scanClaudeCustomizations, scanClaudeRuntimeSkills } from './customization-scanner.js';
 import { prepareManagedSkillPlugins } from './managed-skill-plugins.js';
-import { snapshotManagedSkillGrants } from '../shared/managed-skill-policy.js';
+import { resolveAllowedManagedSkills, snapshotManagedSkillGrants } from '../shared/managed-skill-policy.js';
 import {
   REVIEW_SENSITIVE_CREDENTIAL_GLOB_PATTERNS,
   isReviewSensitiveCredentialSelector,
@@ -3995,9 +3995,7 @@ export class ClaudeCodeAgent extends BaseAgent {
       const managedSkills = !reviewMode && this.deps.getManagedSkills
         ? await this.deps.getManagedSkills() : [];
       const managedDisabledPaths = currentDisabledSkillLaunchPaths(managedDisabledSkillLaunch);
-      const allowedManagedSkills = managedSkills.filter((skill) => skill.path
-        && (managedSkillGrants === undefined || managedSkillGrants.has(canonicalSkillPath(skill.path)))
-        && !isSkillDisabled(skill.path, managedDisabledPaths));
+      const allowedManagedSkills = resolveAllowedManagedSkills(managedSkills, managedSkillGrants, managedDisabledPaths);
       const managedPlugins = allowedManagedSkills.length
         ? await prepareManagedSkillPlugins(allowedManagedSkills, (name) => {
           log.warn('managed skill disappeared before Query startup; skipping', { skill: name });

@@ -1,6 +1,6 @@
 import { getPiExtensionUiCapability } from './extension-ui-capabilities.js';
 import { parsePiManagementArgs, parsePiManagementText } from './managed-command.js';
-import { canonicalSkillPath, isSkillDisabled, snapshotDisabledSkillLaunch, currentDisabledSkillLaunchPaths, extendDisabledSkillLaunchPaths, type DisabledSkillLaunchSnapshot } from '../shared/skill-activation.js';
+import { canonicalSkillPath, snapshotDisabledSkillLaunch, currentDisabledSkillLaunchPaths, extendDisabledSkillLaunchPaths, type DisabledSkillLaunchSnapshot } from '../shared/skill-activation.js';
 /**
  * PiAgent —— pi coding agent(earendil-works/pi)接入。
  *
@@ -210,7 +210,7 @@ import {
   unavailablePiProjectResourceAssembly,
 } from './project-resource-assembly.js';
 import { applyPiBotSkillPolicy } from './bot-skill-policy.js';
-import { snapshotManagedSkillGrants } from '../shared/managed-skill-policy.js';
+import { resolveAllowedManagedSkills, snapshotManagedSkillGrants } from '../shared/managed-skill-policy.js';
 import {
   assertPiSpawnArgvFitsPlatform,
   collectPiProjectResourceCliPaths,
@@ -3660,10 +3660,11 @@ export class PiAgent extends BaseAgent {
     const managedSkillGrants = snapshotManagedSkillGrants(opts.botRuntimeProfile?.skillPolicy);
     const managedSkills = opts.remoteHostId || reviewMode ? [] : await this.deps.getManagedSkills?.() ?? [];
     const managedDisabledPaths = snapshotDisabledSkillLaunch(opts.remoteHostId || reviewMode ? [] : this.deps.getDisabledSkillPaths?.() ?? []);
-    const managedSkillPaths = managedSkills.filter((skill) => {
-      if (!skill.path || isSkillDisabled(skill.path, currentDisabledSkillLaunchPaths(managedDisabledPaths))) return false;
-      return managedSkillGrants === undefined || managedSkillGrants.has(canonicalSkillPath(skill.path));
-    }).map((skill) => skill.path!);
+    const managedSourceIdentities = new Set(managedSkills.flatMap((skill) =>
+      skill.path ? [canonicalSkillPath(skill.path)] : []));
+    const managedSourcePaths = new Set(managedSkills.flatMap((skill) => skill.path ? [path.resolve(skill.path)] : []));
+    const managedSkillPaths = resolveAllowedManagedSkills(managedSkills, managedSkillGrants,
+      currentDisabledSkillLaunchPaths(managedDisabledPaths)).map((skill) => skill.path);
     const botSkillSelection = applyPiBotSkillPolicy(
       reviewMode ? undefined : opts.botRuntimeProfile?.skillPolicy,
       projectResourceAssembly,
@@ -3759,13 +3760,11 @@ export class PiAgent extends BaseAgent {
         }
       : collectedProjectResources;
 
-    const managedSourceIdentities = new Set(managedSkills.flatMap((skill) =>
-      skill.path ? [canonicalSkillPath(skill.path)] : []));
     // The catalog path may alias a managed source. Apply the managed grant and
     // activation checks once, including paths already selected by the Bot.
     const additionalSkillPaths = [...new Map([
       ...(loadProjectResourcesInPlace ? [] : botSkillSelection.explicitSkillPaths.filter((skillPath) =>
-        !managedSourceIdentities.has(canonicalSkillPath(skillPath)))),
+        !managedSourcePaths.has(path.resolve(skillPath)) && !managedSourceIdentities.has(canonicalSkillPath(skillPath)))),
       ...managedSkillPaths,
     ].map((skillPath) => [canonicalSkillPath(skillPath), skillPath])).values()];
 

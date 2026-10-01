@@ -1,4 +1,4 @@
-import { cindyManagedSkillRoots } from './managed-skills.js';
+import { cindyManagedSkillRoots, listCindyManagedSkills } from './managed-skills.js';
 import { retainInvalidatedProviderPresentation, retainProviderPresentationAfterAuthChange } from './provider-presentation-store.js';
 import { subscriptionAccountKind, subscriptionAccountState } from './subscription-account-auth.js';
 /**
@@ -922,10 +922,10 @@ export class DesktopCodexAuthAdapter implements AuthAdapter {
 
   /**
    * Plugin capability enforcement is always rechecked after concurrent callers
-   * settle. Only successful Skill/rules preparation has a 30-second TTL.
+   * settle. Skill projections also refresh at each launch so a removed or
+   * disabled approved source cannot survive in a cached Codex discovery root.
    */
   private readonly pendingAssetsPrep = new PreparationCache(0);
-  private readonly skillAssetsPrep = new PreparationCache(30_000);
 
   /**
    * 进行中的 reconcileWithSystemCodex 调用 —— 多个调用点 (构造 / getState / getAuthEnv /
@@ -1363,10 +1363,7 @@ export class DesktopCodexAuthAdapter implements AuthAdapter {
   async ensureGlobalCodexAssets(): Promise<void> {
     const scope = preparationScope();
     await this.pendingAssetsPrep.ensure(scope.key, async () => {
-      await this.skillAssetsPrep.ensure(scope.key, async () => {
-        const success = await this.runEnsureGlobalCodexSkills(scope.ownerId);
-        return success && scope.current();
-      });
+      await this.runEnsureGlobalCodexSkills(scope.ownerId);
       await this.runEnsureGlobalCodexPlugins();
       return true;
     });
@@ -1386,7 +1383,7 @@ export class DesktopCodexAuthAdapter implements AuthAdapter {
 
     const [skillsOutcome, rulesOutcome] = await Promise.all([
       withSharedGlobalSkillProjectionMutation(ownerId, async () =>
-        prepareCodexGlobalSkillsLinks(this.codexHome, { managedRoots: await cindyManagedSkillRoots() }),
+        prepareCodexGlobalSkillsLinks(this.codexHome, { managedRoots: await cindyManagedSkillRoots(), managedSkills: await listCindyManagedSkills() }),
       ).then(
         (r) => ({ ok: true as const, label: 'skills' as const, warnings: r.warnings }),
         (err: Error) => ({ ok: false as const, label: 'skills' as const, err }),
@@ -1398,6 +1395,8 @@ export class DesktopCodexAuthAdapter implements AuthAdapter {
     ]);
 
     const outcomes = [sharedOutcome, skillsOutcome, rulesOutcome];
+    // A failed verified catalog must not fall back to yesterday's projections.
+    if (!skillsOutcome.ok) throw skillsOutcome.err;
     for (const outcome of outcomes) {
       if (!outcome.ok) {
         assetPrepLog.warn('prepare Codex global asset failed', {
@@ -2500,7 +2499,7 @@ export class DesktopCodexAuthAdapter implements AuthAdapter {
       const ownerId = getActiveAppSession().dataOwnerId;
       await desktopClaudeAuthAdapter.ensureSharedGlobalSkills();
       return { CODEX_HOME: await withSharedGlobalSkillProjectionMutation(ownerId, async () =>
-        prepareCodexAccountHome(options!.providerId!, await cindyManagedSkillRoots()),
+        prepareCodexAccountHome(options!.providerId!, await cindyManagedSkillRoots(), await listCindyManagedSkills()),
       ) };
     }
     this.ensureInvalidationMarkerLoaded();

@@ -189,6 +189,11 @@ Claude plugin、Cindy 的 `CODEX_HOME/skills`、Pi 显式 `--skill` 加载；不
 `~/.agents/skills` 或 `~/.claude/skills`。存量插件技能使用账号隔离的
 `<ghost-install-state>/agent-skills`，继续只指向已批准快照。
 
+运行期清单来自已验证的内置描述符与插件批准快照，不扫描私有投影目录中的占位内容。
+三套 Harness 均加载核验后的物理来源；Codex 在默认及独立账号的 `CODEX_HOME` 中
+逐个挂载这些技能，每次启动刷新，不将整个私有目录交给扫描器。Bot 的路径授权与
+Claude/Pi 最终加载使用同一物理来源，目录别名重指不能替换已授权的技能。
+
 Claude 的插件技能不受 `skillOverrides` 控制，因此每个本地 Query 只将已启用且
 符合 Bot 白名单的技能链接到临时插件入口；关闭 Query 时回收入口，源文件不变。
 
