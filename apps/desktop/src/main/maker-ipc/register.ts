@@ -13315,9 +13315,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     classifyCodexHistory: async (threadId) => {
       const ownerScope = captureDataOwnerBroadcastScope();
       const dbSnapshot = getCurrentDbClientSnapshot();
-      // 多账号线程的 rollout 在 codex-accounts 下,只有 thread-index 记着位置。
-      const storage = await readCodexThreadStorageReadOnly(threadId).catch(() => undefined);
-      const result = await classifyCodexHistoryOversized(threadId, storage);
+      // 多账号线程的 rollout 在 codex-accounts 下,只有 thread-index 记着位置;
+      // 记录读不出时不回退旧 HOME(可能是过期副本),按 unknown 处理。
+      const storage = await readCodexThreadStorageReadOnly(threadId).catch(() => null);
+      const result = storage === null ? 'unknown' : await classifyCodexHistoryOversized(threadId, storage);
       if (
         !dbSnapshot || !isDataOwnerBroadcastScopeCurrent(ownerScope) ||
         getCurrentDbClientSnapshot()?.clientEpoch !== dbSnapshot.clientEpoch

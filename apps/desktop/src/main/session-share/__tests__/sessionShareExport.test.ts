@@ -291,7 +291,8 @@ describe('exportSessionShare', () => {
     expect(dumpCodexThreadStateRowsMock).toHaveBeenCalledWith('thread-1', storage);
   });
 
-  it('codex export falls back to legacy homes when the location index is unreadable', async () => {
+  it('codex export never substitutes legacy history when the location index is unreadable', async () => {
+    // 记录存在却读不出:旧 HOME 可能留着同一线程的过期副本,不得回退去拿。
     readCodexThreadStorageReadOnlyMock.mockRejectedValue(new Error('Invalid Codex thread location'));
     sessionRowRef.row = { ...baseSession(), agentKind: 'codex', sdkSessionId: 'thread-1' };
     const outcome = await exportSessionShare({
@@ -299,7 +300,10 @@ describe('exportSessionShare', () => {
       targetPath: path.join(tmpRoot, 'out-codex-index-error.xdtshare'),
     });
     expect(outcome.status).toBe('ok');
-    expect(dumpCodexThreadStateRowsMock).toHaveBeenCalledWith('thread-1', undefined);
+    if (outcome.status !== 'ok') return;
+    expect(dumpCodexThreadStateRowsMock).not.toHaveBeenCalled();
+    expect(outcome.fidelity).toBe('db-only');
+    expect(outcome.missingTranscripts).toEqual(['thread-1']);
   });
 
   it('pi export replaces absolute session paths with portable ids', async () => {

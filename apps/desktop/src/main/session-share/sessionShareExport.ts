@@ -320,15 +320,20 @@ async function collectSessionPhaseA(
     sdkSessionIds = session.sdkSessionId ? [session.sdkSessionId] : [];
     if (session.sdkSessionId) {
       // 多账号线程的 state/rollout 在 codex-accounts 下,只有 thread-index 记着位置;
-      // 与 resume 共用只读定位,查不到时才走旧的 desktop/外部 HOME 查找。
+      // 与 resume 共用只读定位,没有记录时才走旧的 desktop/外部 HOME 查找。记录存在
+      // 却读不出时不回退:旧 HOME 里可能留着同一线程的过期副本,按缺转录降档。
+      let lookupFailed = false;
       const storage = await readCodexThreadStorageReadOnly(session.sdkSessionId).catch((err) => {
-        log.warn('codex thread storage lookup failed, falling back to legacy homes', {
+        log.warn('codex thread storage lookup failed, exporting without its history', {
           sessionId: session.id,
           error: err instanceof Error ? err.message : String(err),
         });
+        lookupFailed = true;
         return undefined;
       });
-      codexState = await dumpCodexThreadStateRows(session.sdkSessionId, storage);
+      codexState = lookupFailed
+        ? { threads: [], threadDynamicTools: [], threadSpawnEdges: [], rolloutPath: null }
+        : await dumpCodexThreadStateRows(session.sdkSessionId, storage);
       const bytes = codexState.rolloutPath ? await statSize(codexState.rolloutPath) : null;
       if (codexState.rolloutPath && bytes) {
         const zipPath = `${zipPrefix}transcripts/codex/${path.basename(codexState.rolloutPath)}`;
