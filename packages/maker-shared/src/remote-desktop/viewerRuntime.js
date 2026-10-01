@@ -346,6 +346,21 @@ export function mountRemoteDesktopViewer(root, postMessage, config) {
     }
     return null;
   }
+  // Native video renders beneath this WebView, so z-order cannot hide the
+  // status behind the picture; cut the picture's rectangle out instead.
+  function clipNetworkStatus(r = layout()) {
+    const status = find("network-status");
+    if (!status) return;
+    if (!nativeVideoActive || status.style.display === "none") {
+      status.style.clipPath = "";
+      return;
+    }
+    const left = r.x - status.offsetLeft,
+      top = r.y - status.offsetTop,
+      right = left + r.width,
+      bottom = top + r.height;
+    status.style.clipPath = `polygon(evenodd,0 0,100% 0,100% 100%,0 100%,0 0,${left}px ${top}px,${right}px ${top}px,${right}px ${bottom}px,${left}px ${bottom}px,${left}px ${top}px)`;
+  }
   function paintBackground() {
     if (nativeVideoActive) {
       if (bg) bg.style.display = "none";
@@ -686,6 +701,7 @@ export function mountRemoteDesktopViewer(root, postMessage, config) {
       el.style.left = r.x + "px";
       el.style.top = r.y + "px";
     }
+    clipNetworkStatus(r);
     paintBackground();
     if (remoteCursor) {
       cursor.style.width = remoteCursor.width + "px";
@@ -2081,7 +2097,7 @@ export function mountRemoteDesktopViewer(root, postMessage, config) {
         }
         break;
       case "networkStatus": {
-        const status = document.getElementById("network-status");
+        const status = find("network-status");
         if (!status) break;
         status.textContent =
           typeof message.text === "string" ? message.text : "";
@@ -2092,6 +2108,7 @@ export function mountRemoteDesktopViewer(root, postMessage, config) {
         }
         if (/^#[0-9a-f]{3,8}$/i.test(message.color))
           status.style.color = message.color;
+        clipNetworkStatus();
         break;
       }
       case "nativeTouchpad": {
@@ -2288,6 +2305,7 @@ export function mountRemoteDesktopViewer(root, postMessage, config) {
         if (!config.nativeMedia || message.epoch !== epoch) break;
         nativeVideoActive = message.active === true;
         image.style.visibility = nativeVideoActive ? "hidden" : "visible";
+        clipNetworkStatus();
         paintBackground();
         break;
       case "nativeCursor":
