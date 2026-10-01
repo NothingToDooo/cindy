@@ -81,11 +81,16 @@ const configDirCandidatesRef = { dirs: [path.join(tmpRoot, 'claude-home')] };
 vi.mock('../../maker-orchestration/claudeTranscriptAnchors.js', () => ({
   defaultClaudeConfigDirCandidates: () => configDirCandidatesRef.dirs,
 }));
+const imagePathRef = { path: path.join(tmpRoot, 'img.png') };
 vi.mock('../../imageCacheStore.js', () => ({
   resolveSafe: (url: string) => {
     if (!url.startsWith('xdt-image://')) throw new Error('bad url');
-    return { absPath: path.join(tmpRoot, 'img.png'), mimeType: 'image/png' };
+    return { absPath: imagePathRef.path, mimeType: 'image/png' };
   },
+}));
+const ownerScopeRef = { keys: [] as string[] };
+vi.mock('../../appSessionState.js', () => ({
+  activeOwnerScopeKey: () => ownerScopeRef.keys.shift() ?? 'owner:a:1',
 }));
 vi.mock('../../videoCacheStore.js', () => ({
   resolveSafe: () => ({ absPath: path.join(tmpRoot, 'missing-video.mp4'), mimeType: 'video/mp4' }),
@@ -171,6 +176,8 @@ describe('exportSessionShare', () => {
     activeTeamRef.row = null;
     getActiveTeamByLeadMock.mockClear();
     dumpCodexThreadStateRowsMock.mockClear();
+    imagePathRef.path = path.join(tmpRoot, 'img.png');
+    ownerScopeRef.keys = [];
     readCodexThreadStorageReadOnlyMock.mockReset();
     readCodexThreadStorageReadOnlyMock.mockResolvedValue(undefined);
     workerRowsRef.rows = [];
@@ -481,6 +488,38 @@ describe('exportSessionShare', () => {
     const zip = await unzipOf(target);
     const mediaMap = JSON.parse(await zip.file('media-map.json')!.async('string'));
     expect(mediaMap.entries[0].zipPath).toBeNull();
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'media whose state cannot be read counts as dropped, not as already missing',
+    async () => {
+      const lockedDir = path.join(tmpRoot, 'locked');
+      await fsp.mkdir(lockedDir, { recursive: true });
+      await fsp.writeFile(path.join(lockedDir, 'img.png'), Buffer.from([0x89, 0x50]));
+      imagePathRef.path = path.join(lockedDir, 'img.png');
+      await fsp.chmod(lockedDir, 0o000);
+      try {
+        const outcome = await exportSessionShare({
+          sessionId: 'xdt-session-1',
+          targetPath: path.join(tmpRoot, 'out-locked-media.xdtshare'),
+        });
+        expect(outcome.status).toBe('ok');
+        if (outcome.status !== 'ok') return;
+        expect(outcome.mediaMissing).toBe(1);
+        expect(outcome.mediaDropped).toBe(1);
+      } finally {
+        await fsp.chmod(lockedDir, 0o755);
+      }
+    },
+  );
+
+  it('aborts without writing when the account changes during export', async () => {
+    ownerScopeRef.keys = ['owner:a:1', 'owner:b:2'];
+    const target = path.join(tmpRoot, 'out-owner-changed.xdtshare');
+    await expect(exportSessionShare({ sessionId: 'xdt-session-1', targetPath: target })).rejects.toThrow(
+      'account changed during export',
+    );
+    await expect(fsp.stat(target)).rejects.toThrow();
   });
 
   it('rejects remote / orca worker / deleted / empty sessions', async () => {
