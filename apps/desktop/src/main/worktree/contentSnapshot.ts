@@ -68,10 +68,22 @@ export async function worktreeStagedContentMatches(
     && await stagedTree(worktreePath) === snapshot.indexTree;
 }
 
-/** Snapshot the actual HEAD, index and file tree without stashing or changing the live checkout. */
+/** HEAD or the index moved while a snapshot was being captured. */
+export class WorktreeChangedDuringSnapshotError extends Error {
+  constructor() {
+    super('worktree HEAD or index changed during snapshot');
+  }
+}
+
+/**
+ * Snapshot the actual HEAD, index and file tree without stashing or changing the live checkout.
+ * `stagedContentOnly` checks consistency like {@link worktreeStagedContentMatches}, for callers
+ * that only need the captured content; the default byte comparison suits destructive recycling.
+ */
 export async function captureWorktreeContent(
   worktreePath: string,
   ref: string,
+  { stagedContentOnly = false }: { stagedContentOnly?: boolean } = {},
 ): Promise<NonNullable<WorktreeRecycleRecord['snapshot']>> {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-worktree-index-'));
   const index = path.join(temp, 'index');
@@ -105,7 +117,10 @@ export async function captureWorktreeContent(
     const commit = commitOutput.trim();
     await gitExec(['update-ref', ref, commit], worktreePath);
     const snapshot = { head, headRef, tree, indexTree, commit, ref, indexHash: originalIndexHash };
-    if (!(await worktreeContentBaselineMatches(worktreePath, snapshot))) throw new Error('worktree HEAD or index changed during snapshot');
+    const unchanged = stagedContentOnly
+      ? await worktreeStagedContentMatches(worktreePath, snapshot)
+      : await worktreeContentBaselineMatches(worktreePath, snapshot);
+    if (!unchanged) throw new WorktreeChangedDuringSnapshotError();
     return snapshot;
   } finally {
     await fs.rm(temp, { recursive: true, force: true });

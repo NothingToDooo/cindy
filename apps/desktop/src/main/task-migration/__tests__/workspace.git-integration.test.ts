@@ -22,24 +22,29 @@ vi.mock('../../logger', () => ({
 const state = vi.hoisted(() => ({
   root: '',
   duringArchive: undefined as (() => Promise<void>) | undefined,
+  /** Runs right after the capture publishes its snapshot ref, before its consistency check. */
+  duringCapture: undefined as (() => Promise<void>) | undefined,
 }));
 vi.mock('../../worktree/gitExec', async (original) => {
   const actual = await original<typeof import('../../worktree/gitExec')>();
   return {
     ...actual,
-    gitExec: (
+    gitExec: async (
       args: string[],
       cwd: string,
       options?: import('../../worktree/gitExec').GitExecOpts,
-    ) =>
-      actual.gitExec(args, cwd, {
+    ) => {
+      const result = await actual.gitExec(args, cwd, {
         ...options,
         extraEnv: {
           ...options?.extraEnv,
           GIT_CONFIG_GLOBAL: path.join(state.root, 'git-global'),
           GIT_CONFIG_NOSYSTEM: '1',
         },
-      }),
+      });
+      if (args[0] === 'update-ref' && args[1] !== '-d') await state.duringCapture?.();
+      return result;
+    },
   };
 });
 import {
@@ -50,6 +55,10 @@ import {
   MigrationPathError,
 } from '../workspace';
 import { inventoryWorktree } from '../../worktree/recoveryArchiveIO';
+import {
+  captureWorktreeContent,
+  WorktreeChangedDuringSnapshotError,
+} from '../../worktree/contentSnapshot';
 
 const exec = promisify(execFile);
 const git = async (cwd: string, ...args: string[]) =>
@@ -76,6 +85,7 @@ describe('cross-machine project snapshots', () => {
   });
   afterEach(async () => {
     state.duringArchive = undefined;
+    state.duringCapture = undefined;
     await fs.rm(state.root, { recursive: true, force: true });
   });
 
@@ -239,6 +249,37 @@ describe('cross-machine project snapshots', () => {
       'MIGRATION_WORKSPACE_CHANGED',
     );
     expect(await git(source, 'for-each-ref', 'refs/cindy/migration')).toBe('');
+  }, 30_000);
+  it('applies the same content rule while capturing, and keeps recycling byte-strict', async () => {
+    await git(source, 'init', '-b', 'main');
+    await git(source, 'config', 'user.name', 'Migration test');
+    await git(source, 'config', 'user.email', 'migration@localhost');
+    await fs.writeFile(path.join(source, 'tracked'), 'base\n');
+    await git(source, 'add', '.');
+    await git(source, 'commit', '-m', 'fixture');
+    let later = Date.now();
+    const refreshIndex = async () => {
+      // `git status` from another task rewrites the index bytes without changing its content.
+      later += 60_000;
+      await fs.utimes(path.join(source, 'tracked'), new Date(later), new Date(later));
+      await git(source, 'status', '--porcelain');
+    };
+
+    state.duringCapture = refreshIndex;
+    await snapshotWorkspace(source, artifacts, randomUUID());
+    // Recycling deletes worktrees, so its default capture stays conservative.
+    await expect(
+      captureWorktreeContent(source, 'refs/cindy/worktree-recovery/test'),
+    ).rejects.toBeInstanceOf(WorktreeChangedDuringSnapshotError);
+    await git(source, 'update-ref', '-d', 'refs/cindy/worktree-recovery/test');
+
+    await fs.rm(artifacts, { recursive: true });
+    await fs.writeFile(path.join(source, 'tracked'), 'staged mid-capture\n');
+    state.duringCapture = () => git(source, 'add', 'tracked').then(() => undefined);
+    await expect(snapshotWorkspace(source, artifacts, randomUUID())).rejects.toThrow(
+      'MIGRATION_WORKSPACE_CHANGED',
+    );
+    expect(await git(source, 'for-each-ref', 'refs/cindy')).toBe('');
   }, 30_000);
   it('releases the source snapshot ref when bundle creation fails', async () => {
     await git(source, 'init', '-b', 'main');

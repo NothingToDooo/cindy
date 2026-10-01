@@ -3,7 +3,11 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { runRecoveryArchiveTask } from '../worktree/recoveryArchiveWorkerClient';
 import type { FileEvidence, WorktreeRecoveryArchive } from '../worktree/recoveryArchiveIO';
-import { captureWorktreeContent, worktreeStagedContentMatches } from '../worktree/contentSnapshot';
+import {
+  captureWorktreeContent,
+  worktreeStagedContentMatches,
+  WorktreeChangedDuringSnapshotError,
+} from '../worktree/contentSnapshot';
 import { gitExec, GitExecError } from '../worktree/gitExec';
 import { assertDiskCapacity } from './resources';
 import { MANAGED_WORKTREE_DIR_NAMES } from '../../shared/managedWorktreePaths';
@@ -161,7 +165,14 @@ export async function snapshotWorkspace(
       throw new Error('MIGRATION_SUBMODULE_UNSUPPORTED');
     const ref = `refs/cindy/migration/${id}`;
     try {
-      baseline = await captureWorktreeContent(root, ref);
+      // A copy only needs the captured content; another task's `git status` must not fail it.
+      baseline = await captureWorktreeContent(root, ref, { stagedContentOnly: true }).catch(
+        (error: unknown) => {
+          if (error instanceof WorktreeChangedDuringSnapshotError)
+            throw new Error('MIGRATION_WORKSPACE_CHANGED');
+          throw error;
+        },
+      );
       git = {
         head: baseline.head,
         headRef: baseline.headRef ?? null,
