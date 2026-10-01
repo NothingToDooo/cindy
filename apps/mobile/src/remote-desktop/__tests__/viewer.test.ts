@@ -979,6 +979,35 @@ describe("remote desktop viewport", () => {
       expect(v.messages.flatMap((m) => m.events ?? [])).toEqual([]);
     },
   );
+  it("stops a real pinch at 2x and resumes from the new limit after a viewport change", () => {
+    const v = viewer();
+    const width = () => parseFloat(v.elements.image.style.width);
+    v.pointer("pointerdown", 1, 190, 200);
+    v.pointer("pointerdown", 2, 210, 200);
+    v.pointer("pointermove", 1, 150, 200);
+    v.pointer("pointermove", 2, 250, 200);
+    v.frame();
+    v.frame(40);
+    v.pointer("pointermove", 1, 0, 200);
+    v.pointer("pointermove", 2, 400, 200);
+    v.frame();
+    // 400px fit of a 1920px desktop; spreading 20x stops at 2 points per pixel.
+    expect(width()).toBeCloseTo(1920 * 2);
+    v.pointer("pointerup", 1, 0, 200);
+    v.pointer("pointerup", 2, 400, 200);
+    // A wider viewport lowers the zoom limit; the picture stays at 2x.
+    v.elements.stage.clientWidth = 800;
+    v.send({ type: "viewport", fillHeight: false });
+    expect(width()).toBeCloseTo(1920 * 2);
+    // Pinching in responds immediately instead of first unwinding the old zoom.
+    v.pointer("pointerdown", 1, 300, 200);
+    v.pointer("pointerdown", 2, 500, 200);
+    v.pointer("pointermove", 1, 310, 200);
+    v.pointer("pointermove", 2, 490, 200);
+    v.frame();
+    v.frame(40);
+    expect(width()).toBeCloseTo(1920 * 2 * 0.9);
+  });
   it("allows one finger to lead a pinch instead of locking into scroll", () => {
     const v = viewer();
     v.send({ type: "control", enabled: true });
