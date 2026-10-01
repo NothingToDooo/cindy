@@ -786,7 +786,7 @@ export const GHOST_SKILL_NAME_MAX_CHARS = 64;
 /**
  * skill 槽:技能 name 形状——小写字母/数字,连字符仅作单段分隔(禁首尾与连续
  * 连字符)。比 SkillHub 的技能名规则更严:意识 id 允许含 `--`(GHOST_ID_RE),
- * 共享技能根的链接名是 `<id>--<name>`,只有 name 侧禁 `--`,
+ * 插件私有技能根的链接名是 `<id>--<name>`,只有 name 侧禁 `--`,
  * 按"最后一个 `--`"拆分才唯一,不同插件才不可能撞出同一个链接名。
  */
 export const GHOST_SKILL_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -973,7 +973,7 @@ export interface GhostManifest {
   preview?: GhostPreviewNeeds;
   /**
    * skill 能力详单；v2 与 'skill' slot 成对。随包捆绑的 Agent Skills 清单。
-   * 启用时主机链接进共享技能根,Claude Code 与 Codex 双端可见;字段不参与
+   * 启用时由 Cindy 私有入口加载到本地 Claude Code、Codex 与 Pi,不写用户共享目录;字段不参与
    * 本地化(必须与 SKILL.md 逐字一致,见 GhostSkillItem)。
    */
   skill?: GhostSkillNeeds;
@@ -3325,7 +3325,7 @@ export function validateGhostManifest(value: unknown): ManifestValidation {
   // skill 槽详单:与 slots 含 'skill' **严格成对**(有槽必有详单——捆绑了什么
   // 技能是本能力的全部知情面)。name/description 与 SKILL.md 的逐字一致性在
   // 打包与装入两侧另行强制,这里只管声明本身的形状。name/dir 大小写折叠去重:
-  // win32 文件系统折叠大小写,共享技能根的链接名不允许折叠后相撞。
+  // win32 文件系统折叠大小写,插件私有技能根的链接名不允许折叠后相撞。
   let skill: GhostSkillNeeds | undefined;
   if (raw.skill !== undefined) {
     if (!isPlainObject(raw.skill)) {

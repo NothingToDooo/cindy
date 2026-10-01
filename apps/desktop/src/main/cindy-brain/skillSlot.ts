@@ -293,7 +293,7 @@ function targetLooksGhostManaged(
 }
 
 /**
- * 共享技能根对账:期望态(启用、已批准且带 skill 槽的插件)vs 实际态(根下目标
+ * 插件技能根对账:期望态(启用、已批准且带 skill 槽的插件)vs 实际态(根下目标
  * 落在受管根内的链接)。幂等、best-effort、不 throw;warnings 交调用方记日志。
  */
 export async function reconcileGhostSkillLinks(
@@ -380,7 +380,7 @@ export async function reconcileGhostSkillLinks(
     const entries = await fsp.readdir(sharedSkillsDir, { withFileTypes: true });
     linkNames = entries.filter((ent) => ent.isSymbolicLink()).map((ent) => ent.name);
   } catch (err) {
-    warnings.push(`无法读取共享技能根 ${sharedSkillsDir}:${(err as Error).message}`);
+    warnings.push(`无法读取插件技能根 ${sharedSkillsDir}:${(err as Error).message}`);
     return { changed, actions, warnings };
   }
 
