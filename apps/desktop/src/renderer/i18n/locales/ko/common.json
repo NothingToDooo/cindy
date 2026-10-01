@@ -24,6 +24,7 @@
     "cancel": "취소",
     "start": "작업 복사",
     "failed": "복사가 완료되지 않았습니다. 두 컴퓨터를 확인한 후 다시 복사하세요. ({{code}})",
+    "errorPath": "문제 파일: {{path}}",
     "stages": {
       "preparing": "스냅샷 준비 중…",
       "transferring": "파일 전송 및 검증 중…",

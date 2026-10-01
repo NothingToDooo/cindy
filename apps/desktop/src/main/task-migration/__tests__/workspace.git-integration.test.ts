@@ -47,6 +47,7 @@ import {
   snapshotWorkspace,
   restoreWorkspace,
   validateWorkspaceEntries,
+  MigrationPathError,
 } from '../workspace';
 import { inventoryWorktree } from '../../worktree/recoveryArchiveIO';
 
@@ -278,5 +279,25 @@ describe('cross-machine project snapshots', () => {
     expect(() =>
       validateWorkspaceEntries({ link: { kind: 'link', mode: 0o777, hash: '../outside' } }),
     ).toThrow('MIGRATION_EXTERNAL_LINK');
+  });
+  it('names the entry that blocks the copy', () => {
+    const dir = { kind: 'directory' as const, mode: 0o755, hash: '' };
+    const blamed = (files: Parameters<typeof validateWorkspaceEntries>[0]) => {
+      try {
+        validateWorkspaceEntries(files);
+      } catch (error) {
+        return error instanceof MigrationPathError ? [error.code, error.relPath] : error;
+      }
+    };
+    // A Windows-style path once created as a relative folder by a macOS test run.
+    expect(blamed({ apps: dir, 'apps/C:': dir })).toEqual([
+      'MIGRATION_NONPORTABLE_PATH',
+      'apps/C:',
+    ]);
+    expect(blamed({ A: dir, a: dir })).toEqual(['MIGRATION_PATH_COLLISION', 'a']);
+    expect(blamed({ link: { kind: 'link', mode: 0o777, hash: '../outside' } })).toEqual([
+      'MIGRATION_EXTERNAL_LINK',
+      'link',
+    ]);
   });
 });

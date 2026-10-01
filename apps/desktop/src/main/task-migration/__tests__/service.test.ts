@@ -221,6 +221,7 @@ vi.mock('../../session-share/sessionShareImport', () => ({
 vi.mock('../workspace', async (original) => ({
   isExcludedFromWorkspace: (await original<typeof import('../workspace')>())
     .isExcludedFromWorkspace,
+  MigrationPathError: (await original<typeof import('../workspace')>()).MigrationPathError,
   managedWorktreeExclusions: async () => state.exclusions,
   estimateWorkspace: async (_root: string, check: () => void, maxFiles: number) => {
     state.estimateLimits.push(maxFiles);
@@ -951,6 +952,30 @@ describe('resumable cross-computer copy', () => {
     expect(state.files.size).toBe(0);
     await requestTaskMigration({ action: 'retry', sessionId: 'fork' });
     expect((await settled()).stage).toBe('complete');
+  });
+  it('reports which project entry blocked packing until a retry succeeds', async () => {
+    const { MigrationPathError } = await import('../workspace');
+    state.snapshot.mockImplementationOnce(() => {
+      throw new MigrationPathError('MIGRATION_NONPORTABLE_PATH', 'apps/desktop/C:');
+    });
+    await start();
+    expect(await settled()).toMatchObject({
+      stage: 'preparing',
+      error: 'MIGRATION_NONPORTABLE_PATH',
+      errorPath: 'apps/desktop/C:',
+    });
+    expect(state.migrationWarn).toHaveBeenCalledWith(
+      'task copy failed',
+      expect.objectContaining({
+        code: 'MIGRATION_NONPORTABLE_PATH',
+        error: expect.stringContaining('apps/desktop/C:'),
+      }),
+    );
+    await requestTaskMigration({ action: 'retry', sessionId: 'fork' });
+    const done = await settled();
+    expect(done.stage).toBe('complete');
+    expect(done.error).toBeUndefined();
+    expect(done.errorPath).toBeUndefined();
   });
   it('serializes admission even without process-local route locks', async () => {
     const results = await Promise.allSettled([start(), start()]);

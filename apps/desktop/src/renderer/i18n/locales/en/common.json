@@ -24,6 +24,7 @@
     "cancel": "Cancel",
     "start": "Copy task",
     "failed": "Copy did not finish. Check both computers before copying again. ({{code}})",
+    "errorPath": "File: {{path}}",
     "stages": {
       "preparing": "Preparing a snapshot…",
       "transferring": "Transferring and checking files…",

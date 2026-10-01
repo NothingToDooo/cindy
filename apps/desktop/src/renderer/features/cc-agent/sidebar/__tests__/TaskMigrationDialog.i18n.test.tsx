@@ -22,7 +22,9 @@ vi.mock('@/features/device-link/remoteProjectsStore', () => ({
 
 const source = { id: 'task', title: 'Task', status: 'active', deviceLinkDeviceId: 'A' } as Session;
 let failure = '';
+let failurePath: string | undefined;
 beforeEach(() => {
+  failurePath = undefined;
   setDataOwnerGeneration('owner');
   Object.assign(window, {
     electronAPI: {
@@ -36,6 +38,7 @@ beforeEach(() => {
                 stage: 'preparing',
                 running: false,
                 error: failure,
+                ...(failurePath ? { errorPath: failurePath } : {}),
                 targetDeviceId: 'B',
                 targetSessionId: 'migrated',
               }
@@ -92,4 +95,15 @@ it.each(resources)('explains a workspace change during packing in %s', async (lo
   const alert = await screen.findByRole('alert');
   expect(alert.textContent).toBe(resource.taskMigration.errors.MIGRATION_WORKSPACE_CHANGED);
   expect(alert.textContent).not.toContain('MIGRATION_');
+});
+
+it.each(resources)('names the blocking project entry in %s', async (locale, resource) => {
+  failure = 'MIGRATION_NONPORTABLE_PATH';
+  failurePath = 'apps/desktop/C:';
+  await mount(locale, resource);
+  const alert = await screen.findByRole('alert');
+  expect(alert.textContent).toBe(
+    resource.taskMigration.errors.MIGRATION_NONPORTABLE_PATH +
+      resource.taskMigration.errorPath.replace('{{path}}', 'apps/desktop/C:'),
+  );
 });

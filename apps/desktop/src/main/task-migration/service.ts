@@ -60,6 +60,7 @@ import {
   estimateWorkspace,
   isExcludedFromWorkspace,
   managedWorktreeExclusions,
+  MigrationPathError,
   type PortableWorkspace,
 } from './workspace';
 
@@ -185,6 +186,7 @@ function view(scope: Scope, record: MigrationRecord | null): TaskMigrationView {
                 targetDeviceId: record.targetDeviceId,
                 targetSessionId: record.targetSessionId,
                 ...(record.error ? { error: record.error } : {}),
+                ...(record.error && record.errorPath ? { errorPath: record.errorPath } : {}),
               }
             : {}),
         }
@@ -652,12 +654,12 @@ function launch(scope: Scope, record: MigrationHandoff & { kind: 'outgoing' }) {
         if (latest?.kind !== 'outgoing' || latest.id !== record.id) return;
         await cleanupOutgoing(scope, latest);
         scope.assertCurrent();
-        scope.save({ ...latest, stage: 'cancelled', error: undefined });
+        scope.save({ ...latest, stage: 'cancelled', error: undefined, errorPath: undefined });
       }
     },
   )
     .catch((error) => {
-      // The journal keeps only the code; the cause (git stderr, fs errno) exists only here.
+      // The journal keeps the code and any blamed entry; the cause (git stderr, fs errno) exists only here.
       log.warn('task copy failed', {
         copyId: record.id,
         code: errorCode(error),
@@ -670,7 +672,13 @@ function launch(scope: Scope, record: MigrationHandoff & { kind: 'outgoing' }) {
         scope.assertCurrent();
         const latest = scope.read(record.sessionId);
         if (latest?.kind === 'outgoing' && latest.id === record.id)
-          scope.save({ ...latest, error: errorCode(error) });
+          scope.save({
+            ...latest,
+            error: errorCode(error),
+            // A name can be up to 4096 characters; the start is enough to find it.
+            errorPath:
+              error instanceof MigrationPathError ? error.relPath.slice(0, 1024) : undefined,
+          });
       } catch {
         /* Preserve the old-owner journal; never write under a replacement account. */
       }

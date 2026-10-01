@@ -443,6 +443,12 @@ export function TaskMigrationDialog({
           {failure && (
             <p className="mt-3 text-sm text-[var(--error-fg)]" role="alert">
               {errorKey}
+              {/* The path belongs to the source's recorded error, never to a local action error. */}
+              {failure === status?.error && status.errorPath && (
+                <span className="mt-1 block break-all">
+                  {t('taskMigration.errorPath', { path: status.errorPath })}
+                </span>
+              )}
             </p>
           )}
           <div className="mt-4 flex flex-wrap justify-end gap-2">

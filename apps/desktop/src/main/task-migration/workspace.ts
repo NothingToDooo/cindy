@@ -66,6 +66,17 @@ export interface PortableWorkspace {
   git?: { head: string; headRef: string | null; indexTree: string; ref: string };
 }
 
+/** A project entry that blocks the copy; the path tells the user what to rename or remove. */
+export class MigrationPathError extends Error {
+  constructor(
+    readonly code: string,
+    /** Project-relative, `/`-separated. */
+    readonly relPath: string,
+  ) {
+    super(`${code}: ${relPath}`);
+  }
+}
+
 /** Portable names only. In particular, links must never lead extraction outside its new root. */
 export function validateWorkspaceEntries(files: Record<string, FileEvidence>): void {
   const folded = new Set<string>();
@@ -87,10 +98,10 @@ export function validateWorkspaceEntries(files: Record<string, FileEvidence>): v
           /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(part),
       )
     ) {
-      throw new Error('MIGRATION_NONPORTABLE_PATH');
+      throw new MigrationPathError('MIGRATION_NONPORTABLE_PATH', name);
     }
     const key = name.normalize('NFC').toLowerCase();
-    if (folded.has(key)) throw new Error('MIGRATION_PATH_COLLISION');
+    if (folded.has(key)) throw new MigrationPathError('MIGRATION_PATH_COLLISION', name);
     folded.add(key);
     if (
       !entry ||
@@ -112,13 +123,14 @@ export function validateWorkspaceEntries(files: Record<string, FileEvidence>): v
         path.posix.isAbsolute(entry.hash) ||
         /^[a-z]:/i.test(entry.hash)
       )
-        throw new Error('MIGRATION_EXTERNAL_LINK');
+        throw new MigrationPathError('MIGRATION_EXTERNAL_LINK', name);
       const target = path.posix.normalize(path.posix.join(path.posix.dirname(name), entry.hash));
       if (target === '..' || target.startsWith('../') || target.split('/').includes('.git'))
-        throw new Error('MIGRATION_EXTERNAL_LINK');
+        throw new MigrationPathError('MIGRATION_EXTERNAL_LINK', name);
       // Do not accept a link chain or a directory-link ancestor during extraction.
       const targetEntry = files[target];
-      if (!targetEntry || targetEntry.kind === 'link') throw new Error('MIGRATION_EXTERNAL_LINK');
+      if (!targetEntry || targetEntry.kind === 'link')
+        throw new MigrationPathError('MIGRATION_EXTERNAL_LINK', name);
     }
     for (let i = 1; i < parts.length; i++) {
       if (files[parts.slice(0, i).join('/')]?.kind !== 'directory')

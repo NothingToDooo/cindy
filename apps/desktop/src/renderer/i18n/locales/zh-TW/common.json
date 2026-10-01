@@ -24,6 +24,7 @@
     "cancel": "取消",
     "start": "複製任務",
     "failed": "複製未完成，請檢查兩台電腦後重新複製。（{{code}}）",
+    "errorPath": "問題檔案：{{path}}",
     "stages": {
       "preparing": "正在準備快照…",
       "transferring": "正在傳輸並驗證檔案…",

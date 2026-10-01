@@ -85,6 +85,8 @@ export interface TaskMigrationView {
   targetDeviceId?: string;
   targetSessionId?: string;
   error?: string;
+  /** Project-relative entry blamed for `error` (e.g. a non-portable name). Absent on older hosts. */
+  errorPath?: string;
   projects?: string[];
   agents?: Array<"cc" | "codex" | "pi">;
   /** Entire Orca graph, native contexts and per-member workspaces. Absence means unsupported. */
