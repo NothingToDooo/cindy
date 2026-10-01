@@ -23,10 +23,12 @@ vi.mock('@/features/device-link/remoteProjectsStore', () => ({
 const source = { id: 'task', title: 'Task', status: 'active', deviceLinkDeviceId: 'A' } as Session;
 let failure = '';
 let failurePath: string | undefined;
+let failureSize: { needed: number; limit: number } | undefined;
 let estimateFailure = '';
 beforeEach(() => {
   failure = '';
   failurePath = undefined;
+  failureSize = undefined;
   estimateFailure = '';
   setDataOwnerGeneration('owner');
   Object.assign(window, {
@@ -47,6 +49,7 @@ beforeEach(() => {
                   running: false,
                   error: failure,
                   ...(failurePath ? { errorPath: failurePath } : {}),
+                  ...(failureSize ? { errorSize: failureSize } : {}),
                   targetDeviceId: 'B',
                   targetSessionId: 'migrated',
                 }
@@ -138,5 +141,21 @@ it.each(resources)(
       expect((await screen.findByText(text)).getAttribute('role')).toBe('status');
       cleanup();
     }
+  },
+);
+
+it.each(resources)(
+  'states how far a task history exceeds the copy limit in %s',
+  async (locale, resource) => {
+    failure = 'MIGRATION_NO_MEMORY';
+    failureSize = { needed: 950 * 1024 ** 2, limit: 512 * 1024 ** 2 };
+    await mount(locale, resource);
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toBe(
+      resource.taskMigration.errors.MIGRATION_NO_MEMORY +
+        resource.taskMigration.errorSize
+          .replace('{{needed}}', '950.0 MB')
+          .replace('{{limit}}', '512.0 MB'),
+    );
   },
 );

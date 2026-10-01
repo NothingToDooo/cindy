@@ -25,6 +25,7 @@
     "start": "复制任务",
     "failed": "复制未完成，请检查两台电脑后重新复制。（{{code}}）",
     "errorPath": "问题文件：{{path}}",
+    "errorSize": "需要约 {{needed}}，上限约 {{limit}}。",
     "stages": {
       "preparing": "正在准备快照…",
       "transferring": "正在传输并校验文件…",
@@ -37,7 +38,7 @@
       "MIGRATION_TASK_RUNNING": "请先停止任务再复制。",
       "MIGRATION_SHARED_DIRECTORY_BUSY": "其他任务正在使用此目录，请停止后重试。",
       "MIGRATION_TASK_UNSUPPORTED": "此任务的类型或当前状态暂不支持跨电脑复制。",
-      "MIGRATION_NO_MEMORY": "可用内存不足以处理完整任务历史，请释放内存后重试。",
+      "MIGRATION_NO_MEMORY": "任务历史太大，超出了复制时能处理的上限。",
       "MIGRATION_INCOMPLETE_CONTEXT": "无法取得完整任务历史，已停止复制以免丢失上下文。",
       "MIGRATION_EXTERNAL_LINK": "项目包含指向目录外部的链接或暂不支持的链接链，源文件未改动。",
       "MIGRATION_REQUIRES_REPOSITORY_ROOT": "Git 项目的任务目录必须是仓库根目录。",

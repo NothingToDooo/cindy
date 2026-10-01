@@ -25,6 +25,7 @@
     "start": "Copy task",
     "failed": "Copy did not finish. Check both computers before copying again. ({{code}})",
     "errorPath": "File: {{path}}",
+    "errorSize": "Needs about {{needed}}; the limit is about {{limit}}.",
     "stages": {
       "preparing": "Preparing a snapshot…",
       "transferring": "Transferring and checking files…",
@@ -37,7 +38,7 @@
       "MIGRATION_TASK_RUNNING": "Stop the task before copying it.",
       "MIGRATION_SHARED_DIRECTORY_BUSY": "Another task is using this directory. Stop it before retrying.",
       "MIGRATION_TASK_UNSUPPORTED": "This task's type or current state does not support copying to another computer.",
-      "MIGRATION_NO_MEMORY": "Not enough available memory to process the complete task history. Free up memory and retry.",
+      "MIGRATION_NO_MEMORY": "The task history is too large for a copy to process.",
       "MIGRATION_INCOMPLETE_CONTEXT": "The complete task history is unavailable. Copy stopped to avoid losing context.",
       "MIGRATION_EXTERNAL_LINK": "The project contains links outside this directory or unsupported link chains. Source files are unchanged.",
       "MIGRATION_REQUIRES_REPOSITORY_ROOT": "For Git projects, the task directory must be the repository root.",

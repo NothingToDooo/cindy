@@ -246,6 +246,18 @@ OSS 保底仍受服务端 presign 单对象上限（`OSS_ATTACHMENT_MAX_BYTES`�
 文件读取（`open`）仍沿用 `FILE_PEER_MAX_BYTES`。不新增 channel、relay 类型或持久化 schema，
 服务端无需改动。
 
+## 任务复制的外置会话记录与超限大小
+
+`maker:task-copy` 的 `caps` 追加 `externalTranscripts: true`。源端在每次准备时询问；目标声明后，
+32 MiB 以上的原生会话记录不放进任务包，`receive` 的 `files` 追加可选 `transcripts: MigrationFile[]`
+（至多 256 个，逐项校验大小与分段之和），顺序与对应关系记在随包的 `workspace.json`
+`transcripts[{path, file, bytes}]`；`path` 是包内会话记录引用的路径，目标只把它当映射键，
+落盘文件名由目标按序号生成。`preflight` 的 `resources` 追加可选 `transcriptBytes`，目标据此预检
+暂存与用户目录所在磁盘。旧目标不声明能力，源端继续随包携带；旧源端不发新字段。
+
+状态追加可选 `errorSize: {needed, limit}`：源端判定内存超限时的字节数，与 `errorPath` 同样只随
+`error` 下发并一并清除。目标端失败只回传错误码，原始报错与数字记在目标日志。
+
 ## 任务复制失败的问题路径
 
 `maker:task-copy` 的状态（`TaskMigrationView`）在 `error` 之外追加可选 `errorPath`：源端打包时

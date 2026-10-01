@@ -25,6 +25,7 @@
     "start": "複製任務",
     "failed": "複製未完成，請檢查兩台電腦後重新複製。（{{code}}）",
     "errorPath": "問題檔案：{{path}}",
+    "errorSize": "需要約 {{needed}}，上限約 {{limit}}。",
     "stages": {
       "preparing": "正在準備快照…",
       "transferring": "正在傳輸並驗證檔案…",
@@ -37,7 +38,7 @@
       "MIGRATION_TASK_RUNNING": "請先停止任務再複製。",
       "MIGRATION_SHARED_DIRECTORY_BUSY": "其他任務正在使用此目錄，請停止後重試。",
       "MIGRATION_TASK_UNSUPPORTED": "此任務的類型或目前狀態尚不支援跨電腦複製。",
-      "MIGRATION_NO_MEMORY": "可用記憶體不足以處理完整任務歷史，請釋放記憶體後重試。",
+      "MIGRATION_NO_MEMORY": "任務歷史太大，超出了複製時能處理的上限。",
       "MIGRATION_INCOMPLETE_CONTEXT": "無法取得完整任務歷史，已停止複製以免遺失上下文。",
       "MIGRATION_EXTERNAL_LINK": "專案包含指向目錄外部的連結或尚不支援的連結鏈，來源檔案未變更。",
       "MIGRATION_REQUIRES_REPOSITORY_ROOT": "Git 專案的任務目錄必須是儲存庫根目錄。",

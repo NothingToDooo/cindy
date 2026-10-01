@@ -454,6 +454,14 @@ export function TaskMigrationDialog({
                   {t('taskMigration.errorPath', { path: status.errorPath })}
                 </span>
               )}
+              {failure === status?.error && status.errorSize && (
+                <span className="mt-1 block">
+                  {t('taskMigration.errorSize', {
+                    needed: bytes(status.errorSize.needed),
+                    limit: bytes(status.errorSize.limit),
+                  })}
+                </span>
+              )}
             </p>
           )}
           <div className="mt-4 flex flex-wrap justify-end gap-2">

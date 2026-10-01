@@ -25,6 +25,7 @@
     "start": "タスクをコピー",
     "failed": "コピーが完了しませんでした。両方のコンピューターを確認してから再度コピーしてください。（{{code}}）",
     "errorPath": "該当ファイル：{{path}}",
+    "errorSize": "必要量 約 {{needed}}、上限 約 {{limit}}。",
     "stages": {
       "preparing": "スナップショットを準備中…",
       "transferring": "ファイルを転送・検証中…",
@@ -37,7 +38,7 @@
       "MIGRATION_TASK_RUNNING": "コピーする前にタスクを停止してください。",
       "MIGRATION_SHARED_DIRECTORY_BUSY": "別のタスクがこのフォルダーを使用しています。停止してから再試行してください。",
       "MIGRATION_TASK_UNSUPPORTED": "このタスクの種類または現在の状態では、別のコンピューターにコピーできません。",
-      "MIGRATION_NO_MEMORY": "タスク履歴全体を処理するためのメモリが不足しています。メモリを解放して再試行してください。",
+      "MIGRATION_NO_MEMORY": "タスク履歴が大きすぎて、コピー時に処理できる上限を超えています。",
       "MIGRATION_INCOMPLETE_CONTEXT": "タスク履歴が不完全なため、コピーを停止しました。",
       "MIGRATION_EXTERNAL_LINK": "フォルダー外へのリンク、または未対応のリンクチェーンがあります。元のファイルは変更されていません。",
       "MIGRATION_REQUIRES_REPOSITORY_ROOT": "Git プロジェクトでは、タスクのフォルダーがリポジトリのルートである必要があります。",
