@@ -649,10 +649,11 @@ function GhostCardCanvas({
 
       {/* ── data-ghost-prompt 输入面板(宿主交互面,与 lightbox 同层;体验与
           老基座 ChatImageActions 的 imgPrompt popover 一致:textarea + 回车
-          发送/Esc 取消/点外关闭)。锚在被点按钮下方。 */}
+          发送/Esc 取消)。锚在被点按钮下方。点外部不关闭,免得误点丢掉已输入的
+          提示词;遮罩只拦截点击并保住输入框焦点,让回车/Esc 仍有效。 */}
       {promptAsk ? (
         <>
-          <div className="fixed inset-0 z-40" onMouseDown={() => setPromptAsk(null)} />
+          <div className="fixed inset-0 z-40" onMouseDown={(e) => e.preventDefault()} />
           <div
             className="absolute z-50 w-72 rounded-md border p-2"
             style={{
@@ -717,12 +718,12 @@ function GhostCardCanvas({
         </>
       ) : null}
 
-      {/* ── data-ghost-link 外链确认框(宿主交互面,与输入面板同层级模式:
-          遮罩点击/Esc 取消)。域名醒目 + 完整链接全量展示——卡内文案归意识,
-          真实去向由宿主如实亮给用户,确认才 openExternal。 */}
+      {/* ── data-ghost-link 外链确认框(宿主交互面:取消按钮/Esc 取消;遮罩只拦截
+          点击、不关闭,并保住焦点让 Esc 仍有效)。域名醒目 + 完整链接全量展示——
+          卡内文案归意识,真实去向由宿主如实亮给用户,确认才 openExternal。 */}
       {linkAsk ? (
         <>
-          <div className="fixed inset-0 z-40" onMouseDown={() => setLinkAsk(null)} />
+          <div className="fixed inset-0 z-40" onMouseDown={(e) => e.preventDefault()} />
           <div
             className="fixed left-1/2 top-1/2 z-50 w-80 -translate-x-1/2 -translate-y-1/2 rounded-lg border p-3.5"
             role="alertdialog"
