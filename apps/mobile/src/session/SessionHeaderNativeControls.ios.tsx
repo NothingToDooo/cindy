@@ -38,6 +38,7 @@ import {
   useTheme,
 } from "@/theme";
 import { BlurBackdrop, FLOATING_CHROME_BLUR_INTENSITY } from "./BlurBackdrop";
+import { edgeBlurMask } from "./edgeBlurMask";
 import type {
   SessionHeaderNativeActionsProps,
   SessionHeaderNativeBackProps,
@@ -45,34 +46,13 @@ import type {
 } from "./SessionHeaderNativeControls";
 
 /**
- * The feather straddles the chrome edge: it begins inside the chrome and only
- * reaches a short way past it, so content starts to soften as it arrives at the
- * chrome rather than well before it.
- */
-const BLUR_FADE_INSIDE = spacing.xl;
-const BLUR_FADE_OUTSIDE = spacing.lg;
-/**
- * Mask opacity from fully blurred to clear along a smoothstep curve. A linear
- * ramp reads as a visible band at both of its ends; easing both ends lets the
- * frosting emerge from transparent instead.
- */
-const BLUR_FADE_STOPS = Array.from({ length: 9 }, (_, index) => {
-  const t = index / 8;
-  const opacity = 1 - t * t * (3 - 2 * t);
-  return `rgba(0, 0, 0, ${opacity.toFixed(3)})`;
-});
-
-/**
  * A stationary, feathered backdrop: scrolling content passes beneath it.
  * `height` is the chrome area; the blur is solid over most of it and eases out
- * across its content-side edge.
+ * across its content-side edge (see edgeBlurMask).
  */
 export function SessionHeaderNativeBlur({ height: chromeHeight, edge = 'top', inset = 0 }: { height: number; edge?: 'top' | 'bottom'; inset?: number }) {
   const { mode } = useTheme();
-  const height = chromeHeight + BLUR_FADE_OUTSIDE;
-  const fadeLength = Math.min(BLUR_FADE_INSIDE, chromeHeight / 2) + BLUR_FADE_OUTSIDE;
-  // Unit-point gradient: outside the start/end points the end colors extend.
-  const fadeFraction = fadeLength / height;
+  const mask = edgeBlurMask(chromeHeight, edge);
   return (
     <View
       pointerEvents="none"
@@ -82,7 +62,7 @@ export function SessionHeaderNativeBlur({ height: chromeHeight, edge = 'top', in
         ...(edge === 'top' ? { top: inset } : { bottom: inset }),
         left: 0,
         right: 0,
-        height,
+        height: mask.height,
         zIndex: 9,
       }}
     >
@@ -98,10 +78,9 @@ export function SessionHeaderNativeBlur({ height: chromeHeight, edge = 'top', in
               modifiers={[
                 foregroundStyle({
                   type: "linearGradient",
-                  // Mask colors encode alpha only; they never tint the content.
-                  colors: edge === 'top' ? BLUR_FADE_STOPS : [...BLUR_FADE_STOPS].reverse(),
-                  startPoint: { x: 0.5, y: edge === 'top' ? 1 - fadeFraction : 0 },
-                  endPoint: { x: 0.5, y: edge === 'top' ? 1 : fadeFraction },
+                  colors: mask.colors,
+                  startPoint: mask.startPoint,
+                  endPoint: mask.endPoint,
                 }),
               ]}
             />
