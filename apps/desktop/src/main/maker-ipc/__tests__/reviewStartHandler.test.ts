@@ -15,6 +15,8 @@ import {
   type ReviewStartHandlerDeps,
 } from '../reviewStartHandler.js';
 import { IpcHarness } from './helpers/ipcHarness.js';
+import { buildAttachmentOssRef } from '@cindy/device-link';
+import { prepareRemoteReviewAttachments } from '../reviewRemoteInput.js';
 
 class FakeReviewer implements ReviewRunnerHandle {
   private listener: ((event: AgentEvent) => void) | null = null;
@@ -121,6 +123,56 @@ function reviewRequest(sourceSessionId = 'source-1') {
 
 describe('maker:review:start IPC lifecycle', () => {
   afterEach(() => setRemoteBotSessionLookup(null));
+
+  it('releases uploaded staging after prompt acceptance while retaining local files throughout Review', async () => {
+    const harness = new IpcHarness();
+    const reviewer = new FakeReviewer();
+    const cleanupAfterAcceptance = vi.fn();
+    const cleanupLocalMaterialization = vi.fn(async () => {});
+    const remote = await prepareRemoteReviewAttachments({
+      sourceSessionId: 'source-1',
+      attachments: [{ name: 'notes.md', url: buildAttachmentOssRef({ ossKey: 'cindy/device-link/fake/notes.md', size: 10, sha256: 'a'.repeat(64) }) }],
+    }, 'reviewer-1', vi.fn().mockResolvedValue({
+      item: { files: [{ name: 'notes.md', url: 'xdt-image://reviewer-1/notes.md' }] },
+      cleanupAfterAcceptance, cleanupLocalMaterialization,
+    }));
+    let finishPersistence!: () => void;
+    const persistence = new Promise<void>((resolve) => { finishPersistence = resolve; });
+    const deps = makeDeps(reviewer, {
+      prepareRun: vi.fn(async () => makePreparedRun(makeLaunch(), {
+        onAccepted: remote.onAccepted, cleanup: remote.cleanup,
+      })),
+      persistReviewerPrompt: vi.fn(() => persistence),
+    });
+    registerReviewStartHandler(harness, deps);
+    const result = harness.invoke(MAKER_INVOKE.START_REVIEW, reviewRequest());
+    await vi.waitFor(() => expect(deps.persistReviewerPrompt).toHaveBeenCalledOnce());
+    expect(cleanupAfterAcceptance).not.toHaveBeenCalled();
+    finishPersistence();
+    await expect(result).resolves.toMatchObject({ ok: true });
+    expect(cleanupAfterAcceptance).toHaveBeenCalledOnce();
+    expect(cleanupLocalMaterialization).not.toHaveBeenCalled();
+    reviewer.emit({ type: 'done', data: {} });
+    await vi.waitFor(() => expect(deps.releaseSourceLease).toHaveBeenCalledOnce());
+    expect(cleanupLocalMaterialization).toHaveBeenCalledOnce();
+    expect(cleanupAfterAcceptance).toHaveBeenCalledOnce();
+  });
+
+  it('does not release retryable staging if prompt acceptance fails', async () => {
+    const harness = new IpcHarness();
+    const reviewer = new FakeReviewer();
+    const onAccepted = vi.fn();
+    const cleanup = vi.fn(async () => {});
+    const deps = makeDeps(reviewer, {
+      prepareRun: vi.fn(async () => makePreparedRun(makeLaunch(), { onAccepted, cleanup })),
+      persistReviewerPrompt: vi.fn(async () => { throw new Error('persist failed'); }),
+    });
+    registerReviewStartHandler(harness, deps);
+    await expect(harness.invoke(MAKER_INVOKE.START_REVIEW, reviewRequest())).rejects.toThrow('persist failed');
+    expect(onAccepted).not.toHaveBeenCalled();
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(deps.releaseSourceLease).toHaveBeenCalledOnce();
+  });
 
   it.each(['hidden', 'archived'] as const)('rejects a companion made %s while collecting evidence and permits a later visible retry', async (change) => {
     const harness = new IpcHarness();

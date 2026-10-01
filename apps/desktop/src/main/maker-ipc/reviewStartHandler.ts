@@ -153,6 +153,8 @@ export interface PreparedReviewRun {
   prompt: string;
   targetKind: ReviewTargetKind;
   prepareLaunch(): Promise<PreparedReviewLaunch>;
+  /** Release transport staging once the Review prompt is durably accepted. */
+  onAccepted?(): void;
   cleanup?(): Promise<void>;
 }
 
@@ -634,6 +636,7 @@ export function registerReviewStartHandler(
             prompt: prepared.prompt,
             sourceAgentKind: preparedSourceAgentKind,
           });
+          prepared.onAccepted?.();
         },
       });
       if (!sendResult.accepted) {

@@ -8140,12 +8140,14 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       let authorizedArtifactPaths: string[] = [];
       let cleanupPreparedArtifacts: (() => Promise<void>) | null = null;
       let cleanupRemoteAttachments: (() => Promise<void>) | null = null;
+      let acceptRemoteAttachments: (() => void) | null = null;
       try {
         if (isDeviceLinkInvoke() && request.attachments.length) {
           const remote = await prepareRemoteReviewAttachments(
             request, reviewerSessionId, materializeQueuedOssAttachmentsDeferred,
           );
           request.attachments = remote.attachments;
+          acceptRemoteAttachments = remote.onAccepted;
           cleanupRemoteAttachments = remote.cleanup;
           cleanupPreparedArtifacts = remote.cleanup;
         }
@@ -8237,6 +8239,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         sourceAgentKind: source.agentKind as 'cc' | 'codex' | 'pi',
         prompt: builtPrompt.prompt,
         targetKind: builtPrompt.targetKind,
+        onAccepted: () => acceptRemoteAttachments?.(),
         cleanup: async () => {
           await cleanupPreparedArtifacts?.();
         },
