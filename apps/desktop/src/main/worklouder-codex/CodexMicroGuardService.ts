@@ -37,7 +37,7 @@ interface CodexMicroGuardServiceOptions {
 }
 
 const log = desktopMakerLogger.child('codex-micro-guard');
-const DEFAULT_SETTINGS: CodexMicroGuardSettings = { enabled: false };
+const DEFAULT_SETTINGS: CodexMicroGuardSettings = { enabled: true };
 const MAX_SETTINGS_BYTES = 8 * 1024;
 const HEARTBEAT_INTERVAL_MS = 5_000;
 

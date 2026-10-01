@@ -54,12 +54,18 @@ function printEnvironment(nodeOptions: string | null): string {
   }\t}\n}\n`;
 }
 
-function paths() {
+/**
+ * Protection defaults to on. Most cases exercise explicit toggles, so they
+ * start from a user who has turned it off; pass `'default'` for a fresh install.
+ */
+function paths(initial: { enabled: boolean } | 'default' = { enabled: false }) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-guard-service-'));
   roots.push(root);
+  const settingsPath = path.join(root, 'settings.json');
+  if (initial !== 'default') fs.writeFileSync(settingsPath, JSON.stringify(initial));
   return {
     supportPath: path.join(root, 'support'),
-    settingsPath: path.join(root, 'settings.json'),
+    settingsPath,
   };
 }
 
@@ -196,7 +202,8 @@ describe('CodexMicroGuardService', () => {
     expect(runner.nodeOptions).toBe(
       `--trace-warnings --require=${path.join(locations.supportPath, 'guard-hook.cjs')}`,
     );
-    expect(JSON.parse(fs.readFileSync(locations.settingsPath, 'utf8'))).toEqual({ enabled: true });
+    // Turning it back on matches the default, so the override is cleared.
+    expect(fs.existsSync(locations.settingsPath)).toBe(false);
 
     fs.writeFileSync(
       path.join(locations.supportPath, 'receipt.json'),
@@ -207,9 +214,39 @@ describe('CodexMicroGuardService', () => {
 
     await instance.dispose();
     expect(runner.nodeOptions).toBe('--trace-warnings');
-    // Graceful quit restores the environment but preserves the user's setting,
-    // so the next Cindy launch resumes protection.
-    expect(JSON.parse(fs.readFileSync(locations.settingsPath, 'utf8'))).toEqual({ enabled: true });
+    // Graceful quit restores the environment without writing a preference, so
+    // the next Cindy launch resumes protection from the default.
+    expect(fs.existsSync(locations.settingsPath)).toBe(false);
+  });
+
+  it('protects by default on a fresh install without a restart hint', async () => {
+    const locations = paths('default');
+    const runner = new EnvironmentRunner(null);
+    const list = vi.fn(async () => [runningCodex()]);
+    const instance = service(locations, runner, list);
+
+    expect(await instance.getState()).toMatchObject({
+      enabled: true,
+      status: 'protecting',
+      restartRequired: false,
+    });
+    expect(runner.nodeOptions).toBe(
+      `--require=${path.join(locations.supportPath, 'guard-hook.cjs')}`,
+    );
+    expect(fs.existsSync(locations.settingsPath)).toBe(false);
+
+    expect(await instance.setEnabled(false)).toMatchObject({ enabled: false, status: 'disabled' });
+    expect(runner.nodeOptions).toBeNull();
+    expect(JSON.parse(fs.readFileSync(locations.settingsPath, 'utf8'))).toEqual({
+      enabled: false,
+    });
+    await instance.dispose();
+
+    // An explicit opt-out survives the next launch.
+    const next = service(locations, runner, list);
+    expect(await next.getState()).toMatchObject({ enabled: false, status: 'disabled' });
+    expect(runner.nodeOptions).toBeNull();
+    await next.dispose();
   });
 
   it('keeps shared protection until the final live instance exits', async () => {
@@ -245,7 +282,7 @@ describe('CodexMicroGuardService', () => {
 
     expect(await instance.recover()).toMatchObject({ enabled: false, status: 'disabled' });
     expect(runner.nodeOptions).toBeNull();
-    expect(fs.existsSync(locations.settingsPath)).toBe(false);
+    expect(JSON.parse(fs.readFileSync(locations.settingsPath, 'utf8'))).toEqual({ enabled: false });
     await instance.dispose();
   });
 
@@ -260,7 +297,7 @@ describe('CodexMicroGuardService', () => {
 
     expect(await instance.getState()).toMatchObject({ enabled: false, status: 'disabled' });
     expect(runner.nodeOptions).toBe('--trace-warnings');
-    expect(fs.existsSync(locations.settingsPath)).toBe(false);
+    expect(JSON.parse(fs.readFileSync(locations.settingsPath, 'utf8'))).toEqual({ enabled: false });
     await instance.dispose();
   });
 
