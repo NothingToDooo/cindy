@@ -37,6 +37,7 @@ import {
   dumpCodexThreadStateRows,
   type CodexThreadStateDump,
 } from '../maker-host/codex-local-sessions.js';
+import { readCodexThreadStorageReadOnly } from '../maker-host/codex-thread-storage.js';
 import { defaultClaudeConfigDirCandidates } from '../maker-orchestration/claudeTranscriptAnchors.js';
 import { resolveSafe as resolveImageUrl } from '../imageCacheStore.js';
 import { resolveSafe as resolveVideoUrl } from '../videoCacheStore.js';
@@ -95,6 +96,8 @@ export type SessionShareExportOutcome =
       missingTranscripts: string[];
       /** 引用了但文件已不存在的媒体数。 */
       mediaMissing: number;
+      /** 其中源机器上仍存在、只是没能打进包的媒体数(迁移据此判定会丢内容)。 */
+      mediaDropped: number;
       /** 随包携带的协同 Worker 会话数(非协同包为 0)。 */
       orcaWorkers: number;
     }
@@ -315,7 +318,16 @@ async function collectSessionPhaseA(
     activeSdkSessionId = session.sdkSessionId;
     sdkSessionIds = session.sdkSessionId ? [session.sdkSessionId] : [];
     if (session.sdkSessionId) {
-      codexState = await dumpCodexThreadStateRows(session.sdkSessionId);
+      // 多账号线程的 state/rollout 在 codex-accounts 下,只有 thread-index 记着位置;
+      // 与 resume 共用只读定位,查不到时才走旧的 desktop/外部 HOME 查找。
+      const storage = await readCodexThreadStorageReadOnly(session.sdkSessionId).catch((err) => {
+        log.warn('codex thread storage lookup failed, falling back to legacy homes', {
+          sessionId: session.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        return undefined;
+      });
+      codexState = await dumpCodexThreadStateRows(session.sdkSessionId, storage);
       const bytes = codexState.rolloutPath ? await statSize(codexState.rolloutPath) : null;
       if (codexState.rolloutPath && bytes) {
         const zipPath = `${zipPrefix}transcripts/codex/${path.basename(codexState.rolloutPath)}`;
@@ -500,6 +512,9 @@ export async function exportSessionShare(
     folder: string;
     bytes: number;
   }> = [];
+  // 源机器上存在却没进包的媒体(受管区外的 loose 文件、读失败)。源端本就缺失
+  // 的引用(文件已删、正文里仅以文字出现的地址)不计入:复制不会让它们更缺。
+  let mediaDropped = 0;
   if (!opts.excludeMedia) {
     // loose(xdt-file/xdt-audio)的 ?path= 指向本机任意绝对路径。为防被塞进消息
     // 文本的 URL 把无关本地文件(如凭证)静默打进分享包,只放行 userData/cc-agent
@@ -544,6 +559,9 @@ export async function exportSessionShare(
             (!resolved.absPath || !(await isManagedMediaPath(resolved.absPath)));
           const bytes = !looseBlocked && resolved.absPath ? await statSize(resolved.absPath) : null;
           if (!bytes) {
+            if (looseBlocked && resolved.absPath && (await statSize(resolved.absPath))) {
+              mediaDropped += 1;
+            }
             mediaMap.push({ ...resolved.entry, zipPath: null });
             continue;
           }
@@ -586,6 +604,7 @@ export async function exportSessionShare(
   for (const candidate of mediaCandidates) {
     const buffer = await fsp.readFile(candidate.absPath).catch(() => null);
     if (!buffer || buffer.length === 0) {
+      mediaDropped += 1;
       mediaMap.push({ ...candidate.entry, zipPath: null });
       continue;
     }
@@ -743,6 +762,7 @@ export async function exportSessionShare(
     missingTranscripts: missingTranscripts.length,
     media: mediaFiles.length,
     mediaMissing,
+    mediaDropped,
     encrypted: !!opts.password,
     fileBytes: fileBytes.length,
   });
@@ -753,6 +773,7 @@ export async function exportSessionShare(
     fidelity,
     missingTranscripts,
     mediaMissing,
+    mediaDropped,
     orcaWorkers: workerSources.length,
   };
 }

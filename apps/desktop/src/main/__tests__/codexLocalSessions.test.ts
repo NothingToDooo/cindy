@@ -36,6 +36,8 @@ import {
   scanExternalCodexSessions,
   prepareExternalCodexSessionForResume,
   readCodexThreadStorageForArchive,
+  dumpCodexThreadStateRows,
+  classifyCodexHistoryOversized,
 } from '../maker-host/codex-local-sessions';
 import { clearCurrentDbClient, setCurrentDbClient } from '../localDb/client/current';
 import type { DbClient } from '../localDb/client/DbClient';
@@ -356,6 +358,40 @@ describe('Codex local session import', () => {
     expect(fs.readFileSync(dbPath)).toEqual(before);
     expect(currentTestDb().prepare('SELECT COUNT(*) AS n FROM sessions').get()).toEqual({ n: 0 });
     expect(fs.readFileSync(rolloutPath, 'utf8')).toBe('');
+  });
+
+  it('dumps multi-account thread state only from its indexed storage', async () => {
+    // 多账号线程存放在 codex-accounts/<owner>/<账号>/,desktop 与外部 HOME 都找不到它。
+    const accountHome = path.join(targetUserData, 'codex-accounts', 'owner', 'openai-a');
+    const dbPath = createStateDb(accountHome);
+    const rolloutPath = path.join(accountHome, 'sessions', `rollout-2026-09-16-${threadId}.jsonl`);
+    fs.mkdirSync(path.dirname(rolloutPath), { recursive: true });
+    fs.writeFileSync(rolloutPath, '{"type":"session_meta"}\n');
+    insertThread(dbPath, threadId, rolloutPath, { updatedAt: 1_000 });
+
+    const legacy = await dumpCodexThreadStateRows(threadId);
+    expect(legacy.threads).toEqual([]);
+    expect(legacy.rolloutPath).toBeNull();
+
+    const indexed = await dumpCodexThreadStateRows(threadId, { sqliteHome: accountHome, rolloutPath });
+    expect(indexed.threads.map((row) => row.id)).toEqual([threadId]);
+    expect(indexed.rolloutPath).toBe(rolloutPath);
+
+    fs.rmSync(rolloutPath);
+    const missing = await dumpCodexThreadStateRows(threadId, { sqliteHome: accountHome, rolloutPath });
+    expect(missing.rolloutPath).toBeNull();
+  });
+
+  it('classifies multi-account history size only from its indexed rollout', async () => {
+    const accountHome = path.join(targetUserData, 'codex-accounts', 'owner', 'openai-a');
+    const rolloutPath = path.join(accountHome, 'sessions', `rollout-2026-09-16-${threadId}.jsonl`);
+    fs.mkdirSync(path.dirname(rolloutPath), { recursive: true });
+    fs.writeFileSync(rolloutPath, `${rolloutLine(threadId, 'user', 'hi', '2026-09-16T00:00:00.000Z')}\n`);
+
+    expect(await classifyCodexHistoryOversized(threadId)).toBe('unknown');
+    expect(await classifyCodexHistoryOversized(threadId, { rolloutPath })).toBe('healthy');
+    fs.rmSync(rolloutPath);
+    expect(await classifyCodexHistoryOversized(threadId, { rolloutPath })).toBe('unknown');
   });
 
   it('defensively removes complete IDE context from Codex user messages', () => {

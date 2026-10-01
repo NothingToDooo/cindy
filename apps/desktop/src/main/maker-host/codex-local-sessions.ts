@@ -1564,10 +1564,14 @@ export interface CodexThreadStateDump {
 
 /**
  * 会话分享导出:dump 一个 codex thread 的 state 三表行 + rollout 文件位置。
- * 查找顺序与 resume 恢复链一致:desktop codex home 的 state DB 优先,
+ * 调用方给出 storage(多账号线程的 thread-index 位置)时只读那一处,不回退别的
+ * HOME,与 resume 同口径;未给出时 desktop codex home 的 state DB 优先,
  * 缺行/缺文件再回退外部 CODEX_HOME(~/.codex、Codex.app)。全程只读。
  */
-export async function dumpCodexThreadStateRows(threadId: string): Promise<CodexThreadStateDump> {
+export async function dumpCodexThreadStateRows(
+  threadId: string,
+  storage?: { sqliteHome: string; rolloutPath?: string },
+): Promise<CodexThreadStateDump> {
   const empty: CodexThreadStateDump = {
     threads: [],
     threadDynamicTools: [],
@@ -1575,6 +1579,14 @@ export async function dumpCodexThreadStateRows(threadId: string): Promise<CodexT
     rolloutPath: null,
   };
   if (!isLikelyThreadId(threadId)) return empty;
+
+  if (storage) {
+    const dbPath = findLatestStateDb(storage.sqliteHome);
+    return {
+      ...(dbPath ? readThreadStateRows(dbPath, threadId) : empty),
+      rolloutPath: storage.rolloutPath && fs.existsSync(storage.rolloutPath) ? storage.rolloutPath : null,
+    };
+  }
 
   const dbCandidates: string[] = [];
   const desktopDb = findLatestStateDb(getDesktopCodexHome());
@@ -3625,12 +3637,16 @@ function dropUndefined<T extends Record<string, unknown>>(obj: T): Partial<T> {
 
 export type CodexHistoryOversizedClass = 'oversized' | 'healthy' | 'unknown';
 
-/** 只读测量本地 Codex rollout 活尾巴。找不到文件或读失败归 unknown，不得当成健康。 */
+/**
+ * 只读测量本地 Codex rollout 活尾巴。找不到文件或读失败归 unknown，不得当成健康。
+ * 调用方给出 storage(多账号线程的 thread-index 位置)时只认那一处 rollout。
+ */
 export async function classifyCodexHistoryOversized(
   threadId: string,
+  storage?: { rolloutPath?: string },
 ): Promise<CodexHistoryOversizedClass> {
   if (!threadId) return 'unknown';
-  const rolloutPath = resolveRolloutPath(threadId);
+  const rolloutPath = storage ? storage.rolloutPath : resolveRolloutPath(threadId);
   if (!rolloutPath) return 'unknown';
   try {
     const stats = await measureRolloutLiveTailStats(rolloutPath);

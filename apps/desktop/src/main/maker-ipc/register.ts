@@ -860,6 +860,7 @@ import {
   classifyCodexHistoryOversized,
   reserveCodexForkCleanup,
 } from '../maker-host/codex-local-sessions.js';
+import { readCodexThreadStorageReadOnly } from '../maker-host/codex-thread-storage.js';
 import { hydrateQueuedAgentReferences } from './agentInputReferences.js';
 import { agentHandoffPending } from './agentHandoffPendingSingleton.js';
 import {
@@ -13314,7 +13315,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     classifyCodexHistory: async (threadId) => {
       const ownerScope = captureDataOwnerBroadcastScope();
       const dbSnapshot = getCurrentDbClientSnapshot();
-      const result = await classifyCodexHistoryOversized(threadId);
+      // 多账号线程的 rollout 在 codex-accounts 下,只有 thread-index 记着位置。
+      const storage = await readCodexThreadStorageReadOnly(threadId).catch(() => undefined);
+      const result = await classifyCodexHistoryOversized(threadId, storage);
       if (
         !dbSnapshot || !isDataOwnerBroadcastScopeCurrent(ownerScope) ||
         getCurrentDbClientSnapshot()?.clientEpoch !== dbSnapshot.clientEpoch
