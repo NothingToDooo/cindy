@@ -34,6 +34,7 @@ import {
   materializeRemoteAttachment,
   parseRemoteAttachmentRef,
 } from '../device-link/remoteAttachment';
+import { createLogger } from '../logger';
 import { assertTrustedAppRendererEvent } from '../security/trustedAppRenderer';
 import { throwIpcError } from '../utils/ipcValidate';
 import { atomicWriteFileSync, readAtomicFileSync } from '../utils/atomicWriteFile';
@@ -47,6 +48,7 @@ import {
 } from '../session-share/sessionShareImport';
 import type { moveSessionProjectFromHost } from '../mcp-integrations/moveSession';
 import { physicalWorktreeKey, withWorktreeResourceLocks } from '../worktree/resourceLock';
+import { GitExecError } from '../worktree/gitExec';
 import { getMakerIfReady } from '../maker-host';
 import { getDesktopProviderService } from '../maker-host/createDesktopProviderService';
 import { pickEnabledFallbackModel } from '../maker-host/model-route-guard';
@@ -63,6 +65,8 @@ import {
 
 import { memoryBudget, assertMemoryCapacity, assertDiskCapacity } from './resources';
 import { sendParts, receiveParts } from './transferParts';
+
+const log = createLogger('task-migration');
 
 type MoveProject = (
   sessionId: string,
@@ -653,6 +657,15 @@ function launch(scope: Scope, record: MigrationHandoff & { kind: 'outgoing' }) {
     },
   )
     .catch((error) => {
+      // The journal keeps only the code; the cause (git stderr, fs errno) exists only here.
+      log.warn('task copy failed', {
+        copyId: record.id,
+        code: errorCode(error),
+        error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+        ...(error instanceof GitExecError
+          ? { gitArgs: error.args.slice(0, 2).join(' '), stderr: error.stderr.slice(0, 2000) }
+          : {}),
+      });
       try {
         scope.assertCurrent();
         const latest = scope.read(record.sessionId);
@@ -1048,7 +1061,8 @@ export async function requestTaskMigration(raw: unknown): Promise<TaskMigrationV
               running.has(`${scope.root}:${record.sessionId}`)
             )
               throw new Error('MIGRATION_CANNOT_CANCEL');
-            const cancelled = { ...record, stage: 'cancelled' as const, error: undefined };
+            // Closing a failed copy cancels it; keep its error code as the only trace of why.
+            const cancelled = { ...record, stage: 'cancelled' as const };
             // Keep the journal retryable until its staging data is gone.
             await cleanupOutgoing(scope, record);
             scope.assertCurrent();

@@ -23,7 +23,7 @@
     "close": "Close",
     "cancel": "Cancel",
     "start": "Copy task",
-    "failed": "Copy did not finish. Check both computers before copying again.",
+    "failed": "Copy did not finish. Check both computers before copying again. ({{code}})",
     "stages": {
       "preparing": "Preparing a snapshot…",
       "transferring": "Transferring and checking files…",
@@ -47,7 +47,13 @@
       "MIGRATION_TASK_QUEUED": "This task has queued messages. Finish or remove them before copying it.",
       "MIGRATION_SOURCE_CHANGED": "The source task changed during preparation. Retry the copy.",
       "MIGRATION_TIMEOUT": "The source computer did not respond in time. Try again later.",
-      "MIGRATION_CANNOT_CANCEL": "The target computer has started creating the task. The copy can no longer be cancelled."
+      "MIGRATION_CANNOT_CANCEL": "The target computer has started creating the task. The copy can no longer be cancelled.",
+      "MIGRATION_WORKSPACE_CHANGED": "The project's Git commit or staged changes changed while packing. Try copying again later.",
+      "MIGRATION_TEAM_CHANGED": "The members of this collaboration task changed. Start the copy again.",
+      "MIGRATION_NONPORTABLE_PATH": "The project contains file names that other systems cannot use. Source files are unchanged.",
+      "MIGRATION_PATH_COLLISION": "The project contains file names that differ only in letter case. Source files are unchanged.",
+      "MIGRATION_NOT_CONNECTED": "This computer is not connected. Make sure you are signed in and remote control is on, then try again.",
+      "MIGRATION_TASK_BUSY": "This task is already being copied or is in use by another operation. Try again later."
     },
     "successTitle": "Copy successful",
     "successDescription": "Copied to {{name}}.",

@@ -6,14 +6,23 @@ import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
-vi.mock('../../worktree/recoveryArchiveWorkerClient', async () => ({
-  runRecoveryArchiveTask: (await import('../../worktree/recoveryArchiveTask'))
-    .executeRecoveryArchiveTask,
-}));
+vi.mock('../../worktree/recoveryArchiveWorkerClient', async () => {
+  const { executeRecoveryArchiveTask } = await import('../../worktree/recoveryArchiveTask');
+  return {
+    runRecoveryArchiveTask: async (...args: Parameters<typeof executeRecoveryArchiveTask>) => {
+      // Other tasks keep working in the source while its files are archived.
+      if (args[0].operation === 'create') await state.duringArchive?.();
+      return executeRecoveryArchiveTask(...args);
+    },
+  };
+});
 vi.mock('../../logger', () => ({
   createLogger: () => ({ debug() {}, info() {}, warn() {}, error() {} }),
 }));
-const state = vi.hoisted(() => ({ root: '' }));
+const state = vi.hoisted(() => ({
+  root: '',
+  duringArchive: undefined as (() => Promise<void>) | undefined,
+}));
 vi.mock('../../worktree/gitExec', async (original) => {
   const actual = await original<typeof import('../../worktree/gitExec')>();
   return {
@@ -65,6 +74,7 @@ describe('cross-machine project snapshots', () => {
     await Promise.all([source, target, artifacts].map((p) => fs.mkdir(p)));
   });
   afterEach(async () => {
+    state.duringArchive = undefined;
     await fs.rm(state.root, { recursive: true, force: true });
   });
 
@@ -201,6 +211,34 @@ describe('cross-machine project snapshots', () => {
     expect(await fs.readFile(path.join(target, 'existing'), 'utf8')).toBe('keep');
     expect(await fs.readFile(path.join(source, 'source'), 'utf8')).toBe('copy');
   });
+  it('tolerates an index rewrite that keeps staged content, but not a staging change', async () => {
+    await git(source, 'init', '-b', 'main');
+    await git(source, 'config', 'user.name', 'Migration test');
+    await git(source, 'config', 'user.email', 'migration@localhost');
+    await fs.writeFile(path.join(source, 'tracked'), 'base\n');
+    await git(source, 'add', '.');
+    await git(source, 'commit', '-m', 'fixture');
+    const index = path.join(source, '.git', 'index');
+    state.duringArchive = async () => {
+      // A `git status` from another task refreshes stat data and rewrites the index bytes.
+      const before = await fs.readFile(index);
+      const later = new Date(Date.now() + 60_000);
+      await fs.utimes(path.join(source, 'tracked'), later, later);
+      await git(source, 'status', '--porcelain');
+      expect((await fs.readFile(index)).equals(before)).toBe(false);
+    };
+    const snapshot = await snapshotWorkspace(source, artifacts, randomUUID());
+    await restoreWorkspace(snapshot, artifacts, target);
+    expect(await fs.readFile(path.join(target, 'tracked'), 'utf8')).toBe('base\n');
+
+    await fs.rm(artifacts, { recursive: true });
+    await fs.writeFile(path.join(source, 'tracked'), 'staged mid-copy\n');
+    state.duringArchive = () => git(source, 'add', 'tracked').then(() => undefined);
+    await expect(snapshotWorkspace(source, artifacts, randomUUID())).rejects.toThrow(
+      'MIGRATION_WORKSPACE_CHANGED',
+    );
+    expect(await git(source, 'for-each-ref', 'refs/cindy/migration')).toBe('');
+  }, 30_000);
   it('releases the source snapshot ref when bundle creation fails', async () => {
     await git(source, 'init', '-b', 'main');
     await git(source, 'config', 'user.name', 'Migration test');

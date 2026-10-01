@@ -23,7 +23,7 @@
     "close": "关闭",
     "cancel": "取消",
     "start": "复制任务",
-    "failed": "复制未完成，请检查两台电脑后重新复制。",
+    "failed": "复制未完成，请检查两台电脑后重新复制。（{{code}}）",
     "stages": {
       "preparing": "正在准备快照…",
       "transferring": "正在传输并校验文件…",
@@ -47,7 +47,13 @@
       "MIGRATION_TASK_QUEUED": "此任务有排队中的消息，请先完成或移除这些消息再复制。",
       "MIGRATION_SOURCE_CHANGED": "准备期间源任务发生变化，请重试复制。",
       "MIGRATION_TIMEOUT": "任务所在电脑响应超时，请稍后重试。",
-      "MIGRATION_CANNOT_CANCEL": "目标电脑已开始创建任务，无法再取消。"
+      "MIGRATION_CANNOT_CANCEL": "目标电脑已开始创建任务，无法再取消。",
+      "MIGRATION_WORKSPACE_CHANGED": "打包期间项目的 Git 提交或已暂存内容发生变化，请稍后重试复制。",
+      "MIGRATION_TEAM_CHANGED": "协同任务的成员发生变化，请重新发起复制。",
+      "MIGRATION_NONPORTABLE_PATH": "项目包含其他系统无法使用的文件名，源文件未改动。",
+      "MIGRATION_PATH_COLLISION": "项目包含仅大小写不同的同名文件，源文件未改动。",
+      "MIGRATION_NOT_CONNECTED": "这台电脑尚未连接，请确认已登录并开启远程控制后重试。",
+      "MIGRATION_TASK_BUSY": "此任务正在复制或被其他操作占用，请稍后重试。"
     },
     "successTitle": "复制成功",
     "successDescription": "已复制到{{name}}。",

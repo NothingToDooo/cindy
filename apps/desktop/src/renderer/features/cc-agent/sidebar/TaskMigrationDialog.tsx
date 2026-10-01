@@ -284,7 +284,11 @@ export function TaskMigrationDialog({
               })
             : t('taskMigration.estimating');
   const errorKey =
-    failure && t(`taskMigration.errors.${failure}`, { defaultValue: t('taskMigration.failed') });
+    failure &&
+    t(`taskMigration.errors.${failure}`, {
+      // The code is the only lead once the dialog closes; keep it visible for unmapped errors.
+      defaultValue: t('taskMigration.failed', { code: failure }),
+    });
   return (
     <Dialog.Root
       open

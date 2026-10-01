@@ -23,7 +23,7 @@
     "close": "닫기",
     "cancel": "취소",
     "start": "작업 복사",
-    "failed": "복사가 완료되지 않았습니다. 두 컴퓨터를 확인한 후 다시 복사하세요.",
+    "failed": "복사가 완료되지 않았습니다. 두 컴퓨터를 확인한 후 다시 복사하세요. ({{code}})",
     "stages": {
       "preparing": "스냅샷 준비 중…",
       "transferring": "파일 전송 및 검증 중…",
@@ -47,7 +47,13 @@
       "MIGRATION_TASK_QUEUED": "이 작업에 대기 중인 메시지가 있습니다. 처리하거나 삭제한 후 복사하세요.",
       "MIGRATION_SOURCE_CHANGED": "준비 중 원본 작업이 변경되었습니다. 복사를 다시 시도하세요.",
       "MIGRATION_TIMEOUT": "원본 컴퓨터가 제한 시간 내에 응답하지 않았습니다. 잠시 후 다시 시도하세요.",
-      "MIGRATION_CANNOT_CANCEL": "대상 컴퓨터에서 작업 생성이 시작되어 더 이상 취소할 수 없습니다."
+      "MIGRATION_CANNOT_CANCEL": "대상 컴퓨터에서 작업 생성이 시작되어 더 이상 취소할 수 없습니다.",
+      "MIGRATION_WORKSPACE_CHANGED": "패키징 중 프로젝트의 Git 커밋 또는 스테이징된 내용이 변경되었습니다. 잠시 후 다시 복사하세요.",
+      "MIGRATION_TEAM_CHANGED": "협업 작업의 구성원이 변경되었습니다. 복사를 다시 시작하세요.",
+      "MIGRATION_NONPORTABLE_PATH": "다른 시스템에서 사용할 수 없는 파일 이름이 있습니다. 원본 파일은 변경되지 않았습니다.",
+      "MIGRATION_PATH_COLLISION": "대소문자만 다른 같은 이름의 파일이 있습니다. 원본 파일은 변경되지 않았습니다.",
+      "MIGRATION_NOT_CONNECTED": "이 컴퓨터가 연결되어 있지 않습니다. 로그인되어 있고 원격 제어가 켜져 있는지 확인한 후 다시 시도하세요.",
+      "MIGRATION_TASK_BUSY": "이 작업은 이미 복사 중이거나 다른 작업에서 사용 중입니다. 잠시 후 다시 시도하세요."
     },
     "successTitle": "복사 완료",
     "successDescription": "{{name}}에 복사했습니다.",

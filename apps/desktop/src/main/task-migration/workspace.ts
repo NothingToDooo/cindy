@@ -3,10 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { runRecoveryArchiveTask } from '../worktree/recoveryArchiveWorkerClient';
 import type { FileEvidence, WorktreeRecoveryArchive } from '../worktree/recoveryArchiveIO';
-import {
-  captureWorktreeContent,
-  worktreeContentBaselineMatches,
-} from '../worktree/contentSnapshot';
+import { captureWorktreeContent, worktreeStagedContentMatches } from '../worktree/contentSnapshot';
 import { gitExec, GitExecError } from '../worktree/gitExec';
 import { assertDiskCapacity } from './resources';
 import { MANAGED_WORKTREE_DIR_NAMES } from '../../shared/managedWorktreePaths';
@@ -195,7 +192,7 @@ export async function snapshotWorkspace(
       if (entry.kind === 'file') unpackedBytes += (await fs.lstat(path.join(root, name))).size;
     }
     if (!Number.isSafeInteger(unpackedBytes)) throw new Error('MIGRATION_INVALID_MANIFEST');
-    if (baseline && !(await worktreeContentBaselineMatches(root, baseline)))
+    if (baseline && !(await worktreeStagedContentMatches(root, baseline)))
       throw new Error('MIGRATION_WORKSPACE_CHANGED');
     return {
       version: 1,

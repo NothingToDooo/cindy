@@ -44,7 +44,18 @@ const state = vi.hoisted(() => ({
   estimateLimits: [] as number[],
   timeoutAction: '' as string,
   exclusions: [] as string[],
+  migrationWarn: vi.fn(),
 }));
+vi.mock('../../logger', async (original) => {
+  const actual = await original<typeof import('../../logger')>();
+  return {
+    ...actual,
+    createLogger: (scope: string) =>
+      scope === 'task-migration'
+        ? { ...actual.createLogger(scope), warn: state.migrationWarn }
+        : actual.createLogger(scope),
+  };
+});
 vi.mock('../../localDb/ipc/sessionCreatedBroadcast', () => ({
   emitSessionCreated: (id: string) => state.created(id),
 }));
@@ -625,9 +636,15 @@ describe('resumable cross-computer copy', () => {
     const status = await settled();
     expect(status.stage).toBe('preparing');
     expect(status.error).toBe('MIGRATION_NO_SPACE');
+    expect(state.migrationWarn).toHaveBeenCalledWith(
+      'task copy failed',
+      expect.objectContaining({ copyId: status.targetSessionId, code: 'MIGRATION_NO_SPACE' }),
+    );
     expect(state.files.size).toBe(0);
     expect(state.imports).not.toHaveBeenCalled();
-    await requestTaskMigration({ action: 'cancel', sessionId: 'fork' });
+    // Closing the failure dialog cancels the copy; the code must survive as the only trace.
+    const cancelled = await requestTaskMigration({ action: 'cancel', sessionId: 'fork' });
+    expect(cancelled).toMatchObject({ stage: 'cancelled', error: 'MIGRATION_NO_SPACE' });
     expect(await fs.readFile(path.join(state.root, 'shared', 'draft'), 'utf8')).toBe('original');
   });
   it('keeps cancellation retryable when staging cleanup fails', async () => {
