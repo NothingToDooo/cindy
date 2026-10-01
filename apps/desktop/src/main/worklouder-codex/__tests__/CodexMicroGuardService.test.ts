@@ -289,6 +289,32 @@ describe('CodexMicroGuardService', () => {
     await restored.dispose();
   });
 
+  it('keeps a legacy opt-out off and retries when it cannot be saved', async () => {
+    const locations = paths('default');
+    fs.mkdirSync(locations.supportPath, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(locations.supportPath, 'guard-hook.cjs'), '// old hook\n', {
+      mode: 0o600,
+    });
+    // An unreadable settings path makes the override write fail.
+    fs.mkdirSync(locations.settingsPath);
+    const runner = new EnvironmentRunner(null);
+    const blocked = service(locations, runner);
+
+    expect(await blocked.getState()).toMatchObject({ enabled: false, status: 'disabled' });
+    expect(runner.nodeOptions).toBeNull();
+    expect(fs.existsSync(path.join(locations.supportPath, 'default-on'))).toBe(false);
+    await blocked.dispose();
+
+    fs.rmSync(locations.settingsPath, { recursive: true });
+    const retried = service(locations, runner);
+    expect(await retried.getState()).toMatchObject({ enabled: false, status: 'disabled' });
+    expect(JSON.parse(fs.readFileSync(locations.settingsPath, 'utf8'))).toEqual({
+      enabled: false,
+    });
+    expect(fs.existsSync(path.join(locations.supportPath, 'default-on'))).toBe(true);
+    await retried.dispose();
+  });
+
   it('turns a migrated opt-out back on and keeps it on after relaunch', async () => {
     const locations = paths('default');
     fs.mkdirSync(locations.supportPath, { recursive: true, mode: 0o700 });
