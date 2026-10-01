@@ -34,6 +34,7 @@ import {
 	osascriptLaunchDarwinTerminalArgs,
 	writeDarwinTerminalLaunchScript,
 	darwinTerminalSourceCommand,
+	prepareDarwinTerminalLaunch,
 	waitForDesktopStartup,
 	shouldRefuseHostedRestart,
 	commandContainsPath,
@@ -114,6 +115,22 @@ test("macOS Terminal launch sends a short source command for long dev commands",
 	assert.equal(result.status, 0, result.stderr);
 	assert.equal(fs.readFileSync(marker, "utf8").trim(), `ok ${"x".repeat(1600)}`);
 	assert.equal(fs.existsSync(scriptPath), false, "launch script removes itself once sourced");
+	fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("macOS Terminal launch passes only the short source command to do script", {
+	skip: process.platform === "win32",
+}, () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cindy-terminal-args-"));
+	const command = `echo '${"y".repeat(1600)}'`;
+	const { scriptPath, args } = prepareDarwinTerminalLaunch(command, dir);
+	const devCommand = args.at(-1);
+
+	assert.ok(appleScriptLines(args).includes("set targetTab to do script devCommand"));
+	assert.equal(devCommand, darwinTerminalSourceCommand(scriptPath));
+	assert.ok(devCommand.length < 1024, "Terminal input must stay under MAX_CANON");
+	assert.ok(!args.some((arg) => arg.includes("y".repeat(1600))), "long command must not reach do script");
+	assert.ok(fs.readFileSync(scriptPath, "utf8").includes(command));
 	fs.rmSync(dir, { recursive: true, force: true });
 });
 

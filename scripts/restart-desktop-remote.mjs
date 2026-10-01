@@ -478,6 +478,14 @@ export function darwinTerminalSourceCommand(scriptPath) {
   return `. ${shellSingleQuote(scriptPath)}`;
 }
 
+export function prepareDarwinTerminalLaunch(command, dir = os.tmpdir()) {
+  const scriptPath = writeDarwinTerminalLaunchScript(command, dir);
+  return {
+    scriptPath,
+    args: osascriptLaunchDarwinTerminalArgs(darwinTerminalSourceCommand(scriptPath)),
+  };
+}
+
 function osascriptCloseDarwinTerminalTtyArgs(ttyPath) {
   return closeDarwinTerminalTtyScript
     .flatMap((line) => ['-e', line])
@@ -977,13 +985,27 @@ function launchInSystemTerminal(mode) {
 
   if (process.platform === 'darwin') {
     const command = `${darwinEnvPrefix()}${darwinStaleDevEnvUnset()}cd ${shellSingleQuote(rootDir)} && ${devEnvPrefix()}${packageManagerCommand(mode)}; exitCode=$?; exit $exitCode`;
-    const scriptPath = writeDarwinTerminalLaunchScript(command);
-    const child = spawn('osascript', osascriptLaunchDarwinTerminalArgs(darwinTerminalSourceCommand(scriptPath)), {
+    const { scriptPath, args } = prepareDarwinTerminalLaunch(command);
+    // osascript 在 do script 之前失败（自动化权限被拒、脚本错误）时临时脚本不会被 source，
+    // 首行自删不会发生；按失败退出尽力删除，避免留下含开发环境变量的文件。
+    const removeScript = () => {
+      try {
+        fs.rmSync(scriptPath, { force: true });
+      } catch {
+        // 尽力清理，失败不影响启动结果判断。
+      }
+    };
+    const child = spawn('osascript', args, {
       detached: true,
       stdio: 'ignore',
     });
+    child.on('error', removeScript);
+    child.on('exit', (code) => {
+      if (code !== 0) removeScript();
+    });
     child.unref();
     if (child.pid === undefined) {
+      removeScript();
       throw new Error('Failed to open Terminal.app');
     }
     console.log(`==> Opened desktop ${mode} dev in a new Terminal window.`);
