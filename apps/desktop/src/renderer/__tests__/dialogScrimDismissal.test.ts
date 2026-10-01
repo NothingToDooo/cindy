@@ -28,15 +28,33 @@ function rendererComponentFiles(directory: string): string[] {
     .sort();
 }
 
-function dialogNamespaces(sourceFile: ts.SourceFile): Set<string> {
-  const names = new Set<string>();
+// Radix 对 Content 的两个导出名(`Content` 与别名 `DialogContent`)。
+const CONTENT_EXPORTS = new Set(['Content', 'DialogContent']);
+
+/** 本文件里指向 Radix Dialog Content 的 JSX 标签:命名空间 `X.Content` 或具名导入(含 as 别名)。 */
+function dialogContentTags(sourceFile: ts.SourceFile): (tag: string) => boolean {
+  const namespaces = new Set<string>();
+  const named = new Set<string>();
   for (const statement of sourceFile.statements) {
     if (!ts.isImportDeclaration(statement)) continue;
     if ((statement.moduleSpecifier as ts.StringLiteral).text !== '@radix-ui/react-dialog') continue;
     const bindings = statement.importClause?.namedBindings;
-    if (bindings && ts.isNamespaceImport(bindings)) names.add(bindings.name.text);
+    if (bindings && ts.isNamespaceImport(bindings)) namespaces.add(bindings.name.text);
+    if (bindings && ts.isNamedImports(bindings)) {
+      for (const element of bindings.elements) {
+        if (CONTENT_EXPORTS.has((element.propertyName ?? element.name).text)) {
+          named.add(element.name.text);
+        }
+      }
+    }
   }
-  return names;
+  return (tag) => {
+    const [head, member, ...rest] = tag.split('.');
+    if (rest.length) return false;
+    return member === undefined
+      ? named.has(head)
+      : namespaces.has(head) && CONTENT_EXPORTS.has(member);
+  };
 }
 
 /** `(e) => e.preventDefault()` 或只含这一句的函数体。 */
@@ -59,23 +77,20 @@ function alwaysPreventsDefault(attribute: ts.JsxAttribute): boolean {
   );
 }
 
-function unguardedDialogContents(path: string): string[] {
-  const source = readFileSync(path, 'utf8');
+function unguardedDialogContents(label: string, source: string): string[] {
   if (!source.includes('@radix-ui/react-dialog')) return [];
   const sourceFile = ts.createSourceFile(
-    path,
+    label,
     source,
     ts.ScriptTarget.Latest,
     true,
     ts.ScriptKind.TSX,
   );
-  const namespaces = dialogNamespaces(sourceFile);
+  const isDialogContent = dialogContentTags(sourceFile);
   const offenders: string[] = [];
   const visit = (node: ts.Node) => {
     if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
-      const tag = node.tagName.getText(sourceFile);
-      const [namespace, member] = tag.split('.');
-      if (member === 'Content' && namespaces.has(namespace)) {
+      if (isDialogContent(node.tagName.getText(sourceFile))) {
         const guarded = node.attributes.properties.some(
           (property) =>
             ts.isJsxAttribute(property) &&
@@ -84,7 +99,7 @@ function unguardedDialogContents(path: string): string[] {
         );
         if (!guarded) {
           const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
-          offenders.push(`${relative(RENDERER_ROOT, path).replaceAll('\\', '/')}:${line + 1}`);
+          offenders.push(`${label}:${line + 1}`);
         }
       }
     }
@@ -94,16 +109,49 @@ function unguardedDialogContents(path: string): string[] {
   return offenders;
 }
 
+function rendererLabel(path: string): string {
+  return relative(RENDERER_ROOT, path).replaceAll('\\', '/');
+}
+
 describe('dialog scrim dismissal', () => {
   it('every Radix Dialog.Content ignores clicks outside the dialog', () => {
     const offenders = rendererComponentFiles(RENDERER_ROOT)
-      .filter((path) => !EXEMPT_FILES.has(relative(RENDERER_ROOT, path).replaceAll('\\', '/')))
-      .flatMap(unguardedDialogContents);
+      .filter((path) => !EXEMPT_FILES.has(rendererLabel(path)))
+      .flatMap((path) => unguardedDialogContents(rendererLabel(path), readFileSync(path, 'utf8')));
     expect(offenders).toEqual([]);
   });
 
   it('still recognizes the exempt preflight dialog as a Dialog.Content user', () => {
     const exempt = resolve(RENDERER_ROOT, 'components/cindy-make/CindyMakePreflightDialog.tsx');
-    expect(unguardedDialogContents(exempt).length).toBeGreaterThan(0);
+    expect(unguardedDialogContents('exempt', readFileSync(exempt, 'utf8')).length).toBeGreaterThan(
+      0,
+    );
+  });
+
+  it.each([
+    ['namespace import', "import * as D from '@radix-ui/react-dialog';", 'D.Content'],
+    ['named import', "import { Content } from '@radix-ui/react-dialog';", 'Content'],
+    ['aliased import', "import { Content as Panel } from '@radix-ui/react-dialog';", 'Panel'],
+    [
+      'DialogContent alias',
+      "import { DialogContent } from '@radix-ui/react-dialog';",
+      'DialogContent',
+    ],
+  ])('flags an unguarded Content via %s and accepts the guarded one', (_, importLine, tag) => {
+    const fixture = (props: string) =>
+      `${importLine}\nexport const X = () => <${tag}${props} />;\n`;
+    expect(unguardedDialogContents('fixture', fixture(''))).toEqual(['fixture:2']);
+    expect(
+      unguardedDialogContents(
+        'fixture',
+        fixture(' onPointerDownOutside={(e) => e.preventDefault()}'),
+      ),
+    ).toEqual([]);
+    expect(
+      unguardedDialogContents(
+        'fixture',
+        fixture(' onPointerDownOutside={(e) => { if (busy) e.preventDefault(); }}'),
+      ),
+    ).toEqual(['fixture:2']);
   });
 });
