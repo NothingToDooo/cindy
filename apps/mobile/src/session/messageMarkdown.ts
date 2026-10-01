@@ -725,9 +725,9 @@ function isTextRunBlock(block: MobileMarkdownBlock): block is MobileMarkdownText
   if (block.type !== 'paragraph' && block.type !== 'heading' && block.type !== 'list_item') {
     return false;
   }
-  // 直连内联图渲染为 Text 内嵌 View,不能进合并文本树(Android selectable+内嵌 View 行为未定义)。
+  // 图片预览内嵌 View，不能进合并文本树（包括经远端取件的受管图片）。
   return !block.inlines.some(
-    (inline) => inline.type === 'image' && isMobileMarkdownImageDirectUrl(inline.url),
+    (inline) => inline.type === 'image',
   );
 }
 
@@ -1572,7 +1572,10 @@ function matchMarkdownImage(
     let candidate: RegExpExecArray | null;
     while ((candidate = matcher.re.exec(input)) !== null) {
       const rawUrl = matcher.local ? parseLocalMarkdownDestination(candidate[2]) : candidate[2];
-      if (matcher.local && !classifyChatPathLinkTarget(rawUrl)) continue;
+      // The destination parser also handles standard titles and angle brackets
+      // for remote images, just as it does for local image paths.
+      if (matcher.local && !classifyChatPathLinkTarget(rawUrl)
+        && !(SAFE_IMAGE_SRC_RE.test(rawUrl) && !/\s/.test(rawUrl))) continue;
       // 当前 matcher 的第一个正则命中可能只是注释/转义里的示例;必须继续 exec,
       // 否则同段后面的合法图片会被丢掉(review P2)。
       if (isInsideHtmlComment(guarded, candidate.index, startsInsideHtmlComment)) continue;

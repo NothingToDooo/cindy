@@ -10,6 +10,14 @@ import { mobileDebugLog } from "@/debug/mobileDebugLog";
 
 const EXPIRY_SAFETY_WINDOW_MS = 60 * 1000;
 
+/** Match stable Host/transport codes, never expose raw errors containing local paths. */
+export function mediaLoadFailureKey(error: unknown): 'message.lightbox.sourceMissing' | 'message.lightbox.deviceOffline' | 'message.lightbox.loadFailed' {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  if (message.includes('[MEDIA_SOURCE_MISSING]')) return 'message.lightbox.sourceMissing';
+  if (/\b(?:DEVICE_LINK_NOT_CONNECTED|DEVICE_OFFLINE|PEER_OFFLINE)\b/.test(message)) return 'message.lightbox.deviceOffline';
+  return 'message.lightbox.loadFailed';
+}
+
 export interface MobileRemoteMediaFetchResult {
   /** inline 缩略图回包(新被控端)时为空串。 */
   ossKey: string;

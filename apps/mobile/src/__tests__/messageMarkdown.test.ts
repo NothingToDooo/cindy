@@ -1007,6 +1007,17 @@ describe('messageMarkdown', () => {
     expect(isMobileMarkdownImageDirectUrl('cindy-media://blobs/a.png')).toBe(false);
   });
 
+  it('parses remote images with standard optional titles without exposing Markdown source', () => {
+    for (const url of ['cindy-media://blobs/a.png', 'xdt-image://cache/a.png', 'https://example.com/shot(1).png']) {
+      for (const destination of [`${url} "真实截图"`, `${url} '截图'`, `${url} (截图)`, `<${url}> "截图"`]) {
+        expect(parseMobileMarkdownInlines(`![验收](${destination})`)).toEqual([
+          { type: 'image', alt: '验收', url },
+        ]);
+      }
+    }
+    expect(parseMobileMarkdownInlines('![x](javascript:alert(1) "title")').some((inline) => inline.type === 'image')).toBe(false);
+  });
+
   it('rejects img-prefixed non-img tags exactly (img must be followed by whitespace, / or >)', () => {
     // \b 把 -/./: 当边界,<img-wrapper src=...> 会被误当 img 解析出 src(codex P2);
     // 守卫与匹配器都要求标签名"恰好是 img"。
@@ -1726,14 +1737,13 @@ describe('groupMobileMarkdownSelectableBlocks', () => {
     expect(chunkText.join('')).toBe(text);
   });
 
-  it('keeps oversized non-direct image alt text in one image inline while bounding rendered chip text', () => {
+  it('keeps managed image previews out of selectable text runs without splitting oversized alt text', () => {
     const alt = 'a'.repeat(MOBILE_MARKDOWN_IMAGE_ALT_CHIP_MAX_UTF16_LENGTH + 21);
     const blocks = parseMobileMarkdown(`![${alt}](docs/local-image.png)`);
     const groups = groupMobileMarkdownSelectableBlocks(blocks, { maxTextRunUtf16Length: 1800 });
-    const chunks = groups.flatMap((group) => (group.type === 'text_run' ? group.blocks : []));
-    const imageInlines = chunks.flatMap((block) => block.inlines.filter((inline) => inline.type === 'image'));
+    const imageInlines = blocks.flatMap((block) => 'inlines' in block ? block.inlines.filter((inline) => inline.type === 'image') : []);
 
-    expect(groups.map((group) => group.type)).toEqual(['text_run']);
+    expect(groups.map((group) => group.type)).toEqual(['single']);
     expect(imageInlines).toHaveLength(1);
     expect(imageInlines[0]).toMatchObject({ alt, url: 'docs/local-image.png' });
     expect(mobileMarkdownImageAltChipText(imageInlines[0].alt)).toHaveLength(

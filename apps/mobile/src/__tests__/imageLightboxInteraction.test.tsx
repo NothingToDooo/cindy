@@ -35,7 +35,8 @@ vi.mock("react-i18next", async (importOriginal) => ({
   ...await importOriginal<typeof import('react-i18next')>(),
   useTranslation: () => ({ t: (key: string) => key }),
 }));
-vi.mock("@/session/remoteMedia", () => ({
+vi.mock("@/session/remoteMedia", async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/session/remoteMedia')>(),
   isDesktopLocalMediaUrl: (uri: string) => uri.startsWith("cindy-media:"),
 }));
 vi.mock("react-native-safe-area-context", () => ({

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   canPreviewResolvedRemoteMedia,
   formatRemoteMediaSize,
+  mediaLoadFailureKey,
   isDesktopLocalMediaUrl,
   isDirectPreviewableMediaUrl,
   isResolvedRemoteMediaFresh,
@@ -11,6 +12,12 @@ import {
 } from "@/session/remoteMedia";
 
 describe("mobile remote media", () => {
+  it('classifies stable failure codes without exposing paths or assuming every failure is a missing file', () => {
+    expect(mediaLoadFailureKey(new Error('[MEDIA_SOURCE_MISSING] missing'))).toBe('message.lightbox.sourceMissing');
+    expect(mediaLoadFailureKey(new Error('[DEVICE_LINK_NOT_CONNECTED]'))).toBe('message.lightbox.deviceOffline');
+    expect(mediaLoadFailureKey(new Error('ENOENT /private/user.png'))).toBe('message.lightbox.loadFailed');
+    expect(mediaLoadFailureKey(new Error('timeout'))).toBe('message.lightbox.loadFailed');
+  });
   it("accepts inline audio and video data URLs for the media player", () => {
     expect(isDirectPreviewableMediaUrl("https://example.com/a.mp4")).toBe(true);
     expect(isDirectPreviewableMediaUrl("data:image/png;base64,aaa")).toBe(true);
