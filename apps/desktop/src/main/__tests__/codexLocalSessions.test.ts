@@ -382,6 +382,30 @@ describe('Codex local session import', () => {
     expect(missing.rolloutPath).toBeNull();
   });
 
+  it('treats an unreadable indexed state DB as incomplete, but a rollout-only home as valid', async () => {
+    const accountHome = path.join(targetUserData, 'codex-accounts', 'owner', 'openai-b');
+    const rolloutPath = path.join(accountHome, 'sessions', `rollout-2026-09-16-${threadId}.jsonl`);
+    fs.mkdirSync(path.dirname(rolloutPath), { recursive: true });
+    fs.writeFileSync(rolloutPath, '{"type":"session_meta"}\n');
+
+    // 纯 rollout 的存储(没有状态库)是合法的空 state。
+    const rolloutOnly = await dumpCodexThreadStateRows(threadId, { sqliteHome: accountHome, rolloutPath });
+    expect(rolloutOnly.threads).toEqual([]);
+    expect(rolloutOnly.rolloutPath).toBe(rolloutPath);
+
+    // 状态库损坏:不能当成空 state 带着 rollout 判完整。
+    fs.writeFileSync(path.join(accountHome, 'state_5.sqlite'), 'not a sqlite database');
+    const corrupt = await dumpCodexThreadStateRows(threadId, { sqliteHome: accountHome, rolloutPath });
+    expect(corrupt.rolloutPath).toBeNull();
+
+    // 记录的状态目录不存在同样按读不出处理。
+    const missingHome = await dumpCodexThreadStateRows(threadId, {
+      sqliteHome: path.join(accountHome, 'gone'),
+      rolloutPath,
+    });
+    expect(missingHome.rolloutPath).toBeNull();
+  });
+
   it('classifies multi-account history size only from its indexed rollout', async () => {
     const accountHome = path.join(targetUserData, 'codex-accounts', 'owner', 'openai-a');
     const rolloutPath = path.join(accountHome, 'sessions', `rollout-2026-09-16-${threadId}.jsonl`);

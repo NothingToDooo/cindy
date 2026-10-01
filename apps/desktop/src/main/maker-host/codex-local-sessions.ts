@@ -1581,9 +1581,19 @@ export async function dumpCodexThreadStateRows(
   if (!isLikelyThreadId(threadId)) return empty;
 
   if (storage) {
+    // 记录位置的状态库读不出(目录不可访问、库损坏)不等于「本就没有 state」:
+    // 不返回 rollout,让导出按缺转录降档,而不是带着空 state 判成完整。
+    // 没有状态库(纯 rollout 的外部线程)仍是合法的空 state。
+    try {
+      fs.accessSync(storage.sqliteHome, fs.constants.R_OK | fs.constants.X_OK);
+    } catch {
+      return empty;
+    }
     const dbPath = findLatestStateDb(storage.sqliteHome);
+    const rows = dbPath ? readThreadStateRows(dbPath, threadId) : empty;
+    if (!rows) return empty;
     return {
-      ...(dbPath ? readThreadStateRows(dbPath, threadId) : empty),
+      ...rows,
       rolloutPath: storage.rolloutPath && fs.existsSync(storage.rolloutPath) ? storage.rolloutPath : null,
     };
   }
@@ -1597,7 +1607,7 @@ export async function dumpCodexThreadStateRows(
   let dump = empty;
   for (const dbPath of dbCandidates) {
     const rows = readThreadStateRows(dbPath, threadId);
-    if (rows.threads.length > 0) {
+    if (rows && rows.threads.length > 0) {
       dump = { ...rows, rolloutPath: null };
       break;
     }
@@ -1678,7 +1688,7 @@ export function reserveCodexForkCleanup(
 function readThreadStateRows(
   dbPath: string,
   threadId: string,
-): Pick<CodexThreadStateDump, 'threads' | 'threadDynamicTools' | 'threadSpawnEdges'> {
+): Pick<CodexThreadStateDump, 'threads' | 'threadDynamicTools' | 'threadSpawnEdges'> | null {
   let db: Database.Database | null = null;
   try {
     db = openReadonlyDb(dbPath);
@@ -1695,14 +1705,14 @@ function readThreadStateRows(
       threadSpawnEdges: readTable('thread_spawn_edges', 'parent_thread_id'),
     };
   } catch (err) {
-    // DB 锁 / 权限 / schema 漂移都会走到这:返回空让导出降档,但必须留痕,
+    // DB 锁 / 权限 / schema 漂移都会走到这:返回 null 交调用方决定降档,但必须留痕,
     // 否则"为什么 codex state 没进包"无从排查(review bot 指出)。
     log.warn('readThreadStateRows failed, exporting without codex state', {
       dbPath,
       threadId,
       error: err instanceof Error ? err.message : String(err),
     });
-    return { threads: [], threadDynamicTools: [], threadSpawnEdges: [] };
+    return null;
   } finally {
     closeDbQuietly(db);
   }
