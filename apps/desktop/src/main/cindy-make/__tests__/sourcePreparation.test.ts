@@ -173,7 +173,13 @@ describe('Source and dependency preparation', () => {
         // No `CINDY_*`/`XDT_*` generalization either: those prefixes carry real
         // product secrets (`XDT_ELEVENLABS_API_KEY`), and a content `.npmrc`
         // would expand them into a request to a host it chooses.
-        { npm_config_userconfig: os.devNull, npm_config_globalconfig: os.devNull },
+        {
+          npm_config_userconfig: os.devNull,
+          npm_config_globalconfig: os.devNull,
+          COREPACK_ENV_FILE: '0',
+          COREPACK_ENABLE_PROJECT_SPEC: '0',
+          COREPACK_ENABLE_UNSAFE_CUSTOM_URLS: '0',
+        },
         [
           'fetch',
           '--frozen-lockfile',

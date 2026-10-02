@@ -14,7 +14,10 @@ import { createMakeBuildLineOutput } from './buildProgress.js';
  * because `${VAR}` in a content `.npmrc` expands it into a request to a host the
  * content chooses; even an allowlisted name is dropped when it names a credential.
  * `userconfig` is pinned to the null device so the user's own `.npmrc` is not
- * loaded either.
+ * loaded either. Corepack may not take anything from unverified content: a
+ * project `.corepack.env` and the `packageManager` field can name, cache-poison
+ * or point at a custom URL for the package manager Corepack runs before pnpm's
+ * own guards apply, so its project env and project spec are disabled outright.
  */
 export function unverifiedPnpmEnv(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return {
@@ -23,12 +26,22 @@ export function unverifiedPnpmEnv(environment: NodeJS.ProcessEnv): NodeJS.Proces
         ([key]) =>
           /^(?:path|systemroot|windir|comspec|tmp|temp|home|userprofile|lang|lc_.*|tz|corepack_.*|pnpm_manage_package_manager_versions|pythondontwritebytecode|pythonutf8|python|npm_config_(?:manage_package_manager_versions|managepackagemanagerversions|python))$/i.test(
             key,
-          ) && !/(?:token|password|auth|secret|credential|key)/i.test(key),
+          ) &&
+          !/(?:token|password|auth|secret|credential|key)/i.test(key) &&
+          // Pinned below unconditionally; a differently-cased twin must not
+          // survive to fight the pin on case-insensitive environments.
+          !/^corepack_(?:env_file|enable_project_spec|enable_unsafe_custom_urls)$/i.test(key),
       ),
     ),
     npm_config_userconfig: os.devNull,
     // The global config may hold registry credentials of its own.
     npm_config_globalconfig: os.devNull,
+    // Corepack must not read the content's `.corepack.env` or follow its
+    // `packageManager` spec: together they can make the Corepack shim execute
+    // attacker-chosen code before `--ignore-scripts` applies.
+    COREPACK_ENV_FILE: '0',
+    COREPACK_ENABLE_PROJECT_SPEC: '0',
+    COREPACK_ENABLE_UNSAFE_CUSTOM_URLS: '0',
   };
 }
 

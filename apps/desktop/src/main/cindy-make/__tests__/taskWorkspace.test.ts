@@ -123,6 +123,9 @@ describe('prepareCindyMakeWorkspace', () => {
         PATH: '',
         npm_config_userconfig: os.devNull,
         npm_config_globalconfig: os.devNull,
+        COREPACK_ENV_FILE: '0',
+        COREPACK_ENABLE_PROJECT_SPEC: '0',
+        COREPACK_ENABLE_UNSAFE_CUSTOM_URLS: '0',
       },
       [
         'install',
@@ -165,6 +168,12 @@ describe('prepareCindyMakeWorkspace', () => {
         COREPACK_NPM_TOKEN: 'corepack_secret-token',
         COREPACK_NPM_PASSWORD: 'corepack_secret-password',
         COREPACK_ENABLE: '0',
+        // The content must not configure Corepack itself: its project env and
+        // `packageManager` spec would run before pnpm's guards. Hostile values
+        // from the parent environment lose to the pins.
+        COREPACK_ENV_FILE: '/attacker/.corepack.env',
+        corepack_enable_project_spec: '1',
+        COREPACK_ENABLE_UNSAFE_CUSTOM_URLS: '1',
         // Product secrets under real app prefixes are not generalized in either:
         // `XDT_ELEVENLABS_API_KEY` is a working credential of the app's own.
         XDT_ELEVENLABS_API_KEY: 'eleven_secret-key',
@@ -181,7 +190,22 @@ describe('prepareCindyMakeWorkspace', () => {
       COREPACK_ENABLE: '0',
       npm_config_userconfig: os.devNull,
       npm_config_globalconfig: os.devNull,
+      COREPACK_ENV_FILE: '0',
+      COREPACK_ENABLE_PROJECT_SPEC: '0',
+      COREPACK_ENABLE_UNSAFE_CUSTOM_URLS: '0',
     });
+    // No differently-cased twin of a pinned key survives (Windows env is
+    // case-insensitive and would keep whichever it met first).
+    expect(
+      Object.keys(seen!)
+        .filter((key) => /^corepack_/i.test(key))
+        .sort(),
+    ).toEqual([
+      'COREPACK_ENABLE',
+      'COREPACK_ENABLE_PROJECT_SPEC',
+      'COREPACK_ENABLE_UNSAFE_CUSTOM_URLS',
+      'COREPACK_ENV_FILE',
+    ]);
   });
 
   it('refuses unverified content whose config file is a symlink', async () => {
