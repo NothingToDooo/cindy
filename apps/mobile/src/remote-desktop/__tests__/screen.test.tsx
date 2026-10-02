@@ -18,6 +18,29 @@ import { AppState } from "react-native";
 import { goBackGuarded } from "@/utils/backGuard";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
+// Node >= 25 replaces jsdom's localStorage (AsyncStorage's web fallback) with a
+// method-less stub, so keep storage in memory like the other mobile tests.
+const storage = vi.hoisted(() => {
+  const items = new Map<string, string>();
+  return {
+    items,
+    getItem: async (key: string) => items.get(key) ?? null,
+    setItem: async (key: string, value: string) => {
+      items.set(key, value);
+    },
+    removeItem: async (key: string) => {
+      items.delete(key);
+    },
+    getAllKeys: async () => [...items.keys()],
+    multiRemove: async (keys: readonly string[]) => {
+      keys.forEach((key) => items.delete(key));
+    },
+    clear: async () => items.clear(),
+  };
+});
+vi.mock("@react-native-async-storage/async-storage", () => ({
+  default: storage,
+}));
 vi.mock('expo-blur', async () => ({ BlurView: (await import('react-native')).View }));
 
 vi.mock("react-native-reanimated", async () => {
@@ -373,15 +396,7 @@ const visibleInputHint = () =>
 const button = (key: string) =>
   host.querySelector<HTMLButtonElement>(`[aria-label="remoteDesktop.${key}"]`)!;
 beforeEach(async () => {
-  await AsyncStorage.removeItem(
-    "cindy.mobile.remote-desktop.show-mouse-buttons.v1",
-  ).catch(() => undefined);
-  await AsyncStorage.removeItem("cindy.mobile.remote-desktop.audio.v1").catch(
-    () => undefined,
-  );
-  await AsyncStorage.removeItem(
-    "cindy.mobile.remote-desktop.resolution.v1.computer.display",
-  ).catch(() => undefined);
+  storage.items.clear();
   (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
   vi.clearAllMocks();
   fixture.beginBackgroundTransition.mockImplementation(

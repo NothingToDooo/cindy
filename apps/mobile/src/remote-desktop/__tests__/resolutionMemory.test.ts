@@ -1,11 +1,34 @@
-// @vitest-environment jsdom
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   findRememberedMode,
   readRememberedResolution,
   rememberResolution,
 } from "../resolutionMemory";
+
+// Node >= 25 replaces jsdom's localStorage (AsyncStorage's web fallback) with a
+// method-less stub, so keep storage in memory like the other mobile tests.
+const storage = vi.hoisted(() => {
+  const items = new Map<string, string>();
+  return {
+    items,
+    getItem: async (key: string) => items.get(key) ?? null,
+    setItem: async (key: string, value: string) => {
+      items.set(key, value);
+    },
+    removeItem: async (key: string) => {
+      items.delete(key);
+    },
+    getAllKeys: async () => [...items.keys()],
+    multiRemove: async (keys: readonly string[]) => {
+      keys.forEach((key) => items.delete(key));
+    },
+    clear: async () => items.clear(),
+  };
+});
+vi.mock("@react-native-async-storage/async-storage", () => ({
+  default: storage,
+}));
 
 const key = "cindy.mobile.remote-desktop.resolution.v1.computer.display";
 const modes = [
@@ -15,8 +38,8 @@ const modes = [
 ];
 
 describe("remote desktop resolution memory", () => {
-  beforeEach(async () => {
-    await AsyncStorage.removeItem(key);
+  beforeEach(() => {
+    storage.items.clear();
   });
 
   it("stores the choice per computer and monitor", async () => {
