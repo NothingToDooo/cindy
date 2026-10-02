@@ -71,6 +71,11 @@ describe('parsePersonalRemoteRecord', () => {
       ),
     ).toEqual({ schema: 1 });
     expect(parsePersonalRemoteRecord('{not json')).toEqual({ schema: 1 });
+    expect(
+      parsePersonalRemoteRecord(
+        JSON.stringify({ schema: 1, unverifiedRemote: [OTHER, OTHER, 'zz', 3] }),
+      ),
+    ).toEqual({ schema: 1, unverifiedRemote: [OTHER] });
     expect(parsePersonalRemoteRecord(JSON.stringify({ schema: 2, choice: 'local' }))).toEqual({
       schema: 1,
     });
@@ -233,6 +238,41 @@ describe('ensureOfficialFork', () => {
       }, identity),
     ).rejects.toMatchObject({ code: 'network' });
   });
+
+  it('reuses the account existing fork when a fork cannot be created again', async () => {
+    // A repeated fork request that cannot create anything answers 422 instead of
+    // the repository; the account's own fork is then accepted on the same checks.
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(422, {}))
+      .mockResolvedValueOnce(jsonResponse(200, fork));
+    await expect(ensureOfficialFork(fetchFn, identity)).resolves.toBe('octo/cindy-1');
+    expect(fetchFn).toHaveBeenLastCalledWith(
+      'https://api.github.com/repos/Octo/cindy',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
+  it('locates a renamed existing fork through the account repositories on 422', async () => {
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(422, {}))
+      .mockResolvedValueOnce(jsonResponse(404, {}))
+      .mockResolvedValueOnce(jsonResponse(200, [{ full_name: 'octo/cindy-1', fork: true }]))
+      .mockResolvedValueOnce(jsonResponse(200, fork));
+    await expect(ensureOfficialFork(fetchFn, identity)).resolves.toBe('octo/cindy-1');
+  });
+
+  it('still rejects on 422 when the account has no official fork', async () => {
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(422, {}))
+      .mockResolvedValueOnce(jsonResponse(200, { ...fork, fork: false }))
+      .mockResolvedValueOnce(jsonResponse(200, []));
+    await expect(ensureOfficialFork(fetchFn, identity)).rejects.toMatchObject({
+      code: 'forkConflict',
+    });
+  });
 });
 
 /** In-memory model of the managed checkout and the fork, driven by the exact Git commands. */
@@ -265,6 +305,8 @@ function harness(
     replayConflict?: boolean;
     /** Commits that no longer exist locally (for example after clearing the source). */
     missing?: string[];
+    /** Never answer this exact Git command, until the test releases it. */
+    hangOn?: string;
     /** The source is reserved by Sync: busy for everyone except Sync's own run. */
     reservedBySync?: boolean;
     /** Another local operation moves the personal branch while the upload runs. */
@@ -280,12 +322,19 @@ function harness(
   let localTip = options.local ?? LOCAL;
   let now = 1_000;
   let lsRemoteCalls = 0;
+  let released = false;
+  const pendingHang: Array<() => void> = [];
   const calls: Array<{ args: string[]; auth: boolean }> = [];
   const states: CindyMakePersonalRemoteState[] = [];
   const ancestors = new Set((options.ancestors ?? []).map(([a, b]) => a + '>' + b));
   const replayed: Array<{ identity?: PersonalRemoteGitOptions['identity']; message: string }> = [];
   const git = vi.fn(async (args: string[], _cwd: string, opts?: PersonalRemoteGitOptions) => {
     calls.push({ args, auth: !!opts?.auth });
+    if (options.hangOn === args.join(' '))
+      return new Promise<string>((resolve) => {
+        if (released) resolve(localTip);
+        else pendingHang.push(() => resolve(localTip));
+      });
     // Commits without a patch-equivalent on the other side (`options.cherry` lists them).
     const unique = (options.cherry ?? '')
       .split('\n')
@@ -455,6 +504,10 @@ function harness(
     calls,
     states,
     ensureFork,
+    releaseHang: () => {
+      released = true;
+      for (const release of pendingHang.splice(0)) release();
+    },
     record: () => record,
     remoteTip: () => remoteTip,
     remoteBase: () => remoteBase,
@@ -689,7 +742,12 @@ describe('PersonalRemoteController', () => {
     h.controller.save();
     await h.controller.settled();
     expect(h.localTip()).toBe(NEWER);
-    expect(h.record()).toMatchObject({ repository: 'octo/cindy', sync: 'retrieved' });
+    expect(h.record()).toMatchObject({
+      repository: 'octo/cindy',
+      sync: 'retrieved',
+      // The taken-over fork tip is content this computer has not verified yet.
+      unverifiedRemote: [NEWER],
+    });
   });
 
   it('publishes the official base next to the personal version', async () => {
@@ -713,6 +771,31 @@ describe('PersonalRemoteController', () => {
     await h.controller.syncBeforeTask();
     expect(h.pushes()).toHaveLength(1);
     await harness().controller.syncBeforeTask();
+  });
+
+  it('waits for an operation already running only up to the task budget', async () => {
+    const h = harness({
+      record: { schema: 1, choice: 'github', login: 'octo', repository: 'octo/cindy' },
+      hangOn: 'rev-parse --verify --quiet refs/heads/cindy-personal^{commit}',
+    });
+    h.controller.sync();
+    const started = Date.now();
+    await h.controller.syncBeforeTask(25);
+    // The new task is not held hostage by the slow earlier operation.
+    expect(Date.now() - started).toBeLessThan(2_000);
+    h.releaseHang();
+    await h.controller.settled();
+    expect(h.pushes()).toHaveLength(1);
+  });
+
+  it('remembers taken-over fork tips without repeating them', () => {
+    const h = harness({
+      record: { schema: 1, choice: 'github', login: 'octo', repository: 'octo/cindy' },
+    });
+    h.controller.recordUnverifiedRemote(OTHER);
+    h.controller.recordUnverifiedRemote(OTHER);
+    h.controller.recordUnverifiedRemote('not-a-commit');
+    expect(h.record().unverifiedRemote).toEqual([OTHER]);
   });
 
   it('requires a connected GitHub account and the bound login', async () => {

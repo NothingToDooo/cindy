@@ -13,6 +13,7 @@ import { prepareCindyMakeEnvironment } from './prepare.js';
 import { untilAborted } from './doctor.js';
 import { prepareCindySource, readCurrentCindySourceStatus } from './sourcePreparation.js';
 import { createCindyMakeWorktree, installCindyMakeWorktree } from './taskWorkspace.js';
+import { installScriptsTrust, remoteContentScriptsUnverified } from './installScriptsTrust.js';
 import { CINDY_MAKE_RUN_ID_PATTERN, makeSourceRoot, makeTaskWorktreePath } from './sourcePaths.js';
 import { makeToolRoot } from './toolInstaller.js';
 import { getDbClient } from '../localDb/client/current.js';
@@ -590,6 +591,16 @@ export async function startCindyMakeTask(raw: unknown, sender: number): Promise<
             signal.throwIfAborted();
             report = { ...report, source: { status: 'ready', ...workspace } };
             phase('dependencies', publish);
+            // Content taken over from the user's fork before this computer generated
+            // a personal version from it never has its lifecycle scripts run here:
+            // task creation must not execute code a collaborator pushed. Anything
+            // unclear counts as unverified (see `remoteContentScriptsUnverified`).
+            const ignoreScripts = await remoteContentScriptsUnverified(
+              workspace.baseCommit,
+              installScriptsTrust(userData, processEnvironment, signal),
+            ).catch(() => true);
+            if (ignoreScripts)
+              log.info('task install skips lifecycle scripts on unverified synced content');
             await installCindyMakeWorktree(
               userData,
               workspace,
@@ -602,6 +613,7 @@ export async function startCindyMakeTask(raw: unknown, sender: number): Promise<
                   publish(report);
                 }
               },
+              { ignoreScripts },
             );
           },
           signal,

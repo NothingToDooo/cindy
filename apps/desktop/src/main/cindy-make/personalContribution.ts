@@ -85,6 +85,8 @@ export interface ContributionChange {
 
 export interface ContributionDeps {
   source: string;
+  /** Stable key of the signed-in Cindy account that started the operation. */
+  ownerScope(): string;
   binding(): PersonalRemoteRecord;
   identity(): Promise<GithubIdentityResult>;
   git(args: string[], cwd: string, options?: PersonalRemoteGitOptions): Promise<string>;
@@ -207,8 +209,18 @@ export class PersonalContribution {
     return { repository: record.repository, identity: identity.identity };
   }
 
-  private requireChange(runId: string): ContributionChange {
+  /**
+   * Every owner-scoped read or write of a submission belongs to the account that
+   * started it: a Cindy account switch in the middle of the awaits must not read
+   * another account's history, push with its identity or write its ledger.
+   */
+  private assertScope(scope: string): void {
+    if (this.deps.ownerScope() !== scope) throw fail('account');
+  }
+
+  private requireChange(runId: string, scope: string): ContributionChange {
     if (!RUN_ID.test(runId)) throw fail('invalid');
+    this.assertScope(scope);
     const change = this.deps.change(runId);
     if (!change || !HASH.test(change.baseTree) || !HASH.test(change.tree))
       throw fail('unavailable');
@@ -272,8 +284,9 @@ export class PersonalContribution {
   }
 
   async draft(runId: string): Promise<CindyMakeContributionDraft> {
+    const scope = this.deps.ownerScope();
     const { repository, identity } = await this.requireBinding();
-    const change = this.requireChange(runId);
+    const change = this.requireChange(runId, scope);
     const files = await this.changedFiles(change);
     const touchesUi = files.some(touchesUiPath);
     const title = `feat: ${change.title.trim() || change.request.trim().split('\n')[0]}`.slice(
@@ -281,6 +294,7 @@ export class PersonalContribution {
       CONTRIBUTION_LIMITS.title,
     );
     const author = await this.author(identity);
+    this.assertScope(scope);
     const existing = this.deps.readStore()[runId];
     const state = existing && (await this.pullState(existing, githubHeaders(identity.token)));
     return {
@@ -302,7 +316,7 @@ export class PersonalContribution {
     try {
       const response = await this.deps.fetch(
         `${API}/repos/${OFFICIAL_GITHUB_REPOSITORY}/pulls/${record.number}`,
-        { headers, redirect: 'error', signal: AbortSignal.timeout(15_000) },
+        { method: 'GET', headers, redirect: 'error', signal: AbortSignal.timeout(15_000) },
       );
       if (!response.ok) {
         await response.body?.cancel();
@@ -359,8 +373,9 @@ export class PersonalContribution {
       !isContributionEmail(email)
     )
       throw fail('invalid');
+    const scope = this.deps.ownerScope();
     const { repository, identity } = await this.requireBinding();
-    const change = this.requireChange(input.runId);
+    const change = this.requireChange(input.runId, scope);
     const auth = { repository, token: identity.token };
     return this.deps.withSourceUse(async () => {
       // 1. The latest official main, independent of the personal version and its baseline.
@@ -422,12 +437,18 @@ export class PersonalContribution {
         ).trim();
         if (!HASH.test(commit)) throw fail('failed');
 
-        // 4. Push the branch to the author's fork; a resubmission updates the same branch.
+        // 4. Decide what an earlier submission's branch may receive *before* moving
+        //    anything: a pull request the maintainers closed keeps its branch and its
+        //    commits exactly as they are, and the resubmission starts a new branch.
+        this.assertScope(scope);
         const store = this.deps.readStore();
         const existing = store[input.runId];
-        // Distinct from local task branches (`cindy-make/<runId>`), which are never shared.
-        const branch = existing?.branch ?? `cindy-make-pr/${input.runId.slice(0, 36)}`;
-        const push = (lease: string) =>
+        const prior = existing
+          ? await this.pullState(existing, githubHeaders(identity.token))
+          : undefined;
+        const updating = existing && prior === 'open' ? existing : undefined;
+        const base = `cindy-make-pr/${input.runId.slice(0, 36)}`;
+        const push = (branch: string, lease: string) =>
           this.git(
             [
               'push',
@@ -446,31 +467,56 @@ export class PersonalContribution {
             code === 'workflowScope' || code === 'github' || code === 'network' ? code : 'failed',
           );
         };
-        try {
-          await push(existing?.commit ?? '');
-        } catch (error) {
-          if (!existing || classifyRemoteGitError(error) !== 'failed') throw pushFailed(error);
-          // The lease only fails when the branch moved; retry once if it no longer exists.
-          const current = await this.git(
-            ['ls-remote', '--refs', PERSONAL_REMOTE_NAME, `refs/heads/${branch}`],
-            { auth },
-          ).catch((lookup: unknown) => {
-            throw pushFailed(lookup);
-          });
-          if (current.trim()) throw pushFailed(error);
-          await push('').catch((retry: unknown) => {
-            throw pushFailed(retry);
-          });
+        let branch = '';
+        this.assertScope(scope);
+        if (updating) {
+          branch = updating.branch;
+          try {
+            await push(branch, updating.commit);
+          } catch (error) {
+            if (classifyRemoteGitError(error) !== 'failed') throw pushFailed(error);
+            // The lease only fails when the branch moved; retry once if it no longer exists.
+            const current = await this.git(
+              ['ls-remote', '--refs', PERSONAL_REMOTE_NAME, `refs/heads/${branch}`],
+              { auth },
+            ).catch((lookup: unknown) => {
+              throw pushFailed(lookup);
+            });
+            if (current.trim()) throw pushFailed(error);
+            await push(branch, '').catch((retry: unknown) => {
+              throw pushFailed(retry);
+            });
+          }
+        } else {
+          // The lease requires the branch not to exist yet, so an earlier submission's
+          // branch (whatever its pull request's state) is never rewritten.
+          for (let attempt = 0; attempt < 4; attempt += 1) {
+            const candidate = attempt ? `${base}-${attempt + 1}` : base;
+            try {
+              await push(candidate, '');
+              branch = candidate;
+              break;
+            } catch (error) {
+              // The name is taken — for example by the earlier submission's own
+              // branch, which is never rewritten — or the push failed; a taken
+              // name is retried under a new one.
+              if (attempt === 3 || classifyRemoteGitError(error) !== 'failed')
+                throw pushFailed(error);
+            }
+          }
+          if (!branch) throw fail('failed');
         }
 
         // 5. Open the pull request, or update the one this change already has.
+        this.assertScope(scope);
         const pull = await this.openPull({
           identity,
           branch,
           title,
           body: input.body,
-          existing,
+          existing: updating,
         });
+        this.assertScope(scope);
         const record: ContributionRecord = {
           runId: input.runId,
           number: pull.number,

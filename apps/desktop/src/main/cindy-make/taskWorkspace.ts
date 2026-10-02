@@ -156,6 +156,8 @@ export async function installCindyMakeWorktree(
   deps: TaskWorkspaceDeps,
   onPhase: (phase: TaskWorkspacePhase) => void = () => {},
   onProgress?: (progress: NonNullable<CindyMakeTaskPreparation['dependencies']>) => void,
+  /** `ignoreScripts`: the content is not verified yet; its lifecycle scripts do not run. */
+  options: { ignoreScripts?: boolean } = {},
 ): Promise<MakeTaskWorkspace> {
   const pnpm = deps.pnpm ?? runSourcePnpm;
   onPhase('installing');
@@ -165,7 +167,13 @@ export async function installCindyMakeWorktree(
   }
   await pnpm(
     deps.processEnvironment,
-    ['install', '--frozen-lockfile', '--prefer-offline', '--prod=false'],
+    [
+      'install',
+      '--frozen-lockfile',
+      '--prefer-offline',
+      '--prod=false',
+      ...(options.ignoreScripts ? ['--ignore-scripts'] : []),
+    ],
     workspace.path,
     signal,
     ...(onProgress ? [onProgress] : []),

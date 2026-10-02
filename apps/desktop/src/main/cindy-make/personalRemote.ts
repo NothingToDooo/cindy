@@ -47,6 +47,7 @@ export interface PersonalRewrite {
   to: string;
 }
 const MAX_REWRITES = 16;
+const MAX_UNVERIFIED_REMOTE = 16;
 
 export interface PersonalRemoteRecord {
   schema: 1;
@@ -64,6 +65,12 @@ export interface PersonalRemoteRecord {
    * fork's version loses nothing even when the rewrite changed patches.
    */
   rewrites?: PersonalRewrite[];
+  /**
+   * Fork tips this computer took over before generating a personal version that
+   * covers them. Their content is not verified yet: the automatic task install
+   * must not run lifecycle scripts on worktrees that contain them.
+   */
+  unverifiedRemote?: string[];
   error?: CindyMakeRemoteError;
   /** Present only while an operation runs; a restart turns it into `interrupted`. */
   running?: RemoteRunKind;
@@ -116,6 +123,12 @@ export function parsePersonalRemoteRecord(raw: string | null): PersonalRemoteRec
       );
       if (rewrites.length) record.rewrites = rewrites.slice(-MAX_REWRITES);
     }
+  }
+  if (Array.isArray(input.unverifiedRemote)) {
+    const tips = input.unverifiedRemote.filter(
+      (tip): tip is string => typeof tip === 'string' && COMMIT.test(tip),
+    );
+    if (tips.length) record.unverifiedRemote = [...new Set(tips)].slice(-MAX_UNVERIFIED_REMOTE);
   }
   if (oneOf(CINDY_MAKE_REMOTE_ERRORS, input.error)) record.error = input.error;
   if (input.running === 'save' || input.running === 'sync' || input.running === 'disconnect')
@@ -210,12 +223,20 @@ interface GithubRepositoryInfo {
  * Create the user's fork, or receive the existing one: GitHub answers a repeated
  * fork request with the account's current fork, including a renamed one. Only a
  * fork of the official repository owned by the connected login is accepted.
+ * When another fork cannot be created any more (422) instead of that repository
+ * being returned, the account's existing fork is located and validated exactly
+ * as strictly as a creation response.
  */
 export async function ensureOfficialFork(
   fetchFn: typeof fetch,
   identity: GithubIdentity,
 ): Promise<string> {
-  const request = async (url: string, init: RequestInit): Promise<GithubRepositoryInfo> => {
+  const request = async (
+    url: string,
+    init: RequestInit,
+    /** The create request reuses the account's existing fork on 422 instead of failing. */
+    tolerate422 = false,
+  ): Promise<GithubRepositoryInfo | undefined> => {
     let response: Response;
     try {
       response = await fetchFn(url, {
@@ -230,6 +251,7 @@ export async function ensureOfficialFork(
     if (!response.ok) {
       await response.body?.cancel();
       if ([401, 403, 404].includes(response.status)) throw remoteError('github');
+      if (tolerate422 && response.status === 422) return undefined;
       throw remoteError(response.status === 422 ? 'forkConflict' : 'failed');
     }
     try {
@@ -238,31 +260,79 @@ export async function ensureOfficialFork(
       throw remoteError('failed');
     }
   };
+  /** A read that only proves a credential works: a missing repository is just absent. */
+  const read = async (url: string): Promise<unknown> => {
+    let response: Response;
+    try {
+      response = await fetchFn(url, {
+        method: 'GET',
+        headers: githubHeaders(identity.token),
+        redirect: 'error',
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch {
+      throw remoteError('network');
+    }
+    if (!response.ok) {
+      await response.body?.cancel();
+      if ([401, 403].includes(response.status)) throw remoteError('github');
+      return undefined;
+    }
+    return (await response.json().catch(() => undefined)) as unknown;
+  };
   const official = (name: unknown) =>
     typeof name === 'string' && name.toLowerCase() === OFFICIAL_GITHUB_REPOSITORY;
-  let repository = await request(`${API}/repos/${OFFICIAL_GITHUB_REPOSITORY}/forks`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ default_branch_only: true }),
-  });
-  if (
+  /** The strict check of a creation response also applies to a located fork. */
+  const accepted = (repository: GithubRepositoryInfo): string | undefined => {
+    const name = repository.full_name;
+    return isGithubRepository(name) &&
+      repository.fork === true &&
+      sameGithubLogin(name.split('/')[0], identity.login) &&
+      sameGithubLogin(
+        typeof repository.owner?.login === 'string' ? repository.owner.login : undefined,
+        identity.login,
+      ) &&
+      (official(repository.parent?.full_name) || official(repository.source?.full_name))
+      ? name
+      : undefined;
+  };
+  /** The account's own fork of the official repository, wherever it was renamed to. */
+  const existingFork = async (): Promise<GithubRepositoryInfo> => {
+    const canonical = await read(`${API}/repos/${identity.login}/cindy`);
+    if (canonical && accepted(canonical as GithubRepositoryInfo))
+      return canonical as GithubRepositoryInfo;
+    for (let page = 1; page <= 3; page += 1) {
+      const listed = await read(
+        `${API}/user/repos?per_page=100&page=${page}&affiliation=owner&sort=pushed`,
+      );
+      if (!Array.isArray(listed)) break;
+      for (const entry of listed as Array<{ full_name?: unknown; fork?: unknown }>) {
+        if (entry?.fork !== true || !isGithubRepository(entry.full_name)) continue;
+        const full = await read(`${API}/repos/${entry.full_name}`);
+        if (full && accepted(full as GithubRepositoryInfo)) return full as GithubRepositoryInfo;
+      }
+      if ((listed as unknown[]).length < 100) break;
+    }
+    throw remoteError('forkConflict');
+  };
+  let repository = await request(
+    `${API}/repos/${OFFICIAL_GITHUB_REPOSITORY}/forks`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ default_branch_only: true }),
+    },
+    true,
+  );
+  if (!repository) repository = await existingFork();
+  else if (
     isGithubRepository(repository.full_name) &&
     repository.parent === undefined &&
     repository.source === undefined
   )
     repository = await request(`${API}/repos/${repository.full_name}`, { method: 'GET' });
-  const name = repository.full_name;
-  if (
-    !isGithubRepository(name) ||
-    repository.fork !== true ||
-    !sameGithubLogin(name.split('/')[0], identity.login) ||
-    !sameGithubLogin(
-      typeof repository.owner?.login === 'string' ? repository.owner.login : undefined,
-      identity.login,
-    ) ||
-    !(official(repository.parent?.full_name) || official(repository.source?.full_name))
-  )
-    throw remoteError('forkConflict');
+  const name = repository ? accepted(repository) : undefined;
+  if (!name) throw remoteError('forkConflict');
   return name;
 }
 
@@ -692,16 +762,20 @@ export class PersonalRemoteController {
   async syncBeforeTask(timeoutMs = 120_000): Promise<void> {
     const record = this.deps.read();
     if (!record.repository || record.choice !== 'github') return;
-    await this.settled();
-    if (!this.runningKind) this.sync();
+    // One budget covers the whole wait: an operation already running is awaited
+    // within it too, so a new task never stalls here longer than `timeoutMs`
+    // even when an earlier sync waits for fork readiness or network.
     let timer: ReturnType<typeof setTimeout> | undefined;
-    await Promise.race([
-      this.settled(),
-      new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, timeoutMs);
-      }),
-    ]);
-    if (timer) clearTimeout(timer);
+    const budget = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, timeoutMs);
+    });
+    try {
+      await Promise.race([this.settled(), budget]);
+      if (!this.runningKind) this.sync();
+      await Promise.race([this.settled(), budget]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   /**
@@ -734,7 +808,12 @@ export class PersonalRemoteController {
   keepLocal(): CindyMakePersonalRemoteState {
     const record = this.deps.read();
     if (this.runningKind || record.repository) return this.state();
-    this.deps.write({ schema: 1, choice: 'local' });
+    // Stopping the sharing keeps the content trust facts of what was already taken over.
+    this.deps.write({
+      schema: 1,
+      choice: 'local',
+      ...(record.unverifiedRemote ? { unverifiedRemote: record.unverifiedRemote } : {}),
+    });
     return this.publish();
   }
 
@@ -746,7 +825,12 @@ export class PersonalRemoteController {
         if (this.deps.sourceExists() && (await this.remoteUrl()) !== undefined)
           await this.git(['remote', 'remove', PERSONAL_REMOTE_NAME]);
       });
-      this.deps.write({ schema: 1, choice: 'local' });
+      const { unverifiedRemote } = this.deps.read();
+      this.deps.write({
+        schema: 1,
+        choice: 'local',
+        ...(unverifiedRemote ? { unverifiedRemote } : {}),
+      });
     });
     await this.settled();
     return this.state();
@@ -1088,6 +1172,19 @@ export class PersonalRemoteController {
     this.update({ rewrites: [...(record.rewrites ?? []), { from, to }].slice(-MAX_REWRITES) });
   }
 
+  /**
+   * Remember a tip taken over from the fork before this computer verified it:
+   * until a generated personal version covers it, the automatic task install
+   * must not run lifecycle scripts on worktrees containing it.
+   */
+  recordUnverifiedRemote(commit: string): void {
+    if (!COMMIT.test(commit)) return;
+    const record = this.deps.read();
+    const known = record.unverifiedRemote ?? [];
+    if (known.includes(commit)) return;
+    this.update({ unverifiedRemote: [...known, commit].slice(-MAX_UNVERIFIED_REMOTE) });
+  }
+
   /** Moving the checkout needs an idle, clean source on the personal branch. */
   private async movable(): Promise<boolean> {
     return (
@@ -1304,6 +1401,7 @@ export class PersonalRemoteController {
             if (!(await this.movable())) throw remoteError('source');
             await this.git(['reset', '--keep', remote]);
             if ((await this.readLocalTip()) !== remote) throw remoteError('source');
+            this.recordUnverifiedRemote(remote);
             await this.git(['update-ref', PERSONAL_UPSTREAM_REF, remoteBase]);
             this.update({
               sync: this.deps.isBuilt(remote) ? 'synced' : 'retrieved',
@@ -1368,6 +1466,7 @@ export class PersonalRemoteController {
       ]);
       await this.git(['reset', '--keep', remote]);
       if ((await this.readLocalTip()) !== remote) throw remoteError('source');
+      this.recordUnverifiedRemote(remote);
       await this.git(['update-ref', PERSONAL_UPSTREAM_REF, decided.base]);
       return decided;
     });
@@ -1430,6 +1529,7 @@ export class PersonalRemoteController {
           ]);
           await this.git(['reset', '--keep', decision.local]);
           if ((await this.readLocalTip()) !== decision.local) throw remoteError('source');
+          if (remote) this.recordUnverifiedRemote(remote);
           await this.git(['update-ref', PERSONAL_UPSTREAM_REF, base]);
           return true;
         });

@@ -196,6 +196,31 @@ it('refuses when the conflicting one of two same-second task commits is skipped'
   }
 }, 60_000);
 
+it('names a change whose edits a resolved rebase kept only half of', async () => {
+  const h = await repos();
+  try {
+    // One change, two edits; the conflict resolution keeps only the second one.
+    await h.write(h.source, 'feature.txt', replace(0, 'alpha', replace(4, 'beta')));
+    const partial = await h.commit(h.source, '', 3_000);
+    await h.write(h.official, 'feature.txt', replace(0, 'official'));
+    const target = await h.commit(h.official, 'official v2');
+    const state = await prepareUpstreamMerge(h.userData, update(h, target), h.git, async () => {});
+    expect(state.status).toBe('conflict');
+    const worktree = mergeWorktree(h.userData, state.id);
+    // The replayed commit keeps the author, time and title of `partial`, but its
+    // first edit is gone: identity alone must not mark the change as kept.
+    await h.write(worktree, 'feature.txt', replace(0, 'official', replace(4, 'beta')));
+    await h.git(['add', '-A'], worktree);
+    await h.git([...h.identity(true), 'rebase', '--continue'], worktree);
+    await expect(applyUpstreamMerge(h.userData, state, h.git)).rejects.toMatchObject({
+      code: 'checksFailed',
+      missing: { count: 1, commits: [partial] },
+    });
+  } finally {
+    await h.clean();
+  }
+}, 60_000);
+
 it('keeps a merge commit’s own edits: missing until the resolver puts them back', async () => {
   const h = await repos();
   try {

@@ -23,6 +23,7 @@ function harness(overrides: Partial<ContributionDeps> = {}) {
   let store: Record<string, ContributionRecord> = {};
   const deps: ContributionDeps = {
     source: 'source',
+    ownerScope: () => 'owner-1',
     binding: () => ({ schema: 1, choice: 'github', login: 'octo', repository: 'octo/cindy' }),
     identity: async () => ({ status: 'connected', identity: { login: 'octo', token: TOKEN } }),
     git: vi.fn(async (args: string[]) => {
@@ -151,6 +152,57 @@ describe('PersonalContribution', () => {
         code: 'invalid',
       });
     expect(deps.git).not.toHaveBeenCalled();
+  });
+
+  it('stops the submission when the Cindy account changes while it runs', async () => {
+    let scope = 'owner-1';
+    const writes: unknown[] = [];
+    const git = vi.fn(async (args: string[]) => {
+      const op = args.includes('commit-tree')
+        ? 'commit-tree'
+        : args.includes('write-tree')
+          ? 'write-tree'
+          : args[0];
+      switch (op) {
+        case 'fetch':
+        case 'read-tree':
+        case 'apply':
+          return '';
+        case 'diff':
+          return args.includes('--name-only') ? 'app.txt\0' : '';
+        case 'ls-files':
+          return '';
+        case 'rev-parse':
+          return args[1]?.includes('{tree}') ? A : B;
+        case 'write-tree':
+          return B;
+        case 'commit-tree':
+          // The account switch happens while the submission is doing its Git work.
+          scope = 'owner-2';
+          return A;
+        default:
+          throw new Error('unexpected git ' + args.join(' '));
+      }
+    });
+    const { contribution } = harness({
+      ownerScope: () => scope,
+      git: git as unknown as ContributionDeps['git'],
+      writeStore: (store) => {
+        writes.push(store);
+      },
+    });
+    await expect(
+      contribution.submit({
+        runId: 'run',
+        title: 'feat: x',
+        body: '',
+        name: 'Ada',
+        email: 'ada@example.com',
+      }),
+    ).rejects.toMatchObject({ code: 'account' });
+    // The other account's ledger stays empty and its identity never pushes.
+    expect(writes).toEqual([]);
+    expect(git.mock.calls.some(([args]) => args[0] === 'push')).toBe(false);
   });
 
   it('reports pull request states and caches them briefly', async () => {

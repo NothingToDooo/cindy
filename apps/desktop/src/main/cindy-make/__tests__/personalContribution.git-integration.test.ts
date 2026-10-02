@@ -96,6 +96,7 @@ async function fixture(conflict: boolean) {
   });
   const contribution = new PersonalContribution({
     source,
+    ownerScope: () => 'owner-1',
     binding: () => ({ schema: 1, choice: 'github', login: 'octo', repository: 'octo/cindy' }),
     identity: async () => ({ status: 'connected', identity: { login: 'octo', token: TOKEN } }),
     git,
@@ -189,6 +190,27 @@ it('opens a pull request with only this change, on the latest official main, sig
       'feat: 再次提交',
     );
     expect(h.store()['run-1']).toMatchObject({ number: 8, branch: 'cindy-make-pr/run-1' });
+
+    // With the closed pull request's branch still on the fork, the resubmission is
+    // again a new pull request — from a new branch, leaving the old commits alone.
+    h.github.state = 'closed';
+    const oldHead = (await h.raw(['rev-parse', branch], h.fork)).trim();
+    await expect(
+      h.contribution.submit({ ...draft, runId: 'run-1', title: 'feat: 不改写旧分支' }),
+    ).resolves.toMatchObject({ number: 9, state: 'open' });
+    expect((await h.raw(['rev-parse', branch], h.fork)).trim()).toBe(oldHead);
+    expect((await h.raw(['log', '-1', '--format=%s', branch], h.fork)).trim()).toBe(
+      'feat: 再次提交',
+    );
+    const resubmitted = 'refs/heads/cindy-make-pr/run-1-2';
+    expect((await h.raw(['log', '-1', '--format=%s', resubmitted], h.fork)).trim()).toBe(
+      'feat: 不改写旧分支',
+    );
+    expect(h.store()['run-1']).toMatchObject({ number: 9, branch: 'cindy-make-pr/run-1-2' });
+    const created = h.fetchFn.mock.calls.filter(([, init]) => init?.method === 'POST').at(-1);
+    expect(JSON.parse(String(created?.[1]?.body))).toMatchObject({
+      head: 'octo:cindy-make-pr/run-1-2',
+    });
   } finally {
     await h.clean();
   }

@@ -63,7 +63,7 @@ vi.mock('../../device-link/broadcast-tap.js', () => ({
   captureDataOwnerBroadcastScope: () => ({}),
   isDataOwnerBroadcastScopeCurrent: () => harness.current,
 }));
-vi.mock('../../logger.js', () => ({ createLogger: () => ({ warn: vi.fn() }) }));
+vi.mock('../../logger.js', () => ({ createLogger: () => ({ warn: vi.fn(), info: vi.fn() }) }));
 vi.mock('../../i18n.js', () => ({ t: (key: string) => key }));
 vi.mock('../../maker-ipc/sessionRuntimeControl.js', () => ({
   getSessionRuntimeControlSnapshot: () => ({ effectiveOverride: harness.effective }),

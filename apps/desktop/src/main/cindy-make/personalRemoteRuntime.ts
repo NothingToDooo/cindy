@@ -42,7 +42,7 @@ import {
   PersonalContribution,
   parseContributionStore,
 } from './personalContribution.js';
-import { ownerScopedUserDataPath } from '../appSessionState.js';
+import { activeOwnerScopeKey, ownerScopedUserDataPath } from '../appSessionState.js';
 import {
   CONTRIBUTION_LIMITS,
   type CindyMakeContributionDraft,
@@ -112,6 +112,7 @@ export function configurePersonalRemote(): void {
   const contributions = () => ownerScopedUserDataPath('cindy-make-contributions.json');
   contribution = new PersonalContribution({
     source,
+    ownerScope: () => activeOwnerScopeKey(),
     binding: read,
     identity,
     git,

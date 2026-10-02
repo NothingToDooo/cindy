@@ -396,9 +396,81 @@ async function alreadyCarried(
   }
 }
 
-/** The edits of a commit without context or line numbers: unchanged when only nearby lines moved. */
-async function bareEdits(git: MergeGit, cwd: string, commit: string): Promise<string | undefined> {
+/**
+ * Whether every edit of `commit` survived into `result`: each added line's words
+ * still all sit within one line of the file it was added to (a resolution that merged
+ * both sides' edits into one line keeps the content, even when the patch changed),
+ * and each removed line is gone from that file. A resolution that kept just part of
+ * the change does not pass.
+ */
+async function editsSurvive(
+  git: MergeGit,
+  cwd: string,
+  commit: string,
+  result: string,
+): Promise<boolean> {
   const diff = await git(
+    ['show', '-U0', '--no-color', '--no-ext-diff', '--no-renames', '--format=', commit],
+    cwd,
+  );
+  // Output at the capture limit may be cut: a partial verdict never counts as kept.
+  if (diff.length >= 60 * 1024) return false;
+  const edits = new Map<string, { added: string[]; removed: string[] }>();
+  let file: string | undefined;
+  let previous: string | undefined;
+  for (const line of diff.split(/\r?\n/)) {
+    if (line.startsWith('--- ')) {
+      const source = line.slice(4).trim();
+      previous = source.startsWith('b/') ? source.slice(2) : undefined;
+      continue;
+    }
+    if (line.startsWith('+++ ')) {
+      const target = line.slice(4).trim();
+      file = target.startsWith('b/') ? target.slice(2) : previous;
+      if (file) edits.set(file, { added: [], removed: [] });
+      continue;
+    }
+    const bucket = file ? edits.get(file) : undefined;
+    if (!bucket) continue;
+    const content = line.slice(1).trim();
+    if (!content) continue;
+    if (line.startsWith('+') && !line.startsWith('+++ ')) bucket.added.push(content);
+    else if (line.startsWith('-') && !line.startsWith('--- ')) bucket.removed.push(content);
+  }
+  for (const [name, { added, removed }] of edits) {
+    const content = await git(['show', `${result}:${name}`], cwd).catch(() => '');
+    const lines = content.split(/\r?\n/);
+    const wordsOf = (line: string) => new Set(line.split(/\s+/).filter(Boolean));
+    const present = (content: string) => {
+      const needed = [...wordsOf(content)];
+      return lines.some((line) => {
+        const words = wordsOf(line);
+        return needed.every((word) => words.has(word));
+      });
+    };
+    if (added.some((line) => !present(line)) || removed.some((line) => lines.includes(line)))
+      return false;
+  }
+  return true;
+}
+
+/** A resolved rebase's own commit for a change vouches only for content it kept. */
+async function rebaseKeptChange(
+  git: MergeGit,
+  cwd: string,
+  commit: string,
+  made: string,
+  result: string,
+  resultTree: string,
+): Promise<boolean> {
+  const own = await bareEdits(git, cwd, commit);
+  if (own !== undefined && own === (await bareEdits(git, cwd, made))) return true;
+  if (await alreadyCarried(git, cwd, `${commit}^`, commit, result, resultTree)) return true;
+  return editsSurvive(git, cwd, commit, result);
+}
+
+/** The edits of a commit without context or line numbers: unchanged when only nearby lines moved. */
+async function bareEdits(git: MergeGit, cwd: string, commit: string): Promise<string | undefined> {  const diff = await git(
     ['show', '-U0', '--no-color', '--no-ext-diff', '--no-renames', '--format=', commit],
     cwd,
   );
@@ -417,7 +489,10 @@ async function bareEdits(git: MergeGit, cwd: string, commit: string): Promise<st
  * - with the same patch anywhere in the result;
  * - as the commit a resolved rebase made for it: with its author, author time and
  *   message, made by this rebase (`onto..result`) and not itself the same patch as a
- *   replayed change. Task commits share a generic identity, so the time is what tells
+ *   replayed change, and only after its content is checked (the same edits, the
+ *   change's content already in the result, or every edit surviving into the result's
+ *   files: a resolution that kept just part of the change keeps the identity too and
+ *   must not vouch). Task commits share a generic identity, so the time is what tells
  *   them apart; each such commit vouches for one change only;
  * - as the kept side's own rewrite of it (another computer's earlier update of the
  *   same change): the same identity and the same edits apart from context;
@@ -493,7 +568,11 @@ export async function uncarriedChanges(
       if (!created.has(voucher.commit)) {
         const own = await editsOf(commit);
         if (own === undefined || own !== (await editsOf(voucher.commit))) continue;
-      }
+      } else if (!(await rebaseKeptChange(git, cwd, commit, voucher.commit, result, resultTree)))
+        // A rebase-made commit keeps the author, author time and title even when the
+        // resolution dropped part of the change's edits: it vouches only after the
+        // change's content has been checked against the result.
+        continue;
       voucher.used = true;
       vouched = true;
       break;
