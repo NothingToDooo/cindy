@@ -459,12 +459,17 @@ async function editsSurvive(
     if (touched > added.length + removed.length) return false;
     const content = await git(['show', `${result}:${name}`], cwd).catch(() => '');
     const lines = content.split(/\r?\n/);
-    const wordsOf = (line: string) => new Set(line.split(/\s+/).filter(Boolean));
+    const wordsOf = (line: string) => line.split(/\s+/).filter(Boolean);
+    // Ordered, multiplicity-preserving subsequence: an adapted line may fuse in
+    // words of the other side, but reordering or dropping words is not "kept"
+    // (`return a - b` is not `return b - a`).
     const present = (content: string) => {
-      const needed = [...wordsOf(content)];
+      const needed = wordsOf(content);
       return lines.some((line) => {
         const words = wordsOf(line);
-        return needed.every((word) => words.has(word));
+        let at = 0;
+        for (const word of words) if (word === needed[at]) at += 1;
+        return at === needed.length;
       });
     };
     const stillThere = (content: string) => lines.some((line) => line.trim() === content);

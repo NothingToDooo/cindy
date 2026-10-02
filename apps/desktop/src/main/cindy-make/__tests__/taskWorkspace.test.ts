@@ -68,6 +68,7 @@ describe('prepareCindyMakeWorkspace', () => {
 
   it('runs no lifecycle scripts and no pnpm hooks for unverified synced content', async () => {
     const pnpm = vi.fn(async () => undefined);
+    const git = vi.fn(async () => '');
     const worktreePath = path.join(userData, 'cindy-make', 'worktrees', 'run-9');
     await installCindyMakeWorktree(
       userData,
@@ -75,6 +76,7 @@ describe('prepareCindyMakeWorkspace', () => {
       new AbortController().signal,
       {
         processEnvironment: { PATH: '', npm_config_registry: 'http://attacker.invalid' },
+        git,
         pnpm,
       },
       undefined,
@@ -95,6 +97,28 @@ describe('prepareCindyMakeWorkspace', () => {
       worktreePath,
       expect.anything(),
     );
+  });
+
+  it('refuses to install unverified content through a tracked node_modules link', async () => {
+    const pnpm = vi.fn(async () => undefined);
+    const git = vi.fn(async () =>
+      ['120000 0123456789abcdef 0\tnode_modules', '100644 0123456789abcdef 0\tpackage.json'].join(
+        '\n',
+      ),
+    );
+    const worktreePath = path.join(userData, 'cindy-make', 'worktrees', 'run-10');
+    await expect(
+      installCindyMakeWorktree(
+        userData,
+        { path: worktreePath, branch: 'cindy-make/run-10', baseCommit: 'b'.repeat(40) },
+        new AbortController().signal,
+        { processEnvironment: { PATH: '' }, git, pnpm },
+        undefined,
+        undefined,
+        { ignoreScripts: true },
+      ),
+    ).rejects.toMatchObject({ code: 'gitFailed' });
+    expect(pnpm).not.toHaveBeenCalled();
   });
 
   it('reuses an existing worktree on the task branch and refuses a foreign directory', async () => {

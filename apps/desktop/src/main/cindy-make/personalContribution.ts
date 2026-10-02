@@ -605,19 +605,20 @@ export class PersonalContribution {
     };
     const pulls = `${API}/repos/${OFFICIAL_GITHUB_REPOSITORY}/pulls`;
     if (input.existing) {
-      // A merged or closed pull request is the maintainers' decision and stays as it
-      // is; the resubmission is a new pull request. Only an open one is edited.
+      // The dialog promised "update": this pull request is edited in place. A state
+      // that changed under way (a maintainer closed it mid-flight) aborts instead of
+      // publishing a second PR the user never confirmed.
       const current = await request(`${pulls}/${input.existing.number}`, { method: 'GET' });
       const open = current.ok ? !(await parse(current)).closed : false;
       if (!current.ok) await current.body?.cancel();
-      if (open) {
-        const response = await request(`${pulls}/${input.existing.number}`, {
-          method: 'PATCH',
-          body: JSON.stringify({ title: input.title, body: input.body }),
-        });
-        if (response.ok) return parse(response);
-        await response.body?.cancel();
-      }
+      if (!open) throw fail('failed');
+      const response = await request(`${pulls}/${input.existing.number}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ title: input.title, body: input.body }),
+      });
+      if (response.ok) return parse(response);
+      await response.body?.cancel();
+      throw fail('failed');
     }
     const created = await request(pulls, {
       method: 'POST',

@@ -316,6 +316,79 @@ describe('PersonalContribution', () => {
     expect(git).not.toHaveBeenCalled();
   });
 
+  it('aborts instead of opening a second pull request when the first closes mid-flight', async () => {
+    let store: Record<string, ContributionRecord> = {
+      run: {
+        runId: 'run',
+        number: 3,
+        url: 'https://github.com/makecindy/cindy/pull/3',
+        branch: 'cindy-make-pr/run',
+        commit: A,
+        submittedAt: 1,
+      },
+    };
+    const git = vi.fn(async (args: string[]) => {
+      const op = args.includes('commit-tree')
+        ? 'commit-tree'
+        : args.includes('write-tree')
+          ? 'write-tree'
+          : args[0];
+      switch (op) {
+        case 'fetch':
+        case 'read-tree':
+        case 'apply':
+        case 'push':
+          return '';
+        case 'diff':
+          return args.includes('--name-only') ? 'app.txt\0' : '';
+        case 'ls-files':
+          return '';
+        case 'rev-parse':
+          return args[1]?.includes('{tree}') ? A : B;
+        case 'write-tree':
+        case 'commit-tree':
+          return B;
+        default:
+          throw new Error('unexpected git ' + args.join(' '));
+      }
+    });
+    let reads = 0;
+    const fetchFn = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).endsWith('/pulls/3')) {
+        reads += 1;
+        return new Response(
+          JSON.stringify({
+            number: 3,
+            html_url: 'https://github.com/makecindy/cindy/pull/3',
+            // Open when the submission checked, closed before it could update.
+            state: reads === 1 ? 'open' : 'closed',
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response('{}', { status: 404 });
+    });
+    const { contribution } = harness({
+      git: git as unknown as ContributionDeps['git'],
+      fetch: fetchFn as unknown as typeof fetch,
+      readStore: () => structuredClone(store),
+      writeStore: (next) => {
+        store = structuredClone(next);
+      },
+    });
+    await expect(
+      contribution.submit({
+        runId: 'run',
+        title: 'feat: x',
+        body: '',
+        name: 'Ada',
+        email: 'ada@example.com',
+      }),
+    ).rejects.toMatchObject({ code: 'failed' });
+    // The dialog promised "update": no second public PR was created behind it.
+    expect(fetchFn.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+  });
+
   it('reports pull request states and caches them briefly', async () => {
     const fetchFn = vi.fn(async (url: string | URL | Request) =>
       String(url).endsWith('/1')

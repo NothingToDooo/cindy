@@ -165,6 +165,24 @@ export async function installCindyMakeWorktree(
   if (!isCindyMakeWorktreePath(userData, workspace.path)) {
     throw Object.assign(new Error('invalid task workspace'), { code: 'gitFailed' });
   }
+  if (options.ignoreScripts) {
+    // Unverified synced content must not point pnpm's write roots outside the
+    // worktree: a tracked `node_modules` symlink would have it install through
+    // the link, writing wherever it points.
+    const git = deps.git ?? runSourceGit;
+    const listed = await git(
+      deps.processEnvironment,
+      ['ls-files', '-s'],
+      workspace.path,
+      signal,
+    );
+    const linkedWriteRoot = listed.split(/\r?\n/).some((line) => {
+      const tab = line.indexOf('\t');
+      return line.startsWith('120000') && tab >= 0 && line.slice(tab + 1).split(/[\\/]/).includes('node_modules');
+    });
+    if (linkedWriteRoot)
+      throw Object.assign(new Error('tracked node_modules link'), { code: 'gitFailed' });
+  }
   await pnpm(
     options.ignoreScripts
       ? // Unverified synced content runs no install-time code: no lifecycle scripts
