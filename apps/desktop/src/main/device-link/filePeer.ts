@@ -892,7 +892,9 @@ export async function tryUploadPeerAttachment(
       const size = handle ? (await handle.stat()).size : (source as Buffer).length;
       if (!size) return null;
       // 读整份文件算摘要之前先确认对端能收:对端离线、旧版或不支持时不白读一遍(随后还要走 OSS)。
-      if (!canSendPeerAttachment(await peerAttachmentCaps(peer, invoke), size)) return null;
+      // The probe is the one wait with no checkpoint of its own; a late answer is ignored.
+      const caps = await untilAborted(peerAttachmentCaps(peer, invoke), signal);
+      if (!canSendPeerAttachment(caps, size)) return null;
       checkActive();
       const read = async (offset: number, length: number) => {
         checkActive();
@@ -958,9 +960,10 @@ export async function tryUploadPeerAttachment(
       await handle?.close();
     }
   };
-  // A cancelled upload returns at once from any step (queue, capability probe, hashing, setup,
-  // blocks); the abandoned work stops at its next checkpoint and late results are ignored.
-  return untilAborted(queuePeerRead(peer, upload, signal), signal);
+  // Cancellation is prompt because every wait inside `upload` honours the signal (queue, probe,
+  // hashing, setup, blocks) — never by racing the caller ahead: the call settles only after its
+  // `finally` has closed the source file, so the caller may delete it straight away (Windows).
+  return queuePeerRead(peer, upload, signal);
 }
 /** Cold reads use WSS immediately; a single background setup prepares subsequent reads. */
 export async function tryPeerInvoke(

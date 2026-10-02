@@ -296,6 +296,38 @@ describe('uploadLocalFile — bounded snapshots', () => {
   });
 });
 
+describe('uploadLocalFile — 流式上传取消', () => {
+  it('取消时等源文件流真正关闭后才返回(Windows 删除暂存目录前文件必须已关闭)', async () => {
+    const size = __testing.STREAM_THRESHOLD + 1;
+    statMock.mockResolvedValue({ isFile: () => true, size });
+    // Slow close, like a busy disk: a caller that settles early would observe `closed === false`.
+    const source = new Readable({
+      read() {
+        this.push(Buffer.alloc(1024, 1));
+      },
+      destroy(error, callback) {
+        setTimeout(() => callback(error), 30);
+      },
+    });
+    createReadStreamMock.mockImplementation(() => source);
+    const abort = new AbortController();
+    undiciFetchMock.mockImplementation(
+      (_url: string, init: RequestInit) =>
+        new Promise((_, reject) => {
+          init.signal?.addEventListener('abort', () =>
+            reject(new DOMException('aborted', 'AbortError')),
+          );
+          abort.abort();
+        }),
+    );
+    const settled = await uploadLocalFile('/tmp/big.mp4', { signal: abort.signal }).then(
+      () => ({ error: '', closed: source.closed }),
+      (error: Error) => ({ error: error.message, closed: source.closed }),
+    );
+    expect(settled).toEqual({ error: 'UPLOAD_CANCELLED', closed: true });
+  });
+});
+
 describe('uploadLocalFile — 大文件流式 PUT', () => {
   it('超阈值 → body 为 ReadableStream + duplex half,不读进内存', async () => {
     const size = __testing.STREAM_THRESHOLD + 1;

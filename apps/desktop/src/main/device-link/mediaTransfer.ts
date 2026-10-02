@@ -438,6 +438,8 @@ export async function uploadLocalFile(
   // A presign creates no object, so a result that arrives after cancellation needs no cleanup.
   const { putUrl, key } = await abortable(presignPut(size, ext, contentType), opts.signal);
   let sha256: string;
+  // Settles once the latest streaming attempt has released the local file.
+  let sourceClosed: Promise<void> | undefined;
 
   try {
     if (size <= STREAM_THRESHOLD) {
@@ -488,6 +490,7 @@ export async function uploadLocalFile(
             localPath,
             opts.maxBytes !== undefined ? { end: size } : undefined,
           );
+          sourceClosed = new Promise((resolve) => source.once('close', () => resolve()));
           const hasher = createHash('sha256');
           const current: StreamAttempt = {
             sent: 0,
@@ -548,7 +551,9 @@ export async function uploadLocalFile(
     // Cleanup is best-effort after every post-presign transfer failure; a cancelled upload
     // does not wait for it.
     const removing = removeRemote(key);
-    if (!opts.signal?.aborted) await removing;
+    // A cancelled upload skips the network wait but still returns only after the file is closed,
+    // so the caller can delete it at once (Windows cannot remove an open file).
+    await (opts.signal?.aborted ? sourceClosed : removing);
     throw error;
   }
   log.debug(`uploaded key=${key} size=${size} ct=${contentType} integrity=sha256`);

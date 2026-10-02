@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, rm, writeFile, truncate } from 'node:fs/promises';
+import { promises as fsPromises } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 const mock = vi.hoisted(() => ({
@@ -486,9 +487,10 @@ describe('authorized file peer source', () => {
     // The connection stays up, so the target is still told to drop the partial staging.
     await vi.waitFor(() => expect(ops().at(-1)).toBe('cancel'));
   });
-  it('returns at once when cancelled while the capability probe is unanswered', async () => {
+  it('returns at once when cancelled during the capability probe, with the source already closed', async () => {
     const source = path.join(directory, 'upload');
     await writeFile(source, 'hello');
+    const opened = vi.spyOn(fsPromises, 'open');
     let answer!: (value: unknown) => void;
     const invoke = vi.fn(
       () =>
@@ -506,8 +508,24 @@ describe('authorized file peer source', () => {
       abort.signal,
     );
     await vi.waitFor(() => expect(invoke).toHaveBeenCalled());
+    const handle = await (opened.mock.results[0].value as ReturnType<typeof fsPromises.open>);
+    // A slow close (like a busy disk) makes a caller that settles early observable.
+    const close = handle.close.bind(handle);
+    let closed = false;
+    handle.close = async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      await close();
+      closed = true;
+    };
     abort.abort();
-    await expect(upload).rejects.toThrow('FILE_PEER_CANCELLED');
+    // The caller may delete the file straight away (Windows), so the close must have finished
+    // when the call settles — not still be running in the background.
+    const settled = await upload.then(
+      () => ({ error: '', closed }),
+      (error: Error) => ({ error: error.message, closed }),
+    );
+    opened.mockRestore();
+    expect(settled).toEqual({ error: 'FILE_PEER_CANCELLED', closed: true });
     // The late probe result is ignored: nothing is hashed or sent afterwards.
     answer({ ok: true, result: { version: 1, streaming: true, attachments: true } });
     await new Promise((resolve) => setTimeout(resolve, 20));
