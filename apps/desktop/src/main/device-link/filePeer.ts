@@ -870,7 +870,7 @@ export async function tryUploadPeerAttachment(
     check();
     if (signal?.aborted) throw new Error('FILE_PEER_CANCELLED');
   };
-  return queuePeerRead(peer, async () => {
+  const upload = async () => {
     checkActive();
     if (cooldown.remaining(peer)) return null;
     let handle: FileHandle | undefined;
@@ -944,7 +944,9 @@ export async function tryUploadPeerAttachment(
       if (active) active.busy = false;
       await handle?.close();
     }
-  });
+  };
+  // The signal also drops an upload still waiting behind another transfer to this peer.
+  return queuePeerRead(peer, upload, signal);
 }
 /** Cold reads use WSS immediately; a single background setup prepares subsequent reads. */
 export async function tryPeerInvoke(

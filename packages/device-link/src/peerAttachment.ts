@@ -102,6 +102,7 @@ export async function uploadPeerAttachment(
     throw new Error("INVALID_PEER_ATTACHMENT");
   const window = stream ? PEER_ATTACHMENT_STREAM_WINDOW : 1;
   // A queued block waits behind the others on the wire, so its deadline covers the whole window.
+  // The receiver only drops a body that stalls, so it never cuts a block off before this deadline.
   const writeTimeoutMs = stream ? 15_000 * window : undefined;
   const inFlight: Promise<number>[] = [];
   let failed = false;

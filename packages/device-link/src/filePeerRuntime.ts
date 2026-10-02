@@ -101,6 +101,9 @@ export function createFilePeerRuntime(bridge: FilePeerRuntimeBridge) {
     // A body's binary frames directly follow its last JSON fragment: send() emits a whole
     // message synchronously on an ordered channel, so nothing can interleave.
     let receivingBody: string | undefined;
+    // An incomplete message closes the connection only after this long without any new frame:
+    // a slow but live link keeps a body alive however long it takes.
+    const stallMs = 15000;
     let sequence = 0;
     let active = 0;
     const send = (
@@ -156,10 +159,13 @@ export function createFilePeerRuntime(bridge: FilePeerRuntimeBridge) {
         throw new Error();
       f.body.parts.push(bytes);
       f.body.remaining -= bytes.length;
-      if (f.body.remaining) return;
+      clearTimeout(f.timer);
+      if (f.body.remaining) {
+        f.timer = setTimeout(() => close(id), stallMs);
+        return;
+      }
       const key = receivingBody!;
       receivingBody = undefined;
-      clearTimeout(f.timer);
       fragments.delete(key);
       const body = new Uint8Array(
         f.body.parts.reduce((sum, part) => sum + part.length, 0),
@@ -207,14 +213,15 @@ export function createFilePeerRuntime(bridge: FilePeerRuntimeBridge) {
         let f = fragments.get(key);
         if (!f) {
           if (fragments.size >= 8) throw new Error();
-          f = { data: "", timer: setTimeout(() => close(id), 15000) };
+          f = { data: "", timer: setTimeout(() => close(id), stallMs) };
           fragments.set(key, f);
         }
         f.data += m.data;
         if (f.data.length > 4 * 1024 * 1024) throw new Error();
         if (!m.last) return;
         if (m.body !== undefined) {
-          // The fragment timer keeps running until the whole body has arrived.
+          clearTimeout(f.timer);
+          f.timer = setTimeout(() => close(id), stallMs);
           f.body = { remaining: m.body, parts: [] };
           receivingBody = key;
           return;

@@ -450,6 +450,42 @@ describe('authorized file peer source', () => {
     expect(await tryUploadPeerAttachment(peer, source, undefined, invoke)).toContain(ticket);
     expect(ops().at(-1)).toBe('finish');
   });
+  it('drops a cancelled upload still queued behind another transfer on the same peer', async () => {
+    const peer = 'queued-cancel-peer';
+    const source = path.join(directory, 'upload');
+    await writeFile(source, 'hello');
+    const invoke = vi.fn(async (_peer: string, _channel: string, args: unknown[]) => {
+      const action = (args[0] as { action: string }).action;
+      return {
+        ok: true,
+        result:
+          action === 'caps'
+            ? { version: 1, streaming: true, attachments: true, streamAttachments: true }
+            : action === 'open'
+              ? { ticket: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', size: 5, mimeType: 'text/plain' }
+              : { connection: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', sdp: 'v=0' },
+      };
+    });
+    // A preview download holds the peer's transfer queue until its bytes arrive.
+    const download = tryPeerFile(peer, 'xdt-file://test', invoke);
+    await vi.waitFor(() => expect(mock.receiving).toBeDefined());
+    const abort = new AbortController();
+    const upload = tryUploadPeerAttachment(
+      peer,
+      source,
+      undefined,
+      invoke,
+      undefined,
+      abort.signal,
+    );
+    abort.abort();
+    await expect(upload).rejects.toThrow('FILE_PEER_CANCELLED');
+    await mock.handlers.get('file-peer:host:write')!({}, mock.receiving!.sink, 0, 'aGVsbG8=');
+    mock.receiving!.reply();
+    const result = await download;
+    expect(result?.size).toBe(5);
+    await result?.dispose();
+  });
   it('rejects another peer using a connection handle', async () => {
     const { connection } = await connect();
     await expect(open(connection, 'device-b')).rejects.toThrow('DENIED');
