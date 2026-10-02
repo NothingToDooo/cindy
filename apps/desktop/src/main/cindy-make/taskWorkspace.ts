@@ -1,4 +1,5 @@
 import { access, lstat, mkdir, realpath } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import type { CindyMakeTaskPreparation, MakeTaskWorkspace } from '../../shared/cindyMakeDoctor.js';
 import { runSourceGit } from './sourceGit.js';
@@ -185,20 +186,24 @@ export async function installCindyMakeWorktree(
   }
   await pnpm(
     options.ignoreScripts
-      ? // Unverified synced content runs no install-time code and pnpm writes only
-        // inside the worktree: no lifecycle scripts, no `.pnpmfile.cjs` hooks (which
-        // `--ignore-scripts` alone would still execute), the write roots pinned over
-        // any `.npmrc` of the content's own, and `npm_config_*` out of the environment
-        // except the toolchain's own settings.
-        Object.fromEntries(
-          Object.entries(deps.processEnvironment).filter(
-            ([key]) =>
-              !/^npm_config_/i.test(key) ||
-              /^npm_config_(manage_package_manager_versions|managePackageManagerVersions|python)$/i.test(
-                key,
-              ),
+      ? {
+          // Unverified synced content runs no install-time code and pnpm writes only
+          // inside the worktree: no lifecycle scripts, no `.pnpmfile.cjs` hooks (which
+          // `--ignore-scripts` alone would still execute), the write roots pinned over
+          // any `.npmrc` of the content's own, `npm_config_*` out of the environment
+          // except the toolchain's own settings, and the user's npm credentials never
+          // loaded — a content `.npmrc` must not route them to a proxy of its choosing.
+          ...Object.fromEntries(
+            Object.entries(deps.processEnvironment).filter(
+              ([key]) =>
+                !/^npm_config_/i.test(key) ||
+                /^npm_config_(manage_package_manager_versions|managePackageManagerVersions|python)$/i.test(
+                  key,
+                ),
+            ),
           ),
-        )
+          npm_config_userconfig: os.devNull,
+        }
       : deps.processEnvironment,
     [
       'install',
@@ -212,6 +217,7 @@ export async function installCindyMakeWorktree(
             '--config.modules-dir=node_modules',
             '--config.virtual-store-dir=node_modules/.pnpm',
             '--config.store-dir=node_modules/.cindy-make-store',
+            '--config.strict-ssl=true',
           ]
         : []),
     ],

@@ -84,9 +84,10 @@ describe('prepareCindyMakeWorkspace', () => {
       { ignoreScripts: true },
     );
     expect(pnpm).toHaveBeenCalledWith(
-      // No `npm_config_*` setting of the content's own can turn the guards back on,
-      // and pnpm's write roots stay inside the worktree whatever `.npmrc` says.
-      { PATH: '' },
+      // No `npm_config_*` setting of the content's own can turn the guards back on;
+      // pnpm's write roots stay inside the worktree whatever `.npmrc` says; and the
+      // user's npm credentials are never loaded for this install.
+      { PATH: '', npm_config_userconfig: os.devNull },
       [
         'install',
         '--frozen-lockfile',
@@ -97,6 +98,7 @@ describe('prepareCindyMakeWorkspace', () => {
         '--config.modules-dir=node_modules',
         '--config.virtual-store-dir=node_modules/.pnpm',
         '--config.store-dir=node_modules/.cindy-make-store',
+        '--config.strict-ssl=true',
       ],
       worktreePath,
       expect.anything(),
