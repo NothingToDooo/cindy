@@ -32,7 +32,17 @@ const OPERATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 
 /** Only well-formed values survive; anything else is a fresh start. */
 export function parseSyncRecord(raw: string | null): PersonalSyncRecord {
-  const saved = JSON.parse(raw ?? '{}') as { waiting?: unknown; done?: unknown };
+  let saved: { waiting?: unknown; done?: unknown } = {};
+  try {
+    const parsed: unknown = JSON.parse(raw ?? '{}');
+    // A truncated or otherwise malformed record is a fresh start, never a throw:
+    // `load` runs at bootstrap, and the fresh record the contract promises must
+    // not depend on a caller catching for it.
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+      saved = parsed as { waiting?: unknown; done?: unknown };
+  } catch {
+    saved = {};
+  }
   const record: PersonalSyncRecord = {};
   if (typeof saved.waiting === 'string' && OPERATION_ID.test(saved.waiting))
     record.waiting = saved.waiting;
