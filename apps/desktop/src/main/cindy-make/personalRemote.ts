@@ -107,28 +107,31 @@ export function parsePersonalRemoteRecord(raw: string | null): PersonalRemoteRec
     if (isTimestamp(input.syncedAt)) record.syncedAt = input.syncedAt;
     if (typeof input.syncedCommit === 'string' && COMMIT.test(input.syncedCommit))
       record.syncedCommit = input.syncedCommit;
-    if (Array.isArray(input.rewrites)) {
-      const rewrites = input.rewrites.filter(
-        (entry): entry is PersonalRewrite =>
-          !!entry &&
-          typeof entry === 'object' &&
-          Array.isArray((entry as PersonalRewrite).from) &&
-          (entry as PersonalRewrite).from.length > 0 &&
-          (entry as PersonalRewrite).from.length <= 2 &&
-          (entry as PersonalRewrite).from.every(
-            (commit) => typeof commit === 'string' && COMMIT.test(commit),
-          ) &&
-          typeof (entry as PersonalRewrite).to === 'string' &&
-          COMMIT.test((entry as PersonalRewrite).to),
-      );
-      if (rewrites.length) record.rewrites = rewrites.slice(-MAX_REWRITES);
-    }
   }
   if (Array.isArray(input.unverifiedRemote)) {
     const tips = input.unverifiedRemote.filter(
       (tip): tip is string => typeof tip === 'string' && COMMIT.test(tip),
     );
     if (tips.length) record.unverifiedRemote = [...new Set(tips)].slice(-MAX_UNVERIFIED_REMOTE);
+  }
+  // Rewrite lineage is provenance of already-taken-over content, not binding
+  // state: it survives a disconnect (where `login`/`repository` are cleared) or
+  // it would silently orphan the unverified tips it carries.
+  if (Array.isArray(input.rewrites)) {
+    const rewrites = input.rewrites.filter(
+      (entry): entry is PersonalRewrite =>
+        !!entry &&
+        typeof entry === 'object' &&
+        Array.isArray((entry as PersonalRewrite).from) &&
+        (entry as PersonalRewrite).from.length > 0 &&
+        (entry as PersonalRewrite).from.length <= 2 &&
+        (entry as PersonalRewrite).from.every(
+          (commit) => typeof commit === 'string' && COMMIT.test(commit),
+        ) &&
+        typeof (entry as PersonalRewrite).to === 'string' &&
+        COMMIT.test((entry as PersonalRewrite).to),
+    );
+    if (rewrites.length) record.rewrites = rewrites.slice(-MAX_REWRITES);
   }
   if (oneOf(CINDY_MAKE_REMOTE_ERRORS, input.error)) record.error = input.error;
   if (input.running === 'save' || input.running === 'sync' || input.running === 'disconnect')

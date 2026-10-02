@@ -398,7 +398,21 @@ export class PersonalContribution {
     const change = this.requireChange(input.runId, scope);
     const auth = { repository, token: identity.token };
     return this.deps.withSourceUse(async () => {
-      // 1. The latest official main, independent of the personal version and its baseline.
+      // 1. What an earlier submission's branch may receive is decided *before* any
+      //    Git work: a pull request the maintainers closed keeps its branch and its
+      //    commits exactly as they are, and the resubmission starts a new branch.
+      this.assertScope(scope);
+      const store = this.deps.readStore();
+      const existing = store[input.runId];
+      const prior = existing
+        ? await this.pullState(existing, githubHeaders(identity.token))
+        : undefined;
+      // An unknown state never guesses: only a confirmed closed or merged pull
+      // request may be left behind for a new one — the dialog promised "update",
+      // and a transient lookup failure must not publish a second PR.
+      if (existing && prior === undefined) throw fail('network');
+      const updating = prior === 'open' ? existing : undefined;
+      // 2. The latest official main, independent of the personal version and its baseline.
       try {
         await this.git([
           'fetch',
@@ -416,7 +430,7 @@ export class PersonalContribution {
       ).trim();
       if (!HASH.test(main)) throw fail('failed');
 
-      // 2. Only this change, applied to main in a private index; the checkout is untouched.
+      // 3. Only this change, applied to main in a private index; the checkout is untouched.
       const temporary = await mkdtemp(path.join(os.tmpdir(), 'cindy-make-contribution-'));
       try {
         const index = path.join(temporary, 'index');
@@ -447,7 +461,7 @@ export class PersonalContribution {
         const tree = (await this.git(['write-tree'], { indexFile: index })).trim();
         if (tree === (await this.git(['rev-parse', `${main}^{tree}`])).trim()) throw fail('empty');
 
-        // 3. One commit by the author, signed off with the same identity (DCO).
+        // 4. One commit by the author, signed off with the same identity (DCO).
         await writeFile(message, `${title}\n\nSigned-off-by: ${name} <${email}>\n`, 'utf8');
         const commit = (
           await this.git(
@@ -457,16 +471,8 @@ export class PersonalContribution {
         ).trim();
         if (!HASH.test(commit)) throw fail('failed');
 
-        // 4. Decide what an earlier submission's branch may receive *before* moving
-        //    anything: a pull request the maintainers closed keeps its branch and its
-        //    commits exactly as they are, and the resubmission starts a new branch.
+        // 5. Push the branch to the author's fork, never rewriting an earlier one.
         this.assertScope(scope);
-        const store = this.deps.readStore();
-        const existing = store[input.runId];
-        const prior = existing
-          ? await this.pullState(existing, githubHeaders(identity.token))
-          : undefined;
-        const updating = existing && prior === 'open' ? existing : undefined;
         const base = `cindy-make-pr/${input.runId.slice(0, 36)}`;
         const push = (branch: string, lease: string) =>
           this.git(
@@ -535,7 +541,7 @@ export class PersonalContribution {
           if (!branch) throw fail('failed');
         }
 
-        // 5. Open the pull request, or update the one this change already has.
+        // 6. Open the pull request, or update the one this change already has.
         this.assertScope(scope);
         const pull = await this.openPull({
           identity,

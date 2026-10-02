@@ -422,7 +422,7 @@ async function editsSurvive(
       .some((line) => line.startsWith('Binary files ') || line.startsWith('GIT binary patch'))
   )
     return false;
-  const edits = new Map<string, { added: string[]; removed: string[] }>();
+  const edits = new Map<string, { added: string[]; removed: string[]; lines: number }>();
   let file: string | undefined;
   let previous: string | undefined;
   for (const line of diff.split(/\r?\n/)) {
@@ -437,17 +437,26 @@ async function editsSurvive(
       file = name ?? previous;
       // A hunk that cannot be attributed to a file is never counted as kept.
       if (!file) return false;
-      edits.set(file, { added: [], removed: [] });
+      edits.set(file, { added: [], removed: [], lines: 0 });
       continue;
     }
     const bucket = file ? edits.get(file) : undefined;
     if (!bucket) continue;
-    const content = line.slice(1).trim();
-    if (!content) continue;
-    if (line.startsWith('+') && !line.startsWith('+++ ')) bucket.added.push(content);
-    else if (line.startsWith('-') && !line.startsWith('--- ')) bucket.removed.push(content);
+    if (line.startsWith('+') && !line.startsWith('+++ ')) {
+      bucket.lines += 1;
+      const content = line.slice(1).trim();
+      if (content) bucket.added.push(content);
+    } else if (line.startsWith('-') && !line.startsWith('--- ')) {
+      bucket.lines += 1;
+      const content = line.slice(1).trim();
+      if (content) bucket.removed.push(content);
+    }
   }
-  for (const [name, { added, removed }] of edits) {
+  for (const [name, { added, removed, lines: touched }] of edits) {
+    // Blank-line edits and empty-file or mode operations have no words to compare:
+    // they must be proven preserved by the strict checks, never vouched here.
+    if (!added.length && !removed.length) return false;
+    if (touched > added.length + removed.length) return false;
     const content = await git(['show', `${result}:${name}`], cwd).catch(() => '');
     const lines = content.split(/\r?\n/);
     const wordsOf = (line: string) => new Set(line.split(/\s+/).filter(Boolean));

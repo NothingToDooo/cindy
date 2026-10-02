@@ -76,6 +76,22 @@ describe('parsePersonalRemoteRecord', () => {
         JSON.stringify({ schema: 1, unverifiedRemote: [OTHER, OTHER, 'zz', 3] }),
       ),
     ).toEqual({ schema: 1, unverifiedRemote: [OTHER] });
+    // Rewrite lineage survives a disconnect (no binding in the record any more).
+    expect(
+      parsePersonalRemoteRecord(
+        JSON.stringify({
+          schema: 1,
+          choice: 'local',
+          rewrites: [{ from: [OTHER], to: NEWER }],
+          unverifiedRemote: [OTHER],
+        }),
+      ),
+    ).toEqual({
+      schema: 1,
+      choice: 'local',
+      rewrites: [{ from: [OTHER], to: NEWER }],
+      unverifiedRemote: [OTHER],
+    });
     expect(parsePersonalRemoteRecord(JSON.stringify({ schema: 2, choice: 'local' }))).toEqual({
       schema: 1,
     });

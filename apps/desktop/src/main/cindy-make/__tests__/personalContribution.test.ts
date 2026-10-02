@@ -287,6 +287,35 @@ describe('PersonalContribution', () => {
     expect(store.run).toMatchObject({ number: 3, branch: 'cindy-make-pr/run', commit: B });
   });
 
+  it('never guesses a new pull request when the earlier state is unknown', async () => {
+    let store: Record<string, ContributionRecord> = { run: record('run', 3) };
+    const git = vi.fn(async () => {
+      throw new Error('unexpected git');
+    });
+    const fetchFn = vi.fn(async () => {
+      throw new Error('offline');
+    });
+    const { contribution } = harness({
+      git: git as unknown as ContributionDeps['git'],
+      fetch: fetchFn as unknown as typeof fetch,
+      readStore: () => structuredClone(store),
+      writeStore: (next) => {
+        store = structuredClone(next);
+      },
+    });
+    await expect(
+      contribution.submit({
+        runId: 'run',
+        title: 'feat: x',
+        body: '',
+        name: 'Ada',
+        email: 'ada@example.com',
+      }),
+    ).rejects.toMatchObject({ code: 'network' });
+    // Nothing moved and no second public PR was opened behind the user's back.
+    expect(git).not.toHaveBeenCalled();
+  });
+
   it('reports pull request states and caches them briefly', async () => {
     const fetchFn = vi.fn(async (url: string | URL | Request) =>
       String(url).endsWith('/1')
