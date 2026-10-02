@@ -415,6 +415,41 @@ describe('authorized file peer source', () => {
       Buffer.alloc(0.5 * 1024 * 1024, 7),
     );
   });
+  it('stops a cancelled upload mid-file, discards the staging and keeps the peer usable', async () => {
+    const peer = 'cancel-upload-peer';
+    const source = path.join(directory, 'upload');
+    await writeFile(source, Buffer.alloc(5 * 1024 * 1024, 3));
+    const ticket = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
+    const invoke = vi.fn(async (_peer: string, _channel: string, args: unknown[]) => ({
+      ok: true,
+      result:
+        (args[0] as { action: string }).action === 'caps'
+          ? { version: 1, streaming: true, attachments: true, streamAttachments: true }
+          : { connection: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', sdp: 'v=0' },
+    }));
+    const abort = new AbortController();
+    const ops = () =>
+      mock.commands
+        .filter((c) => c.action === 'invoke')
+        .map((c) => JSON.parse(c.payload).args[0].request.op as string);
+    mock.commandReply.mockImplementation((action) => {
+      if (action !== 'invoke') return 'v=0';
+      const op = JSON.parse(mock.commands.at(-1)!.payload).args[0].request.op;
+      // The user cancels while the second block is on the wire.
+      if (op === 'write' && ops().filter((o) => o === 'write').length === 2) abort.abort();
+      return JSON.stringify({ ok: true, result: op === 'begin' ? { ticket } : {} });
+    });
+    await expect(
+      tryUploadPeerAttachment(peer, source, undefined, invoke, undefined, abort.signal),
+    ).rejects.toThrow('FILE_PEER_CANCELLED');
+    // No further blocks after the cancel; the receiver is told to drop what it staged.
+    expect(ops().filter((o) => o === 'write').length).toBeLessThanOrEqual(4);
+    expect(ops().at(-1)).toBe('cancel');
+    // A cancel is not a transport failure: the next upload still goes direct.
+    mock.commands.length = 0;
+    expect(await tryUploadPeerAttachment(peer, source, undefined, invoke)).toContain(ticket);
+    expect(ops().at(-1)).toBe('finish');
+  });
   it('rejects another peer using a connection handle', async () => {
     const { connection } = await connect();
     await expect(open(connection, 'device-b')).rejects.toThrow('DENIED');

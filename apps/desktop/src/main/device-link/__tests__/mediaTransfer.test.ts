@@ -167,6 +167,31 @@ describe('uploadLocalFile — 小文件整体 PUT', () => {
     expect(netFetchMock).not.toHaveBeenCalled();
   });
 
+  it('取消上传 → 立刻中止 PUT,不换传输栈重试,并删除已签发的对象', async () => {
+    const abort = new AbortController();
+    undiciFetchMock.mockImplementation(
+      (_url: string, init: RequestInit) =>
+        new Promise((_, reject) => {
+          init.signal?.addEventListener('abort', () =>
+            reject(new DOMException('aborted', 'AbortError')),
+          );
+          abort.abort();
+        }),
+    );
+    await expect(uploadLocalFile('/tmp/a.png', { signal: abort.signal })).rejects.toThrow(
+      'UPLOAD_CANCELLED',
+    );
+    expect(undiciFetchMock).toHaveBeenCalledTimes(1);
+    expect(netFetchMock).not.toHaveBeenCalled();
+    expect(apiFetch.mock.calls.map(([path]) => path)).toEqual([PUT_PATH, DEL_PATH]);
+    // Already cancelled: nothing is presigned or sent.
+    apiFetch.mockClear();
+    undiciFetchMock.mockClear();
+    await expect(uploadLocalFile('/tmp/a.png', { signal: abort.signal })).rejects.toThrow();
+    expect(apiFetch).not.toHaveBeenCalled();
+    expect(undiciFetchMock).not.toHaveBeenCalled();
+  });
+
   it('路径不是文件 → 抛错', async () => {
     statMock.mockResolvedValue({ isFile: () => false, size: 0 });
     await expect(uploadLocalFile('/tmp/dir')).rejects.toThrow();

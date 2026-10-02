@@ -277,6 +277,7 @@ async function putBytesToOss(
   putUrl: string,
   bodySource: OssPutBodySource,
   contentType: string,
+  signal?: AbortSignal,
 ): Promise<void> {
   const host = hostOf(putUrl);
   const headers: Record<string, string> = {
@@ -293,7 +294,12 @@ async function putBytesToOss(
     } catch (err) {
       throw new NonRetriableOssPutError(err);
     }
-    const init: RequestInit & { duplex?: 'half' } = { method: 'PUT', headers, body };
+    const init: RequestInit & { duplex?: 'half' } = {
+      method: 'PUT',
+      headers,
+      body,
+      ...(signal ? { signal } : {}),
+    };
     // 流式 body 必须带 duplex:'half'(标准 fetch 要求),Buffer body 无需。
     if (body instanceof ReadableStream) init.duplex = 'half';
     const resp = await impl(putUrl, init as RequestInit);
@@ -320,8 +326,14 @@ async function putBytesToOss(
   const hints: string[] = [];
   for (const transport of order) {
     try {
+      signal?.throwIfAborted();
       await attempt(transport.impl);
     } catch (err) {
+      // A cancelled upload is final: never retry it through the other transport.
+      if (signal?.aborted) {
+        bodySource.dispose?.();
+        throw new Error('UPLOAD_CANCELLED');
+      }
       if (err instanceof NonRetriableOssPutError) {
         const retriableCacheArtifact =
           cachedFallbackFirst && transport.name === 'electron-net' && err.httpStatus !== undefined;
@@ -391,6 +403,8 @@ export async function uploadLocalFile(
     maxBytes?: number;
     /** 可选上传进度(已送入 HTTP 栈的字节数,略超前于真实网络进度)。 */
     onProgress?: (uploadedBytes: number) => void;
+    /** Aborting stops the PUT at once (no transport retry) and deletes the staged object. */
+    signal?: AbortSignal;
   } = {},
 ): Promise<UploadResult> {
   const st = await stat(localPath);
@@ -408,6 +422,7 @@ export async function uploadLocalFile(
   const ext =
     opts.extHint !== undefined ? opts.extHint.replace(/^\.+/, '').toLowerCase() : extOf(localPath);
   const contentType = opts.contentType ?? mimeOf(ext);
+  opts.signal?.throwIfAborted();
   const { putUrl, key } = await presignPut(size, ext, contentType);
   let sha256: string;
 
@@ -435,7 +450,12 @@ export async function uploadLocalFile(
       sha256 = createHash('sha256').update(buf).digest('hex');
       // Buffer body 可重放:换栈重试直接复用同一份字节(fetch 不 transfer ArrayBuffer),
       // 也没有需要释放的底层资源。
-      await putBytesToOss(putUrl, { create: () => exactArrayBuffer(buf) }, contentType);
+      await putBytesToOss(
+        putUrl,
+        { create: () => exactArrayBuffer(buf) },
+        contentType,
+        opts.signal,
+      );
       opts.onProgress?.(size);
     } else {
       // 大媒体:磁盘流式 PUT,避免整文件进内存;经计数 Transform 上报进度。
@@ -500,7 +520,7 @@ export async function uploadLocalFile(
         // 已缓冲的数据,每次换栈上传都漏一个。
         dispose: () => attempts.at(-1)?.dispose(),
       };
-      await putBytesToOss(putUrl, bodySource, contentType);
+      await putBytesToOss(putUrl, bodySource, contentType, opts.signal);
       const uploadedAttempt = attempts.at(-1);
       if (!uploadedAttempt || uploadedAttempt.sent !== size) {
         // Cleanup is centralized below so transport and source-stream errors use the same path.

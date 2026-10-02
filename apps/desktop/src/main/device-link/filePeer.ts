@@ -845,21 +845,33 @@ async function peerAttachmentCaps(
 }
 
 const warming = new Set<string>();
-/** Upload only bytes; the eventual message still uses its original WSS acceptance semantics. */
+/**
+ * Upload only bytes; the eventual message still uses its original WSS acceptance semantics.
+ * Aborting `signal` stops hashing or sending within one block, discards the receiver's partial
+ * staging and rejects with FILE_PEER_CANCELLED instead of returning null (no OSS fallback, no
+ * failure cooldown).
+ */
 export async function tryUploadPeerAttachment(
   peer: string,
   source: string | Buffer,
   mimeType: string | undefined,
   invoke: Invoke,
   onProgress?: (bytes: number) => void,
+  signal?: AbortSignal,
 ): Promise<string | null> {
   refreshCooldownOwner();
   const owner = captureDataOwnerBroadcastScope();
   const check = () => {
     if (!isDataOwnerBroadcastScopeCurrent(owner)) throw new Error('FILE_PEER_CANCELLED');
   };
-  return queuePeerRead(peer, async () => {
+  // Block-level checkpoints also honour the caller's cancellation; the cleanup RPC below
+  // (uploadPeerAttachment's `cancel`) only needs the owner check.
+  const checkActive = () => {
     check();
+    if (signal?.aborted) throw new Error('FILE_PEER_CANCELLED');
+  };
+  return queuePeerRead(peer, async () => {
+    checkActive();
     if (cooldown.remaining(peer)) return null;
     let handle: FileHandle | undefined;
     let active: Outgoing | undefined;
@@ -870,9 +882,9 @@ export async function tryUploadPeerAttachment(
       if (!size) return null;
       // 读整份文件算摘要之前先确认对端能收:对端离线、旧版或不支持时不白读一遍(随后还要走 OSS)。
       if (!canSendPeerAttachment(await peerAttachmentCaps(peer, invoke), size)) return null;
-      check();
+      checkActive();
       const read = async (offset: number, length: number) => {
-        check();
+        checkActive();
         if (!handle) return (source as Buffer).subarray(offset, offset + length);
         const bytes = Buffer.alloc(length);
         if ((await handle.read(bytes, 0, length, offset)).bytesRead !== length)
@@ -885,7 +897,7 @@ export async function tryUploadPeerAttachment(
         hash.update(await read(offset, Math.min(1024 * 1024, size - offset)));
       const sha256 = hash.digest('hex');
       await receivePeerFile(peer, null, invoke);
-      check();
+      checkActive();
       const out = outgoing.get(peer);
       if (!out?.remote || !canSendPeerAttachment(out, size)) return null;
       active = out;
@@ -912,7 +924,7 @@ export async function tryUploadPeerAttachment(
           if (!response.ok) throw new Error('FILE_PEER_UPLOAD');
           return response.result;
         },
-        check,
+        checkActive,
         onProgress,
         out.streamAttachments === true,
       );
@@ -923,6 +935,7 @@ export async function tryUploadPeerAttachment(
       return result;
     } catch {
       check();
+      if (signal?.aborted) throw new Error('FILE_PEER_CANCELLED');
       cooldown.fail(peer);
       const failed = outgoing.get(peer);
       if (failed) stopConnection(failed.id, 'upload-failed');
