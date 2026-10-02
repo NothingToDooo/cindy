@@ -236,11 +236,92 @@ describe('snapshotRealProfile', () => {
     fs.writeFileSync(path.join(destDefault, 'GPUCache', 'data'), 'gpu');
     await snapshotRealProfile({ source, destDir, platform: 'darwin' });
     expect(fs.existsSync(path.join(destDefault, 'Local Storage'))).toBe(false);
-    expect(fs.existsSync(path.join(destDefault, 'IndexedDB'))).toBe(false);
+    expect(fs.existsSync(path.join(destDefault, 'IndexedDB', 'site'))).toBe(false);
     expect(fs.existsSync(path.join(destDefault, 'Service Worker'))).toBe(false);
     expect(fs.readFileSync(path.join(destDefault, 'GPUCache', 'data'), 'utf8')).toBe('gpu');
     expect(fs.existsSync(path.join(destDefault, 'Cookies'))).toBe(true);
     expect(leftoverStagingNames(destDir)).toEqual([]);
+  });
+
+  it('keeps extensions installed in the agent browser across re-snapshots', async () => {
+    const root = makeTempDir();
+    const source = seedSource(root);
+    const destDir = realProfileDestDir(path.join(root, 'runtime'));
+    const destDefault = path.join(destDir, 'Default');
+    const extensionId = 'aeblfdkhhhdcdjpifhhbdiojplfjncoa';
+    const extensionIdb = `chrome-extension_${extensionId}_0.indexeddb.leveldb`;
+    fs.mkdirSync(path.join(destDefault, 'Extensions', extensionId, '8.0.0_0'), { recursive: true });
+    fs.writeFileSync(
+      path.join(destDefault, 'Extensions', extensionId, '8.0.0_0', 'manifest.json'),
+      '{}',
+    );
+    fs.writeFileSync(
+      path.join(destDefault, 'Secure Preferences'),
+      '{"extensions":{"settings":{}}}',
+    );
+    fs.mkdirSync(path.join(destDefault, 'Local Extension Settings', extensionId), {
+      recursive: true,
+    });
+    fs.mkdirSync(path.join(destDefault, 'IndexedDB', extensionIdb), { recursive: true });
+    fs.mkdirSync(path.join(destDefault, 'IndexedDB', 'https_example.com_0.indexeddb.leveldb'), {
+      recursive: true,
+    });
+
+    await snapshotRealProfile({ source, destDir, platform: 'darwin' });
+
+    expect(
+      fs.existsSync(path.join(destDefault, 'Extensions', extensionId, '8.0.0_0', 'manifest.json')),
+    ).toBe(true);
+    expect(fs.readFileSync(path.join(destDefault, 'Secure Preferences'), 'utf8')).toBe(
+      '{"extensions":{"settings":{}}}',
+    );
+    expect(fs.existsSync(path.join(destDefault, 'Local Extension Settings', extensionId))).toBe(
+      true,
+    );
+    expect(fs.readdirSync(path.join(destDefault, 'IndexedDB'))).toEqual([extensionIdb]);
+  });
+
+  it('refreshes Preferences from the source but keeps the agent browser extensions subtree', async () => {
+    const root = makeTempDir();
+    const source = seedSource(root);
+    const sourcePrefs = path.join(source.userDataDir, 'Profile 6', 'Preferences');
+    fs.writeFileSync(
+      sourcePrefs,
+      JSON.stringify({ session: { restore_on_startup: 1 }, extensions: { commands: 'source' } }),
+    );
+    const destDir = realProfileDestDir(path.join(root, 'runtime'));
+    const destPrefs = path.join(destDir, 'Default', 'Preferences');
+
+    await snapshotRealProfile({ source, destDir, platform: 'darwin' });
+    expect(JSON.parse(fs.readFileSync(destPrefs, 'utf8'))).toEqual({
+      session: { restore_on_startup: 1 },
+    });
+
+    fs.writeFileSync(
+      destPrefs,
+      JSON.stringify({
+        session: { restore_on_startup: 5 },
+        extensions: { install_signature: 'agent' },
+      }),
+    );
+    fs.writeFileSync(
+      sourcePrefs,
+      JSON.stringify({ session: { restore_on_startup: 4 }, extensions: { commands: 'source' } }),
+    );
+    await snapshotRealProfile({ source, destDir, platform: 'darwin' });
+    expect(JSON.parse(fs.readFileSync(destPrefs, 'utf8'))).toEqual({
+      session: { restore_on_startup: 4 },
+      extensions: { install_signature: 'agent' },
+    });
+  });
+
+  it('copies a malformed source Preferences verbatim', async () => {
+    const root = makeTempDir();
+    const source = seedSource(root);
+    fs.writeFileSync(path.join(source.userDataDir, 'Profile 6', 'Preferences'), 'not-json');
+    const destDir = realProfileDestDir(path.join(root, 'runtime'));
+    await snapshotRealProfile({ source, destDir, platform: 'darwin' });
+    expect(fs.readFileSync(path.join(destDir, 'Default', 'Preferences'), 'utf8')).toBe('not-json');
   });
 
   it('refuses to write anywhere except Cindy-real/user-data', async () => {

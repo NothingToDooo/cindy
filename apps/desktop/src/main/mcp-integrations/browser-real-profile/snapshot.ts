@@ -142,11 +142,49 @@ const DISCARDABLE_PROFILE_CACHE_NAMES = new Set([
 ]);
 
 /**
- * Drop leftover Local Storage / IndexedDB / Service Worker / etc. from a
- * previous source profile. Keep only this snapshot's auth files and caches.
+ * Extensions installed inside the agent browser. Never copied from the source
+ * profile, so they carry no source credentials; dropping them on every launch
+ * would uninstall the user's agent-browser extensions. `Secure Preferences`
+ * holds the extension registry and its MACs on macOS.
+ */
+const AGENT_EXTENSION_STATE_NAMES = new Set([
+  'Extensions',
+  'Secure Preferences',
+  'Local Extension Settings',
+  'Sync Extension Settings',
+  'Managed Extension Settings',
+  'Extension State',
+  'Extension Rules',
+  'Extension Scripts',
+  'Extension Cookies',
+]);
+
+/** Per-origin IndexedDB folder owned by an extension (e.g. 1Password's vault). */
+const EXTENSION_INDEXED_DB_ENTRY = /^chrome-extension_/;
+
+function pruneSiteIndexedDb(indexedDbDir: string): void {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(indexedDbDir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (EXTENSION_INDEXED_DB_ENTRY.test(entry.name)) continue;
+    fs.rmSync(path.join(indexedDbDir, entry.name), { recursive: true, force: true });
+  }
+}
+
+/**
+ * Drop leftover Local Storage / site IndexedDB / Service Worker / etc. from a
+ * previous source profile. Keep this snapshot's auth files, caches, and the
+ * agent browser's own extension state.
  */
 export function pruneNonAuthProfileState(destProfileDir: string): void {
-  const keep = new Set<string>(DISCARDABLE_PROFILE_CACHE_NAMES);
+  const keep = new Set<string>([
+    ...DISCARDABLE_PROFILE_CACHE_NAMES,
+    ...AGENT_EXTENSION_STATE_NAMES,
+  ]);
   for (const relative of SNAPSHOT_PROFILE_RELATIVE_PATHS) {
     keep.add(relative.split(/[/\\]/)[0] ?? relative);
   }
@@ -158,7 +196,48 @@ export function pruneNonAuthProfileState(destProfileDir: string): void {
   }
   for (const entry of entries) {
     if (keep.has(entry.name)) continue;
+    if (entry.name === 'IndexedDB' && entry.isDirectory()) {
+      pruneSiteIndexedDb(path.join(destProfileDir, entry.name));
+      continue;
+    }
     fs.rmSync(path.join(destProfileDir, entry.name), { recursive: true, force: true });
+  }
+}
+
+function parseJsonObject(raw: string | null): Record<string, unknown> | null {
+  if (raw === null) return null;
+  try {
+    return asObject(JSON.parse(raw) as unknown);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Source `Preferences` refreshed onto dest, except the `extensions` subtree,
+ * which belongs to the agent browser (install signature, commands, pins).
+ * Returns null when the source is not a JSON object so the caller can copy it
+ * verbatim.
+ */
+export function mergeManagedPreferences(sourceRaw: string, destRaw: string | null): string | null {
+  const source = parseJsonObject(sourceRaw);
+  if (!source) return null;
+  const merged = { ...source };
+  const destExtensions = parseJsonObject(destRaw)?.extensions;
+  if (destExtensions === undefined) {
+    delete merged.extensions;
+  } else {
+    merged.extensions = destExtensions;
+  }
+  return JSON.stringify(merged);
+}
+
+function readFileIfExists(filePath: string): string | null {
+  try {
+    return fs.readFileSync(filePath, 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err;
   }
 }
 
@@ -535,7 +614,15 @@ export async function snapshotRealProfile(options: {
       const src = path.join(sourceProfileDir, relative);
       if (!fs.existsSync(src)) continue;
       const dest = path.join(stagingProfileDir, relative);
-      await fs.promises.copyFile(src, dest);
+      const merged = mergeManagedPreferences(
+        await fs.promises.readFile(src, 'utf8'),
+        readFileIfExists(path.join(destDir, 'Default', relative)),
+      );
+      if (merged === null) {
+        await fs.promises.copyFile(src, dest);
+      } else {
+        await fs.promises.writeFile(dest, merged, 'utf8');
+      }
       filesCopied.push(path.join('Default', relative));
       copiedRelative.add(relative);
     }
