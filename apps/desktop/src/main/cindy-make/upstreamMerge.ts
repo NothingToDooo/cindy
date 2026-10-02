@@ -646,7 +646,11 @@ export async function applyUpstreamMerge(
   git: MergeGit,
   isCurrent: () => boolean = () => true,
   /** The user chose to use the result although some changes are not in it (see `uncarriedChanges`). */
-  options: { acceptMissing?: boolean } = {},
+  options: {
+    acceptMissing?: boolean;
+    /** Durably record the carried content's trust facts before the source moves (see `adoptedRewrite`). */
+    journal?: (merged: CindyMakeMergeState) => void;
+  } = {},
 ): Promise<CindyMakeMergeState> {
   if (!isCurrent()) throw mergeError('busy');
   const worktree = await verifyMergeWorktree(userData, state, git);
@@ -703,14 +707,7 @@ export async function applyUpstreamMerge(
     )
       throw mergeError('baselineChanged');
     if (!isCurrent()) throw mergeError('busy');
-    if (!alreadyApplied) await git(['reset', '--keep', result.commit], source);
-    if ((await snapshotContent(git, source)) !== result.tree) throw mergeError('baselineChanged');
-    // Combining with the fork keeps the shared official base; an official update moves to it.
-    await git(
-      ['update-ref', PERSONAL_UPSTREAM_REF, state.remote?.base ?? state.upstreamCommit],
-      source,
-    );
-    return {
+    const merged: CindyMakeMergeState = {
       ...state,
       status: 'merged',
       commit: result.commit,
@@ -719,6 +716,18 @@ export async function applyUpstreamMerge(
       needsInput: undefined,
       missing: undefined,
     };
+    // The result carries the replayed content under new commits: its provenance must
+    // be durable before the source moves to it, so a crash right after the move can
+    // never leave still-unverified content looking trusted (over-marking is safe).
+    options.journal?.(merged);
+    if (!alreadyApplied) await git(['reset', '--keep', result.commit], source);
+    if ((await snapshotContent(git, source)) !== result.tree) throw mergeError('baselineChanged');
+    // Combining with the fork keeps the shared official base; an official update moves to it.
+    await git(
+      ['update-ref', PERSONAL_UPSTREAM_REF, state.remote?.base ?? state.upstreamCommit],
+      source,
+    );
+    return merged;
   }
   const commit = (await git(['rev-parse', 'HEAD'], worktree)).trim();
   if (state.baselineTree && commit !== state.baselineCommit) throw mergeError('baselineChanged');

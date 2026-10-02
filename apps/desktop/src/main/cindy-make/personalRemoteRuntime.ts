@@ -167,13 +167,7 @@ export function configurePersonalRemote(): void {
     if (next?.remote?.commit) controller?.recordUnverifiedRemote(next.remote.commit);
     if (rewrite && lineage !== recorded) {
       recorded = lineage;
-      try {
-        controller?.recordRewrite(rewrite.from, rewrite.to);
-      } catch (error) {
-        log.warn('cindy-make personal remote: lineage not recorded', {
-          error: error instanceof Error ? error.name : 'unknown',
-        });
-      }
+      journalMergeProvenance(next!);
     }
     if (
       next?.status === 'merged' &&
@@ -200,6 +194,32 @@ export async function hasUnbuiltPersonalChanges(commit: string, tree: string): P
       hasPublishedPersonalVersionCommit(userData, candidate),
     )
   );
+}
+
+/**
+ * Durably record where an adopted update or combine carried content this computer
+ * has not verified yet, and the rewrite that carries it under new commits. Called
+ * before the personal source moves to the rewritten result: afterwards the old tip
+ * is no longer an ancestor of the result, and a crash between the move and the
+ * merged-state publish must never leave the carried content looking verified.
+ */
+export function journalMergeProvenance(state: {
+  status: string;
+  feature?: unknown;
+  baselineCommit?: string;
+  commit?: string;
+  remote?: { commit?: string };
+}): void {
+  const rewrite = adoptedRewrite(state);
+  if (!rewrite) return;
+  try {
+    if (state.remote?.commit) controller?.recordUnverifiedRemote(state.remote.commit);
+    controller?.recordRewrite(rewrite.from, rewrite.to);
+  } catch (error) {
+    log.warn('cindy-make personal remote: merge provenance not journaled', {
+      error: error instanceof Error ? error.name : 'unknown',
+    });
+  }
 }
 
 /** The GitHub steps of Sync; undefined when the personal version is not shared there. */

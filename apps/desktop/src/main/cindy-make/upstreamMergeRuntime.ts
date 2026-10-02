@@ -30,6 +30,7 @@ import {
 } from './syncTarget.js';
 import { cindyMakeManager } from './manager.js';
 import { validateCindyMakeTaskStart } from './taskRuntime.js';
+import { journalMergeProvenance } from './personalRemoteRuntime.js';
 import { cleanupCompletedMakeMergeTask } from './taskManagement.js';
 import {
   ensureUpstreamMergeSession,
@@ -309,7 +310,12 @@ export function configureUpstreamMerge(isRunning: (id: string) => boolean): void
           return state.feature
             ? applyFeatureMerge(userData, state, await git(), isCurrent, publish)
             : recordOfficialRef(
-                await applyUpstreamMerge(userData, state, await git(), isCurrent, options),
+                await applyUpstreamMerge(userData, state, await git(), isCurrent, {
+                  ...options,
+                  // Durable content-trust facts before the source moves to the
+                  // rewritten result (see `journalMergeProvenance`).
+                  journal: journalMergeProvenance,
+                }),
               );
         });
       },

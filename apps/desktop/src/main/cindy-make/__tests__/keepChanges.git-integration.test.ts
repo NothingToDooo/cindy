@@ -72,6 +72,8 @@ async function repos() {
   await mkdir(path.dirname(source), { recursive: true });
   await git(['init', '--initial-branch=main'], official);
   await write(official, 'feature.txt', LINES);
+  // A binary file in the base: binary changes have no lines to compare later.
+  await writeFile(path.join(official, 'logo.bin'), Buffer.from([0x00, 0x41, 0x00]));
   const base = await commit(official, 'official base');
   await git(['clone', official, source], userData);
   await git(['checkout', '-b', 'cindy-personal'], source);
@@ -240,6 +242,67 @@ it('names a change whose added line a resolved rebase only reordered', async () 
       code: 'checksFailed',
       missing: { count: 1, commits: [reordered] },
     });
+  } finally {
+    await h.clean();
+  }
+}, 60_000);
+
+it('names a binary change whose same-identity replacement has different content', async () => {
+  const h = await repos();
+  try {
+    // One change replaces the binary file; the official version replaces it too.
+    await writeFile(path.join(h.source, 'logo.bin'), Buffer.from([0x00, 0x58, 0x00, 0x01]));
+    const changed = await h.commit(h.source, '', 2_000);
+    await writeFile(path.join(h.official, 'logo.bin'), Buffer.from([0x00, 0x59, 0x00]));
+    const target = await h.commit(h.official, 'official v2');
+    const state = await prepareUpstreamMerge(h.userData, update(h, target), h.git, async () => {});
+    expect(state.status).toBe('conflict');
+    const worktree = mergeWorktree(h.userData, state.id);
+    // The replayed commit keeps the author, time and title of `changed`, but the
+    // binary content is someone else's: after the `index` rows are dropped the two
+    // diffs read identically, so they must never be compared without the object IDs.
+    await writeFile(path.join(worktree, 'logo.bin'), Buffer.from([0x00, 0x5a]));
+    await h.git(['add', '-A'], worktree);
+    await h.git([...h.identity(true), 'rebase', '--continue'], worktree);
+    await expect(applyUpstreamMerge(h.userData, state, h.git)).rejects.toMatchObject({
+      code: 'checksFailed',
+      missing: { count: 1, commits: [changed] },
+    });
+  } finally {
+    await h.clean();
+  }
+}, 60_000);
+
+it('journals the adopted rewrite as unverified before the source moves', async () => {
+  const h = await repos();
+  try {
+    await h.write(h.source, 'feature.txt', replace(0, 'mine'));
+    await h.commit(h.source, '', 1_000);
+    await h.write(h.official, 'feature.txt', replace(0, 'official'));
+    const target = await h.commit(h.official, 'official v2');
+    const state = await prepareUpstreamMerge(h.userData, update(h, target), h.git, async () => {});
+    expect(state.status).toBe('conflict');
+    const worktree = mergeWorktree(h.userData, state.id);
+    await h.write(worktree, 'feature.txt', replace(0, 'official and mine'));
+    await h.git(['add', '-A'], worktree);
+    await h.git([...h.identity(true), 'rebase', '--continue'], worktree);
+    const timeline: string[] = [];
+    const git: MergeGit = (args, cwd, index) => {
+      if (args[0] === 'reset' && args[1] === '--keep') timeline.push('moved');
+      return h.git(args, cwd, index);
+    };
+    const journaled: CindyMakeMergeState[] = [];
+    const merged = await applyUpstreamMerge(h.userData, state, git, () => true, {
+      journal: (record) => {
+        timeline.push('journaled');
+        journaled.push(record);
+      },
+    });
+    expect(merged).toMatchObject({ status: 'merged' });
+    // The rewritten result's provenance is durable before the source moves: a crash
+    // right after the move can never leave the carried content looking verified.
+    expect(timeline).toEqual(['journaled', 'moved']);
+    expect(journaled[0]).toMatchObject({ status: 'merged', commit: merged.commit });
   } finally {
     await h.clean();
   }
