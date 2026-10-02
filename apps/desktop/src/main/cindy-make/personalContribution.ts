@@ -95,8 +95,10 @@ export interface ContributionDeps {
   inspectFork(identity: GithubIdentity, repository: string): Promise<PersonalForkHealth>;
   git(args: string[], cwd: string, options?: PersonalRemoteGitOptions): Promise<string>;
   change(runId: string): ContributionChange | undefined;
-  readStore(): Record<string, ContributionRecord>;
-  writeStore(store: Record<string, ContributionRecord>): void;
+  /** Ledger file of the account that started the operation (pinned at entry). */
+  ledgerPath(): string;
+  readStore(file: string): Record<string, ContributionRecord>;
+  writeStore(file: string, store: Record<string, ContributionRecord>): void;
   fetch: typeof fetch;
   /** The author's own Git identity, if configured on this computer. */
   gitIdentity(): Promise<{ name?: string; email?: string }>;
@@ -305,6 +307,7 @@ export class PersonalContribution {
 
   async draft(runId: string): Promise<CindyMakeContributionDraft> {
     const scope = this.deps.ownerScope();
+    const ledger = this.deps.ledgerPath();
     const { repository, identity } = await this.requireBinding();
     const change = this.requireChange(runId, scope);
     const files = await this.changedFiles(change);
@@ -315,7 +318,7 @@ export class PersonalContribution {
     );
     const author = await this.author(identity);
     this.assertScope(scope);
-    const existing = this.deps.readStore()[runId];
+    const existing = this.deps.readStore(ledger)[runId];
     const state = existing && (await this.pullState(existing, githubHeaders(identity.token)));
     return {
       runId,
@@ -352,7 +355,7 @@ export class PersonalContribution {
 
   /** PR states for submitted changes; cached briefly so the history list stays cheap. */
   async statuses(): Promise<CindyMakeContributionView[]> {
-    const records = Object.values(this.deps.readStore());
+    const records = Object.values(this.deps.readStore(this.deps.ledgerPath()));
     if (!records.length) return [];
     if (!this.statusCache || this.deps.now() - this.statusCache.at > 5 * 60_000) {
       const states = new Map<number, CindyMakeContributionState>();
@@ -394,6 +397,7 @@ export class PersonalContribution {
     )
       throw fail('invalid');
     const scope = this.deps.ownerScope();
+    const ledger = this.deps.ledgerPath();
     const { repository, identity } = await this.requireBinding();
     const change = this.requireChange(input.runId, scope);
     const auth = { repository, token: identity.token };
@@ -402,7 +406,7 @@ export class PersonalContribution {
       //    Git work: a pull request the maintainers closed keeps its branch and its
       //    commits exactly as they are, and the resubmission starts a new branch.
       this.assertScope(scope);
-      const store = this.deps.readStore();
+      const store = this.deps.readStore(ledger);
       const existing = store[input.runId];
       const prior = existing
         ? await this.pullState(existing, githubHeaders(identity.token))
@@ -514,14 +518,16 @@ export class PersonalContribution {
               throw pushFailed(retry);
             });
           }
-          // The moved branch is recorded before the PR API call: if that call or an
-          // account switch interrupts, a retry leases against this commit instead of
-          // failing forever against a branch this client itself moved.
-          this.assertScope(scope);
-          this.deps.writeStore({
-            ...this.deps.readStore(),
+          // The moved branch is recorded before the PR API call and before any
+          // scope assertion — in the ledger pinned to the account that started the
+          // submission. If that call or an account switch interrupts, a retry
+          // leases against this commit instead of failing forever against a branch
+          // this client itself moved.
+          this.deps.writeStore(ledger, {
+            ...this.deps.readStore(ledger),
             [input.runId]: { ...updating, commit },
           });
+          this.assertScope(scope);
         } else {
           // The lease requires the branch not to exist yet, so an earlier submission's
           // branch (whatever its pull request's state) is never rewritten.
@@ -585,7 +591,7 @@ export class PersonalContribution {
           commit,
           submittedAt: this.deps.now(),
         };
-        this.deps.writeStore({ ...this.deps.readStore(), [input.runId]: record });
+        this.deps.writeStore(ledger, { ...this.deps.readStore(ledger), [input.runId]: record });
         this.statusCache = undefined;
         return this.view(record, 'open');
       } finally {
@@ -599,8 +605,9 @@ export class PersonalContribution {
     branch: string,
     identity: GithubIdentity,
   ): Promise<ContributionRecord | undefined> {
+    let response: Response;
     try {
-      const response = await this.deps.fetch(
+      response = await this.deps.fetch(
         `${API}/repos/${OFFICIAL_GITHUB_REPOSITORY}/pulls?state=open&head=${encodeURIComponent(
           `${identity.login}:${branch}`,
         )}`,
@@ -611,32 +618,33 @@ export class PersonalContribution {
           signal: AbortSignal.timeout(15_000),
         },
       );
-      if (!response.ok) {
-        await response.body?.cancel();
-        return undefined;
-      }
-      const listed = (await response.json().catch(() => [])) as Array<{
-        number?: unknown;
-        html_url?: unknown;
-      }>;
-      const first = listed[0];
-      if (
-        !Number.isSafeInteger(first?.number) ||
-        typeof first?.html_url !== 'string' ||
-        !first.html_url.startsWith(`https://github.com/${OFFICIAL_GITHUB_REPOSITORY}/pull/`)
-      )
-        return undefined;
-      return {
-        runId: '',
-        number: first.number as number,
-        url: first.html_url,
-        branch,
-        commit: '',
-        submittedAt: this.deps.now(),
-      };
     } catch {
-      return undefined;
+      throw fail('network');
     }
+    if (!response.ok) {
+      await response.body?.cancel();
+      // Unknown is not "no pull request": only a confirmed empty list lets the
+      // caller open a new branch, so a lookup failure aborts for a retry.
+      throw fail('network');
+    }
+    const body = (await response.json().catch(() => undefined)) as unknown;
+    if (!Array.isArray(body)) throw fail('network');
+    const first = body[0] as { number?: unknown; html_url?: unknown } | undefined;
+    if (!first) return undefined;
+    if (
+      !Number.isSafeInteger(first.number) ||
+      typeof first.html_url !== 'string' ||
+      !first.html_url.startsWith(`https://github.com/${OFFICIAL_GITHUB_REPOSITORY}/pull/`)
+    )
+      throw fail('failed');
+    return {
+      runId: '',
+      number: first.number as number,
+      url: first.html_url,
+      branch,
+      commit: '',
+      submittedAt: this.deps.now(),
+    };
   }
 
   private async openPull(input: {

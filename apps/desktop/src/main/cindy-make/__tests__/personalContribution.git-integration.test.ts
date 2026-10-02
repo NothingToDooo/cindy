@@ -92,6 +92,9 @@ async function fixture(conflict: boolean) {
     }
     if (target.endsWith(`/pulls/${github.number}`) && ['GET', 'PATCH'].includes(init?.method ?? ''))
       return new Response(JSON.stringify(pull()), { status: 200 });
+    // The open-pull lookup for a head: a confirmed empty list (never a guess).
+    if (target.startsWith('https://api.github.com/repos/makecindy/cindy/pulls?state=open&head='))
+      return new Response('[]', { status: 200 });
     return new Response('{}', { status: 404 });
   });
   const contribution = new PersonalContribution({
@@ -105,8 +108,9 @@ async function fixture(conflict: boolean) {
       runId === 'run-1'
         ? { title: '把第二行改得更清楚', request: '让第二行更清楚', baseTree, tree }
         : undefined,
+    ledgerPath: () => 'ledger.json',
     readStore: () => structuredClone(store),
-    writeStore: (next) => {
+    writeStore: (_file, next) => {
       store = structuredClone(next);
     },
     fetch: fetchFn as unknown as typeof fetch,

@@ -130,10 +130,11 @@ export function configurePersonalRemote(): void {
           }
         : undefined;
     },
-    readStore: () => parseContributionStore(readAtomicFileSync(contributions())),
-    writeStore: (store) => {
-      mkdirSync(path.dirname(contributions()), { recursive: true });
-      atomicWriteFileSync(contributions(), JSON.stringify(store));
+    ledgerPath: contributions,
+    readStore: (file) => parseContributionStore(readAtomicFileSync(file)),
+    writeStore: (file, store) => {
+      mkdirSync(path.dirname(file), { recursive: true });
+      atomicWriteFileSync(file, JSON.stringify(store));
     },
     fetch: outboundFetch,
     gitIdentity: async () => {

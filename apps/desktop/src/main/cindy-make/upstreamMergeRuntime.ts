@@ -273,21 +273,34 @@ export function configureUpstreamMerge(isRunning: (id: string) => boolean): void
         const { ref, commit } = await syncTarget!();
         const command = await git();
         const checkout = makeSourceCheckoutPath(userData);
-        const base = (
-          await command(
-            ['rev-parse', '--verify', '--quiet', `${PERSONAL_UPSTREAM_REF}^{commit}`],
-            checkout,
-          ).catch(() => '')
-        ).trim();
-        return notBehindBase({ ref, commit }, base, (ancestor, descendant) =>
+        const isAncestor = (ancestor: string, descendant: string) =>
           command(['merge-base', '--is-ancestor', ancestor, descendant], checkout).then(
             () => true,
             (error) => {
               if ((error as { exitCode?: number }).exitCode === 1) return false;
               throw error;
             },
-          ),
-        );
+          );
+        const base = (
+          await command(
+            ['rev-parse', '--verify', '--quiet', `${PERSONAL_UPSTREAM_REF}^{commit}`],
+            checkout,
+          ).catch(() => '')
+        ).trim();
+        // The recorded base is trusted only as the personal tip's ancestor: an
+        // interrupted move can leave "old tip + new base", and clamping to the
+        // shared history of the two recovers the base that tip really sits on.
+        const tip = (
+          await command(
+            ['rev-parse', '--verify', '--quiet', 'refs/heads/cindy-personal^{commit}'],
+            checkout,
+          ).catch(() => '')
+        ).trim();
+        const clamped =
+          !base || !tip || (await isAncestor(base, tip))
+            ? base
+            : (await command(['merge-base', tip, base], checkout).catch(() => '')).trim();
+        return notBehindBase({ ref, commit }, clamped, isAncestor);
       },
       prepare: async (state, publish, isCurrent) =>
         recordOfficialRef(

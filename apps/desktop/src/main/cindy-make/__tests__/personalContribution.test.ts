@@ -36,8 +36,9 @@ function harness(overrides: Partial<ContributionDeps> = {}) {
       runId === 'run'
         ? { title: '加一个按钮', request: '我想要按钮', baseTree: A, tree: B }
         : undefined,
+    ledgerPath: () => 'ledger.json',
     readStore: () => structuredClone(store),
-    writeStore: (next) => {
+    writeStore: (_file, next) => {
       store = structuredClone(next);
     },
     fetch: vi.fn(async () => new Response('{}', { status: 404 })) as unknown as typeof fetch,
@@ -197,7 +198,7 @@ describe('PersonalContribution', () => {
     const { contribution } = harness({
       ownerScope: () => scope,
       git: git as unknown as ContributionDeps['git'],
-      writeStore: (store) => {
+      writeStore: (_file, store) => {
         writes.push(store);
       },
     });
@@ -268,8 +269,9 @@ describe('PersonalContribution', () => {
     const { contribution } = harness({
       git: git as unknown as ContributionDeps['git'],
       fetch: fetchFn as unknown as typeof fetch,
+      ledgerPath: () => 'ledger.json',
       readStore: () => structuredClone(store),
-      writeStore: (next) => {
+      writeStore: (_file, next) => {
         store = structuredClone(next);
       },
     });
@@ -287,6 +289,132 @@ describe('PersonalContribution', () => {
     expect(store.run).toMatchObject({ number: 3, branch: 'cindy-make-pr/run', commit: B });
   });
 
+  it('records the pushed commit in the initiating ledger even when the account switches', async () => {
+    let scope = 'owner-1';
+    let store: Record<string, ContributionRecord> = {
+      run: {
+        runId: 'run',
+        number: 3,
+        url: 'https://github.com/makecindy/cindy/pull/3',
+        branch: 'cindy-make-pr/run',
+        commit: A,
+        submittedAt: 1,
+      },
+    };
+    const writes: Record<string, ContributionRecord>[] = [];
+    const git = vi.fn(async (args: string[]) => {
+      const op = args.includes('commit-tree')
+        ? 'commit-tree'
+        : args.includes('write-tree')
+          ? 'write-tree'
+          : args[0];
+      switch (op) {
+        case 'fetch':
+        case 'read-tree':
+        case 'apply':
+          return '';
+        case 'push':
+          // The account switches while the push is awaited.
+          scope = 'owner-2';
+          return '';
+        case 'diff':
+          return args.includes('--name-only') ? 'app.txt\0' : '';
+        case 'ls-files':
+          return '';
+        case 'rev-parse':
+          return args[1]?.includes('{tree}') ? A : B;
+        case 'write-tree':
+        case 'commit-tree':
+          return B;
+        default:
+          throw new Error('unexpected git ' + args.join(' '));
+      }
+    });
+    const fetchFn = vi.fn(async (url: string | URL | Request) =>
+      String(url).endsWith('/pulls/3')
+        ? new Response(
+            JSON.stringify({
+              number: 3,
+              html_url: 'https://github.com/makecindy/cindy/pull/3',
+              state: 'open',
+            }),
+            { status: 200 },
+          )
+        : new Response('{}', { status: 404 }),
+    );
+    const { contribution } = harness({
+      ownerScope: () => scope,
+      git: git as unknown as ContributionDeps['git'],
+      fetch: fetchFn as unknown as typeof fetch,
+      ledgerPath: () => 'ledger.json',
+      readStore: () => structuredClone(store),
+      writeStore: (file, next) => {
+        expect(file).toBe('ledger.json');
+        writes.push(structuredClone(next));
+        store = structuredClone(next);
+      },
+    });
+    await expect(
+      contribution.submit({
+        runId: 'run',
+        title: 'feat: x',
+        body: '',
+        name: 'Ada',
+        email: 'ada@example.com',
+      }),
+    ).rejects.toMatchObject({ code: 'account' });
+    // The push this client already made is recorded in the ledger pinned at entry:
+    // a retry leases against this commit instead of failing forever.
+    expect(writes.at(-1)?.run).toMatchObject({ number: 3, commit: B });
+  });
+
+  it('aborts instead of guessing when the earlier push lookup is unknown', async () => {
+    const git = vi.fn(async (args: string[]) => {
+      const op = args.includes('commit-tree')
+        ? 'commit-tree'
+        : args.includes('write-tree')
+          ? 'write-tree'
+          : args[0];
+      switch (op) {
+        case 'fetch':
+        case 'read-tree':
+        case 'apply':
+          return '';
+        case 'push':
+          throw Object.assign(new Error('rejected'), { stderr: ' ! [rejected] stale info' });
+        case 'diff':
+          return args.includes('--name-only') ? 'app.txt\0' : '';
+        case 'ls-files':
+          return '';
+        case 'rev-parse':
+          return args[1]?.includes('{tree}') ? A : B;
+        case 'write-tree':
+        case 'commit-tree':
+          return B;
+        default:
+          throw new Error('unexpected git ' + args.join(' '));
+      }
+    });
+    const fetchFn = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => {
+      throw new Error('offline');
+    });
+    const { contribution } = harness({
+      git: git as unknown as ContributionDeps['git'],
+      fetch: fetchFn as unknown as typeof fetch,
+    });
+    await expect(
+      contribution.submit({
+        runId: 'run',
+        title: 'feat: x',
+        body: '',
+        name: 'Ada',
+        email: 'ada@example.com',
+      }),
+    ).rejects.toMatchObject({ code: 'network' });
+    // Unknown is not "no pull request": nothing was opened behind the user's back.
+    expect(fetchFn.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+  });
+
   it('never guesses a new pull request when the earlier state is unknown', async () => {
     let store: Record<string, ContributionRecord> = { run: record('run', 3) };
     const git = vi.fn(async () => {
@@ -298,8 +426,9 @@ describe('PersonalContribution', () => {
     const { contribution } = harness({
       git: git as unknown as ContributionDeps['git'],
       fetch: fetchFn as unknown as typeof fetch,
+      ledgerPath: () => 'ledger.json',
       readStore: () => structuredClone(store),
-      writeStore: (next) => {
+      writeStore: (_file, next) => {
         store = structuredClone(next);
       },
     });
@@ -371,8 +500,9 @@ describe('PersonalContribution', () => {
     const { contribution } = harness({
       git: git as unknown as ContributionDeps['git'],
       fetch: fetchFn as unknown as typeof fetch,
+      ledgerPath: () => 'ledger.json',
       readStore: () => structuredClone(store),
-      writeStore: (next) => {
+      writeStore: (_file, next) => {
         store = structuredClone(next);
       },
     });
