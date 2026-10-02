@@ -4,6 +4,7 @@ import { i18n } from '@/i18n';
 import {
   buildOutboxItem,
   createOutboxClientId,
+  hasActiveOutboxHandoff,
   isSafelyUnsentOutboxEnqueueError,
   outboxDisplayItem,
   outboxItemAttachments,
@@ -57,6 +58,62 @@ describe('createOutboxClientId', () => {
     const b = createOutboxClientId();
     expect(a).toBeTruthy();
     expect(a).not.toBe(b);
+  });
+});
+
+describe('hasActiveOutboxHandoff', () => {
+  const online = {
+    relayOnline: true,
+    targetAvailable: true,
+    deviceUnresponsive: false,
+    autoRecoveringError: false,
+    syncInProgress: false,
+  };
+  const target = { deviceId: 'device-1', sessionId: 'session-1' };
+  const none = new Set<string>();
+  const record = (overrides: Partial<Parameters<typeof hasActiveOutboxHandoff>[0][number]> = {}) => ({
+    deviceId: 'device-1',
+    item: { sessionId: 'session-1', clientId: 'client-1' } as Parameters<typeof hasActiveOutboxHandoff>[0][number]['item'],
+    state: 'queued' as const,
+    ...overrides,
+  });
+
+  it('待发、enqueue 在途、被控端已收下未确认都算消息正在交接', () => {
+    expect(hasActiveOutboxHandoff([record()], target, online, none)).toBe(true);
+    expect(hasActiveOutboxHandoff([record({ state: 'sending' })], target, online, none)).toBe(true);
+    expect(hasActiveOutboxHandoff([record({ state: 'host-owned' })], target, online, none)).toBe(true);
+    expect(hasActiveOutboxHandoff([], target, online, none)).toBe(false);
+  });
+
+  it('只看当前设备的当前会话', () => {
+    expect(hasActiveOutboxHandoff([record({ deviceId: 'device-2' })], target, online, none)).toBe(false);
+    expect(hasActiveOutboxHandoff([
+      record({ item: { sessionId: 'session-2', clientId: 'client-1' } as ReturnType<typeof record>['item'] }),
+    ], target, online, none)).toBe(false);
+  });
+
+  it('断线或被控端无响应时消息只是在等重连,不算交接', () => {
+    expect(hasActiveOutboxHandoff([record()], target, { ...online, relayOnline: false }, none)).toBe(false);
+    expect(hasActiveOutboxHandoff([record()], target, { ...online, targetAvailable: false }, none)).toBe(false);
+    expect(hasActiveOutboxHandoff([record()], target, { ...online, deviceUnresponsive: true }, none)).toBe(false);
+    expect(hasActiveOutboxHandoff([record()], target, { ...online, autoRecoveringError: true }, none)).toBe(false);
+  });
+
+  it('发送后的同步不打断交接', () => {
+    expect(hasActiveOutboxHandoff([record()], target, { ...online, syncInProgress: true }, none)).toBe(true);
+    expect(hasActiveOutboxHandoff([record()], target, { ...online, targetAvailable: null }, none)).toBe(true);
+  });
+
+  it('出错、失败、撤销中、挂起和待确认的条目不算交接', () => {
+    expect(hasActiveOutboxHandoff([record({ error: '网络错误' })], target, online, none)).toBe(false);
+    expect(hasActiveOutboxHandoff([record({ state: 'failed' })], target, online, none)).toBe(false);
+    expect(hasActiveOutboxHandoff([record({ state: 'confirming' })], target, online, none)).toBe(false);
+    expect(hasActiveOutboxHandoff([record({ cancelRequested: true })], target, online, none)).toBe(false);
+    expect(hasActiveOutboxHandoff([record({ suspended: true })], target, online, none)).toBe(false);
+  });
+
+  it('已进被控端队列的条目归队列管', () => {
+    expect(hasActiveOutboxHandoff([record({ state: 'host-owned' })], target, online, new Set(['client-1']))).toBe(false);
   });
 });
 

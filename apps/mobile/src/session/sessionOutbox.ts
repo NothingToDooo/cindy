@@ -4,6 +4,7 @@
  * Recovery helpers remain for legacy direct sends and composer editing.
  */
 import { i18n } from '@/i18n';
+import type { DurableOutboxRecord } from '@/session/durableOutbox';
 import type { MobileSessionReference } from '@/session/sessionReferences';
 import type { RemoteSerializedAttachment } from '@/session/types';
 import { isInFlightDeviceLinkError } from '@cindy/device-link';
@@ -50,6 +51,39 @@ export function shouldHoldOutboxDispatchForConnection(
     || state.deviceUnresponsive
     || state.autoRecoveringError
     || state.syncInProgress;
+}
+
+/**
+ * 本会话是否有消息正在交给被控端:已进待发、尚未被被控端历史确认的条目。
+ *
+ * 活动条(「思考中」)用它把「点发送 → 被控端回报运行」整段连起来:本地写入 outbox
+ * 后 sending 就落下,而 enqueue 往返 + 被控端回报运行状态要一次远程往返,远超活动条
+ * 的下降沿去抖,中间会熄灭一次再亮。
+ *
+ * 只认在正常推进的条目:断线 / 被控端无响应时消息只是在排队等重连,不能说成「思考中」;
+ * 出过错(重试中 / 待确认)、失败、撤销中、挂起的条目同理。syncInProgress 不算断线——
+ * 发送后的同步很常见,把它算进来会在交接中途再制造一次熄灭。
+ * 已出现在被控端队列里的条目归队列管(队列暂停时不该显示「思考中」),这里不再计入。
+ */
+export function hasActiveOutboxHandoff(
+  records: readonly Pick<DurableOutboxRecord, 'deviceId' | 'item' | 'state' | 'error' | 'cancelRequested' | 'suspended'>[],
+  target: { deviceId: string; sessionId: string },
+  connection: MobileOutboxConnectionState,
+  remoteQueuedClientIds: ReadonlySet<string>,
+): boolean {
+  if (
+    !connection.relayOnline
+    || connection.targetAvailable === false
+    || connection.deviceUnresponsive
+    || connection.autoRecoveringError
+  ) return false;
+  return records.some((record) => record.deviceId === target.deviceId
+    && record.item.sessionId === target.sessionId
+    && !remoteQueuedClientIds.has(record.item.clientId)
+    && (record.state === 'queued' || record.state === 'sending' || record.state === 'host-owned')
+    && !record.error
+    && !record.cancelRequested
+    && !record.suspended);
 }
 
 /**

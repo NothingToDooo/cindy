@@ -434,6 +434,7 @@ import {
 import {
   buildOutboxItem,
   createOutboxClientId,
+  hasActiveOutboxHandoff,
   outboxDisplayItem,
   outboxItemAttachments,
   recoverOutboxItemsToComposerDraft,
@@ -4217,7 +4218,21 @@ export default function SessionScreen() {
   // Sending/queueing drives the composer immediately, but cannot reopen the loaded previous
   // turn before the new user message arrives. Only remote activity drives message grouping.
   const isMessageListStreaming = remoteSessionRunning || currentTurnStreaming;
-  // 活动条信号去抖:isSessionStreaming 由四个来源(sending / canStopQueue /
+  // 消息正在交给被控端(enqueue 在途 / 已进 outbox 未被确认)也算活动:sending 在本地写入
+  // outbox 后就落下,而被控端回报运行要一次远程往返,远超下面的去抖窗口,不补这段活动条
+  // 会「出现 → 熄灭 → 再出现」。只作用于活动条,不改 isSessionStreaming 的停止 / 横幅语义。
+  const remoteQueuedClientIds = useMemo(
+    () => new Set(inputProjection.pendingQueue.map((item) => item.clientId)),
+    [inputProjection.pendingQueue],
+  );
+  const messageHandoffActive = sendingQueueClientIds.size > 0 || hasActiveOutboxHandoff(
+    durableOutboxRecords,
+    { deviceId, sessionId },
+    outboxConnectionState,
+    remoteQueuedClientIds,
+  );
+  const composerActivitySignal = isSessionStreaming || messageHandoffActive;
+  // 活动条信号去抖:composerActivitySignal 由多个来源(sending / 消息交接 / canStopQueue /
   // remoteSessionRunning / currentTurnStreaming)拼成,它们交接时会漏出一两帧空隙
   // ——实测日志里 streaming 1→0→1,活动条跟着闪一下、计时还被重置回 0s。
   // 上升沿立即生效(「跑起来了」要第一时间说),下降沿延后熄灭:真停了这点延迟无感,
@@ -4227,14 +4242,14 @@ export default function SessionScreen() {
   // 直接判定粘滞态是否属于当前会话,不依赖 effect 的执行时机。
   const [streamingSticky, setStreamingSticky] = useState<string | null>(null);
   useEffect(() => {
-    if (isSessionStreaming) {
+    if (composerActivitySignal) {
       setStreamingSticky(sessionId);
       return undefined;
     }
     const timer = setTimeout(() => setStreamingSticky(null), COMPOSER_ACTIVITY_SETTLE_MS);
     return () => clearTimeout(timer);
-  }, [isSessionStreaming, sessionId]);
-  const showComposerActivity = isSessionStreaming || streamingSticky === sessionId;
+  }, [composerActivitySignal, sessionId]);
+  const showComposerActivity = composerActivitySignal || streamingSticky === sessionId;
   useEffect(() => {
     // 计时起点跟着去抖后的信号走:否则空隙一过 startedAt 被重置,活动条从 0s 重新数。
     setComposerActivityStartedAt(showComposerActivity ? Date.now() : null);
