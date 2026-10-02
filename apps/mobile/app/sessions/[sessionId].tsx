@@ -4225,15 +4225,18 @@ export default function SessionScreen() {
   // sendingQueueClientIds 不带会话身份、也不看连接,不能拿来驱动活动条。
   const confirmedUserClientIds = useMemo(() => confirmedHistoryUserClientIds(historyView.snapshot, rawMessages),
     [historyView.snapshot, rawMessages]);
-  // 已进被控端队列(归队列管)或已回流进历史(已落定,只是 outbox 还没对账清掉)的消息
-  // 不再算交接,否则快速 turn 结束后活动条要等后台对账才熄灭。
-  const handoffSettledClientIds = useMemo(
-    () => new Set([
-      ...inputProjection.pendingQueue.map((item) => item.clientId),
-      ...confirmedUserClientIds,
-    ]),
-    [inputProjection.pendingQueue, confirmedUserClientIds],
-  );
+  // 已进被控端队列的消息归队列管,不再算交接。已回流进历史、且后面已有回复(turn 已跑过)
+  // 的消息也不算,否则快速 turn 结束后活动条要等后台对账才熄灭。历史尾行仍是这条用户消息
+  // 时不排除:被控端先落库用户消息、再跑派发前钩子,这段还没有运行信号。
+  const handoffSettledClientIds = useMemo(() => {
+    const tail = rawMessages[rawMessages.length - 1];
+    const awaitingReplyClientId = tail?.role === 'user' ? tail.clientId : undefined;
+    const settled = new Set(inputProjection.pendingQueue.map((item) => item.clientId));
+    for (const clientId of confirmedUserClientIds) {
+      if (clientId !== awaitingReplyClientId) settled.add(clientId);
+    }
+    return settled;
+  }, [inputProjection.pendingQueue, confirmedUserClientIds, rawMessages]);
   const messageHandoffActive = hasActiveOutboxHandoff(
     durableOutboxRecords,
     { deviceId, sessionId },
