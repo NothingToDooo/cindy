@@ -59,8 +59,11 @@ export interface DesktopControllerDeps {
    * it. Returns false when the active capture cannot follow a display change.
    */
   pauseVideo?(): boolean;
-  /** Point a held video stream at the changed display; false if it is gone. */
-  resumeVideo?(display: RemoteDesktopDisplay): boolean;
+  /**
+   * Point a held video stream at the changed display. True only when the
+   * capture confirms a live stream follows it (e.g. not browser capture).
+   */
+  resumeVideo?(display: RemoteDesktopDisplay): Promise<boolean>;
   lockScreen?(isCurrent: () => boolean, signal: AbortSignal): Promise<void>;
   offer(
     lease: RemoteDesktopLease,
@@ -280,8 +283,8 @@ export class RemoteDesktopController {
     return false;
   }
   /** A held stream that cannot follow the new display is stopped like before. */
-  private resumeVideo(display: RemoteDesktopDisplay): boolean {
-    if (this.deps.resumeVideo?.(display)) return true;
+  private async resumeVideo(display: RemoteDesktopDisplay): Promise<boolean> {
+    if (await this.deps.resumeVideo?.(display).catch(() => false)) return true;
     this.deps.stopVideo();
     return false;
   }
@@ -338,16 +341,18 @@ export class RemoteDesktopController {
       );
       await this.resolutionWrite;
       requireCurrent();
-      active.display = {
+      const display = {
         id: active.sourceDisplayId,
         name: active.display.name,
         width: selected.width,
         height: selected.height,
       };
+      const resumed = videoKept && (await this.resumeVideo(display));
+      requireCurrent();
+      active.display = display;
       this.viewerGeometryManaged = true;
       active.controlling = false;
       this.controlGeneration++;
-      const resumed = videoKept && this.resumeVideo(active.display);
       this.deps.changed();
       return {
         lease: active.lease,
@@ -728,11 +733,12 @@ export class RemoteDesktopController {
             }
           }
           if (!current()) throw new Error('DESKTOP_LEASE_EXPIRED');
+          const resumed = videoKept && (await this.resumeVideo(display));
+          if (!current()) throw new Error('DESKTOP_LEASE_EXPIRED');
           this.viewerGeometryManaged = true;
           active.display = display;
           active.controlling = false;
           this.controlGeneration++;
-          const resumed = videoKept && this.resumeVideo(display);
           this.deps.changed();
           return {
             lease: active.lease,

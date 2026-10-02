@@ -514,7 +514,7 @@ describe('viewer-sized desktop with live video', () => {
     async (op) => {
       const f = fixture();
       f.deps.pauseVideo = vi.fn(() => true);
-      f.deps.resumeVideo = vi.fn(() => true);
+      f.deps.resumeVideo = vi.fn(async () => true);
       const { lease } = await f.start();
       if (op === 'restoreViewerDisplay') {
         await f.host.request('phone', { op: 'viewerDisplay', lease, width: 900, height: 1600 });

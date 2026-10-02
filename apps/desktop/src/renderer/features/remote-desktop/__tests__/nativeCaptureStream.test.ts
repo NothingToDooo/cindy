@@ -8,14 +8,19 @@ afterEach(() => {
 });
 function setup() {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
-  const track = { stop: vi.fn() };
+  const track = {
+    readyState: 'live',
+    stop: vi.fn(() => {
+      track.readyState = 'ended';
+    }),
+  };
   const drawImage = vi.fn();
   const bitmap = { width: 1600, height: 1000, close: vi.fn() };
   const canvas = {
     width: 0,
     height: 0,
     getContext: () => ({ drawImage, clearRect: vi.fn() }),
-    captureStream: vi.fn(() => ({ getTracks: () => [track] })),
+    captureStream: vi.fn(() => ({ getTracks: () => [track], getVideoTracks: () => [track] })),
   };
   vi.spyOn(document, 'createElement').mockImplementation(
     (() => canvas) as unknown as typeof document.createElement,
@@ -117,7 +122,7 @@ it('reports still after a quiet second and moving again on a large change', asyn
   expect(onMotion).toHaveBeenLastCalledWith(true);
   owner.stop();
 });
-it('drops a frame read before a display swap but keeps the stream and picture', async () => {
+it('resumes after a display swap by dropping the old frame but keeping the stream and picture', async () => {
   const h = setup();
   const clearRect = vi.fn();
   h.canvas.getContext = () => ({ drawImage: h.drawImage, clearRect });
@@ -134,7 +139,7 @@ it('drops a frame read before a display swap but keeps the stream and picture', 
       }),
   );
   await vi.advanceTimersByTimeAsync(67);
-  owner.skipStale();
+  expect(owner.resume()).toBe(true);
   finish(h.bitmap);
   await vi.advanceTimersByTimeAsync(0);
   // Only the initial frame was drawn; the stale one is dropped, not cleared.
@@ -144,4 +149,40 @@ it('drops a frame read before a display swap but keeps the stream and picture', 
   await vi.advanceTimersByTimeAsync(67);
   expect(h.drawImage).toHaveBeenCalledTimes(2);
   owner.stop();
+});
+it('keeps a held stream through a display change slower than the no-frame limit', async () => {
+  const h = setup();
+  let frames = true;
+  const failed = vi.fn();
+  const owner = await nativeCaptureStream(
+    async () => (frames ? 'anBlZw==' : null),
+    () => true,
+    failed,
+  );
+  owner.hold();
+  frames = false;
+  // Creating a virtual display can take up to 8 seconds.
+  await vi.advanceTimersByTimeAsync(8000);
+  expect(failed).not.toHaveBeenCalled();
+  expect(h.track.stop).not.toHaveBeenCalled();
+  expect(owner.resume()).toBe(true);
+  frames = true;
+  await vi.advanceTimersByTimeAsync(67);
+  expect(h.drawImage).toHaveBeenCalledTimes(2);
+  owner.stop();
+});
+it('still ends an unheld stream after five seconds without frames and refuses to resume', async () => {
+  const h = setup();
+  let frames = true;
+  const failed = vi.fn();
+  const owner = await nativeCaptureStream(
+    async () => (frames ? 'anBlZw==' : null),
+    () => true,
+    failed,
+  );
+  frames = false;
+  await vi.advanceTimersByTimeAsync(5200);
+  expect(failed).toHaveBeenCalledOnce();
+  expect(h.track.stop).toHaveBeenCalled();
+  expect(owner.resume()).toBe(false);
 });

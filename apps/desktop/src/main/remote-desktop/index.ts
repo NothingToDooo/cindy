@@ -215,7 +215,7 @@ let preparingOffer = false;
 let videoAttempt: string | undefined;
 let pending: {
   id: string;
-  op: 'offer' | 'ice' | 'frame';
+  op: 'offer' | 'ice' | 'frame' | 'display-swap';
   resolve(result: DesktopHostReply): void;
   reject(error: Error): void;
   timer: ReturnType<typeof setTimeout>;
@@ -225,26 +225,34 @@ let pending: {
 const input = new DesktopInputHost(() => remoteDesktop.releaseControl());
 const clipboardCounter = new ClipboardCounter(resolveDesktopInputBinary);
 // A display change holds native capture instead of stopping it: frames pause
-// until the changed display is known, then the same stream follows it.
+// until the changed display is known, then the same stream follows it. The
+// capture page also pauses its no-frame timeout, since the change may be slow.
 let videoPaused = false;
 function pauseVideo(): boolean {
   if (!videoLease || !nativeDisplay || !host || host.isDestroyed()) return false;
   videoPaused = true;
+  host.send(DESKTOP_LOCAL.COMMAND, {
+    id: randomUUID(),
+    op: 'display-hold',
+    lease: videoLease,
+  } satisfies DesktopHostCommand);
   return true;
 }
-function resumeVideo(display: RemoteDesktopDisplay): boolean {
+/** True only when the capture page confirms a live native stream now follows `display`. */
+async function resumeVideo(display: RemoteDesktopDisplay): Promise<boolean> {
   if (!videoPaused || !videoLease || !host || host.isDestroyed()) return false;
+  const lease = videoLease;
   nativeDisplay = display.id;
   // Helpers bind their capture geometry at start; the next frame restarts them.
   nativeCapture.stop();
   hyprlandCapture.stop();
   videoPaused = false;
-  host.send(DESKTOP_LOCAL.COMMAND, {
-    id: randomUUID(),
-    op: 'display-swap',
-    lease: videoLease,
-  } satisfies DesktopHostCommand);
-  return true;
+  try {
+    const kept = await requestHost({ id: randomUUID(), op: 'display-swap', lease }, 2000);
+    return kept === true && videoLease === lease;
+  } catch {
+    return false;
+  }
 }
 function stopVideo(): void {
   videoPaused = false;
@@ -431,7 +439,7 @@ async function offer(
 
 /** One bounded command to the existing capture owner; never reset the shared device link. */
 function requestHost(
-  command: DesktopHostCommand & { op: 'offer' | 'ice' | 'frame' },
+  command: DesktopHostCommand & { op: 'offer' | 'ice' | 'frame' | 'display-swap' },
   timeoutMs: number,
 ): Promise<DesktopHostReply> {
   const currentHost = host;
@@ -1138,6 +1146,7 @@ export function registerRemoteDesktopIpc(
             /^[A-Za-z0-9+/]+={0,2}$/.test(sdp)))
       )
         request.resolve(sdp);
+      else if (request.op === 'display-swap' && typeof sdp === 'boolean') request.resolve(sdp);
       else if (request.op === 'ice') {
         const result = parseDesktopIceReply(sdp);
         if (result.attemptId !== videoAttempt) throw new Error('DESKTOP_VIDEO_STOPPED');

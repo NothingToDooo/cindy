@@ -14,7 +14,8 @@ export async function nativeCaptureStream(
   stream: MediaStream;
   stop(): void;
   clear(): void;
-  skipStale(): void;
+  hold(): void;
+  resume(): boolean;
 }> {
   const canvas = document.createElement('canvas');
   const context = canvas.getContext('2d');
@@ -46,6 +47,8 @@ export async function nativeCaptureStream(
   let timer: ReturnType<typeof setTimeout> | null = null;
   let epoch = 0;
   let lastFrame = performance.now();
+  // A display change yields no frames for a while; it must not end the stream.
+  let held = false;
   const draw = async () => {
     const current = epoch;
     const frame = await read();
@@ -89,7 +92,8 @@ export async function nativeCaptureStream(
     const started = performance.now();
     try {
       await draw();
-      if (performance.now() - lastFrame > 5000) throw new Error('DESKTOP_VIDEO_UNAVAILABLE');
+      if (!held && performance.now() - lastFrame > 5000)
+        throw new Error('DESKTOP_VIDEO_UNAVAILABLE');
       if (!stopped && alive())
         timer = setTimeout(
           () => void pull(),
@@ -109,9 +113,17 @@ export async function nativeCaptureStream(
       epoch++;
       context.clearRect(0, 0, canvas.width, canvas.height);
     },
+    hold: () => {
+      held = true;
+    },
     // Drop frames already requested for the previous display; keep the picture.
-    skipStale: () => {
+    // False when the stream already ended, so the caller rebuilds instead.
+    resume: () => {
+      if (stopped || stream.getVideoTracks()[0]?.readyState !== 'live') return false;
+      held = false;
       epoch++;
+      lastFrame = performance.now();
+      return true;
     },
   };
 }

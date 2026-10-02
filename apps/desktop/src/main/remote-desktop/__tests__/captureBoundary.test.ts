@@ -1,3 +1,4 @@
+import type { RemoteDesktopDisplay } from '@cindy/device-link';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import {
   DESKTOP_AUDIO_RETRY_MS,
@@ -706,23 +707,42 @@ it('holds native video across a display change and resumes it on the new display
   await pending;
   const owner = h.owner;
   const frame = h.handlers.get(DESKTOP_LOCAL.NATIVE_FRAME);
+  const reply = h.handlers.get(DESKTOP_LOCAL.REPLY);
+  const swap = async (display: RemoteDesktopDisplay, kept: unknown) => {
+    const result = h.deps.resumeVideo!(display);
+    await flush();
+    const command = owner.send.mock.calls.at(-1)[1];
+    expect(command).toMatchObject({ op: 'display-swap', lease: h.lease });
+    reply(event(), command.id, kept);
+    return result;
+  };
   expect(h.deps.pauseVideo!()).toBe(true);
+  // The capture page pauses its no-frame timeout for a slow display change.
+  expect(owner.send.mock.calls.at(-1)[1]).toMatchObject({ op: 'display-hold', lease: h.lease });
   h.nativeFrame.mockClear();
   // Frames of the old geometry never reach the held stream.
   await expect(frame(event(), h.lease)).resolves.toBeNull();
   expect(h.nativeFrame).not.toHaveBeenCalled();
   h.nativeStop.mockClear();
-  expect(h.deps.resumeVideo!({ id: '5', name: 'Viewer', width: 900, height: 1600 })).toBe(true);
+  await expect(swap({ id: '5', name: 'Viewer', width: 900, height: 1600 }, true)).resolves.toBe(
+    true,
+  );
   // Same capture process and peer; only the source follows the new display.
   expect(h.owner).toBe(owner);
   expect(owner.dead).toBe(false);
   expect(h.nativeStop).toHaveBeenCalled();
-  expect(owner.send.mock.calls.at(-1)[1]).toMatchObject({ op: 'display-swap', lease: h.lease });
   await frame(event(), h.lease);
   expect(h.nativeFrame).toHaveBeenLastCalledWith('5', false, undefined);
+  // Browser capture (or an ended stream) cannot follow: not reported as kept.
+  expect(h.deps.pauseVideo!()).toBe(true);
+  await expect(swap({ id: '1', name: 'Main', width: 1920, height: 1080 }, false)).resolves.toBe(
+    false,
+  );
   // A stopped stream cannot be resumed and is not reported as kept.
   h.deps.stopVideo();
-  expect(h.deps.resumeVideo!({ id: '1', name: 'Main', width: 1920, height: 1080 })).toBe(false);
+  await expect(
+    h.deps.resumeVideo!({ id: '1', name: 'Main', width: 1920, height: 1080 }),
+  ).resolves.toBe(false);
 });
 
 it('does not advertise or select Windows overlays without a ready native service', async () => {

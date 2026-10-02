@@ -1364,7 +1364,7 @@ describe('live display switch', () => {
       const h = harness();
       modes(h);
       h.deps.pauseVideo = vi.fn(() => canPause);
-      h.deps.resumeVideo = vi.fn(() => canResume);
+      h.deps.resumeVideo = vi.fn(async () => canResume);
       const { lease } = await h.start();
       await h.controller.request('phone', { op: 'control', lease, enabled: true });
       vi.mocked(h.deps.stopVideo).mockClear();
@@ -1392,7 +1392,7 @@ describe('live display switch', () => {
       throw new Error('DESKTOP_DISPLAY_MODE_FAILED');
     });
     h.deps.pauseVideo = vi.fn(() => true);
-    h.deps.resumeVideo = vi.fn(() => true);
+    h.deps.resumeVideo = vi.fn(async () => true);
     const { lease } = await h.start();
     await h.controller.request('phone', { op: 'control', lease, enabled: true });
     await expect(
