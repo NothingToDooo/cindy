@@ -10,6 +10,7 @@ import {
 import type { MakeSourceGitProgress, MakeSourceStatus } from '../../shared/cindyMakeDoctor.js';
 import { runSourceGit } from './sourceGit.js';
 import { runSourcePnpm } from './sourcePnpm.js';
+import { assertPnpmConfigContained } from './pnpmWriteRoots.js';
 import { readSourceRevisions, type SourceRevisions } from './sourceRevisions.js';
 import { CINDY_PERSONAL_BRANCH } from './sourcePaths.js';
 import { PERSONAL_UPSTREAM_REF } from './sourceContent.js';
@@ -656,10 +657,19 @@ async function prepareCindySourceInternal(
       phase: 'caching',
     });
     const processEnvironment = await resolveMakeToolEnvironment(env, ['node', 'pnpm'], signal);
+    // Cache warming never executes content-controlled configuration: refused
+    // settings (`configDependencies` runs code, path keys redirect writes) or a
+    // config symlink skip the warming entirely — the install paths run their own
+    // full check (see `pnpmWriteRoots`), and a skipped warm costs only downloads.
+    const warmable = await assertPnpmConfigContained(sourcePath).then(
+      () => true,
+      () => false,
+    );
     // Settings and preflight warm the same pnpm store. Check the current lockfile
     // and cache each time, filling changed or evicted packages without trusting a
     // stale ready marker. The personal baseline needs no installed dependencies.
-    await runSourcePnpm(
+    if (warmable)
+      await runSourcePnpm(
       processEnvironment,
       [
         'fetch',

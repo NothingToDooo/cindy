@@ -408,6 +408,31 @@ it('keeps the source in place when the provenance journal cannot be written', as
   }
 }, 60_000);
 
+it('names a change whose added duplicate line a resolved rebase dropped', async () => {
+  const h = await repos();
+  try {
+    // The change adds a line that already exists in the file and replaces
+    // another; the resolution fuses the replacement but drops the added copy —
+    // one pre-existing line must not vouch for the missing occurrence.
+    await h.write(h.source, 'feature.txt', ['2', ...replace(0, 'alpha')]);
+    const duplicated = await h.commit(h.source, '', 3_200);
+    await h.write(h.official, 'feature.txt', replace(0, 'official'));
+    const target = await h.commit(h.official, 'official v2');
+    const state = await prepareUpstreamMerge(h.userData, update(h, target), h.git, async () => {});
+    expect(state.status).toBe('conflict');
+    const worktree = mergeWorktree(h.userData, state.id);
+    await h.write(worktree, 'feature.txt', replace(0, 'official and alpha'));
+    await h.git(['add', '-A'], worktree);
+    await h.git([...h.identity(true), 'rebase', '--continue'], worktree);
+    await expect(applyUpstreamMerge(h.userData, state, h.git)).rejects.toMatchObject({
+      code: 'checksFailed',
+      missing: { count: 1, commits: [duplicated] },
+    });
+  } finally {
+    await h.clean();
+  }
+}, 60_000);
+
 it('keeps a merge commit’s own edits: missing until the resolver puts them back', async () => {
   const h = await repos();
   try {

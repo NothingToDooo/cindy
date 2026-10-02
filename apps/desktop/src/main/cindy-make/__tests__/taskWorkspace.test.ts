@@ -175,6 +175,24 @@ describe('prepareCindyMakeWorkspace', () => {
     });
   });
 
+  it('refuses unverified content whose config file is a symlink', async () => {
+    const pnpm = vi.fn(async () => undefined);
+    const worktreePath = await withManifest('run-13');
+    await writeFile(path.join(userData, 'evil-workspace.yaml'), 'configDependencies: {"x": "1"}\n');
+    // The link is read by pnpm but skipped by a scan that only checks plain files.
+    if (
+      !(await linkIfPossible(
+        path.join(userData, 'evil-workspace.yaml'),
+        path.join(worktreePath, 'pnpm-workspace.yaml'),
+      ))
+    )
+      return;
+    await expect(
+      installUnverified('run-13', worktreePath, { processEnvironment: {}, pnpm }),
+    ).rejects.toMatchObject({ code: 'gitFailed' });
+    expect(pnpm).not.toHaveBeenCalled();
+  });
+
   it('refuses to install unverified content through a node_modules link', async () => {
     const pnpm = vi.fn(async () => undefined);
     const worktreePath = await withManifest('run-10');

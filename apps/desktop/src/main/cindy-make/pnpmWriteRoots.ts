@@ -1,4 +1,4 @@
-import { readFile, readdir, readlink, realpath } from 'node:fs/promises';
+import { lstat, readFile, readdir, readlink, realpath } from 'node:fs/promises';
 import path from 'node:path';
 
 import yaml from 'js-yaml';
@@ -94,6 +94,40 @@ async function readConfig(file: string): Promise<string> {
   const text = await readFile(file, 'utf8');
   if (text.length > MAX_CONFIG_BYTES) throw refuse(`pnpm config too large: ${path.basename(file)}`);
   return text;
+}
+
+/** The recognized pnpm configuration files: never accepted behind a symlink. */
+function isPnpmConfigName(name: string): boolean {
+  return (
+    name === '.npmrc' ||
+    name === 'pnpm-workspace.yaml' ||
+    name === 'pnpm-workspace.yml' ||
+    name === 'package.json' ||
+    /pnpmfile\.(?:c|m)?js$/i.test(name)
+  );
+}
+
+/**
+ * The root configuration pnpm reads before anything else, checked without
+ * walking the tree: cache warming (`pnpm fetch`) runs this and skips entirely
+ * when the content configures its own code (`configDependencies`) or redirects
+ * writes. Installs run the full `assertPnpmInstallContained` walk.
+ */
+export async function assertPnpmConfigContained(root: string): Promise<void> {
+  for (const name of ['.npmrc', 'pnpm-workspace.yaml', 'pnpm-workspace.yml', 'package.json']) {
+    const full = path.join(root, name);
+    let entry;
+    try {
+      entry = await lstat(full);
+    } catch {
+      continue;
+    }
+    if (entry.isSymbolicLink()) throw refuse(`pnpm config is a symlink: ${name}`);
+    if (!entry.isFile()) continue;
+    if (name === '.npmrc') checkIni(full, await readConfig(full));
+    else if (name === 'package.json') checkPackageJson(full, await readConfig(full));
+    else checkWorkspaceYaml(full, await readConfig(full));
+  }
 }
 
 function checkIni(file: string, text: string): void {
@@ -249,6 +283,10 @@ export async function assertPnpmInstallContained(root: string): Promise<void> {
       if (++scanned > MAX_SCANNED_ENTRIES) throw refuse('worktree holds too many entries');
       const full = path.join(directory, entry.name);
       if (entry.isSymbolicLink()) {
+        // A recognized config behind a link is never walked past: pnpm follows
+        // the link and reads what this scan would have skipped.
+        if (isPnpmConfigName(entry.name))
+          throw refuse(`pnpm config is a symlink: ${path.relative(base, full)}`);
         await contained(full, path.resolve(directory, await readlink(full)), base, rootReal);
         continue; // never walk through a link
       }

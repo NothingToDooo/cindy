@@ -473,12 +473,21 @@ async function editsSurvive(
       for (const word of words) if (word === needed[at]) at += 1;
       return at === needed.length;
     };
-    const present = (added: string) => lines.some((line) => within(added, line));
+    const carriers = (content: string, among: string[]) =>
+      among.filter((line) => within(content, line)).length;
+    // Occurrences must survive: one pre-existing line never vouches for an added
+    // copy, and a line added twice must be there twice.
+    const before = await git(['show', `${commit}^:${name}`], cwd).catch(() => '');
+    const beforeLines = before.split(/\r?\n/);
+    for (const content of new Set(added)) {
+      const needed =
+        carriers(content, beforeLines) + added.filter((line) => line === content).length;
+      if (carriers(content, lines) < needed) return false;
+    }
     // A removed line is gone only when no line of the result carries its content:
     // a resolution that kept it adapted (`deny()` as `deny() // upstream note`)
     // did not apply the deletion and must not vouch for the change.
-    const stillThere = (removed: string) => lines.some((line) => within(removed, line));
-    if (added.some((line) => !present(line)) || removed.some(stillThere)) return false;
+    if (removed.some((content) => lines.some((line) => within(content, line)))) return false;
   }
   return true;
 }
