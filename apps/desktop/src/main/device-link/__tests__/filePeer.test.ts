@@ -532,6 +532,39 @@ describe('authorized file peer source', () => {
     expect(invoke).toHaveBeenCalledTimes(1);
     expect(mock.commands.filter((c) => c.action === 'invoke')).toEqual([]);
   });
+  it('drops the ticket of a begin answered only after the upload was cancelled', async () => {
+    const peer = 'late-begin-peer';
+    const source = path.join(directory, 'upload');
+    await writeFile(source, 'hello');
+    const ticket = 'ffffffff-ffff-ffff-ffff-ffffffffffff';
+    const invoke = vi.fn(async (_peer: string, _channel: string, args: unknown[]) => ({
+      ok: true,
+      result:
+        (args[0] as { action: string }).action === 'caps'
+          ? { version: 1, streaming: true, attachments: true, streamAttachments: true }
+          : { connection: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', sdp: 'v=0' },
+    }));
+    const abort = new AbortController();
+    const requests = () =>
+      mock.commands
+        .filter((c) => c.action === 'invoke')
+        .map((c) => JSON.parse(c.payload).args[0].request as { op: string; ticket?: string });
+    mock.commandReply.mockImplementation((action) => {
+      // Once connected, the target answers slowly.
+      if (action === 'answer') mock.replyDelay = 50;
+      if (action !== 'invoke') return 'v=0';
+      const op = JSON.parse(mock.commands.at(-1)!.payload).args[0].request.op;
+      return JSON.stringify({ ok: true, result: op === 'begin' ? { ticket } : {} });
+    });
+    const upload = tryUploadPeerAttachment(peer, source, undefined, invoke, undefined, abort.signal);
+    // The target has created the ticket, but before its answer arrives the user cancels.
+    await vi.waitFor(() => expect(requests().map((r) => r.op)).toContain('begin'));
+    abort.abort();
+    await expect(upload).rejects.toThrow('FILE_PEER_CANCELLED');
+    // The cancel returned at once; the late ticket is still released on the target.
+    await vi.waitFor(() => expect(requests().at(-1)).toEqual({ op: 'cancel', ticket }));
+    expect(requests().filter((r) => r.op === 'write')).toEqual([]);
+  });
   it('drops a cancelled upload still queued behind another transfer on the same peer', async () => {
     const peer = 'queued-cancel-peer';
     const source = path.join(directory, 'upload');

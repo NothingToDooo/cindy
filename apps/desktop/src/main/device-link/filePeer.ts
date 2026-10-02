@@ -922,16 +922,27 @@ export async function tryUploadPeerAttachment(
         async (offset, length) => (await read(offset, length)).toString('base64'),
         async (request, timeoutMs, body) => {
           check();
-          const sent = command({
-            action: 'invoke',
-            connection: out.id,
-            ...(timeoutMs ? { timeoutMs } : {}),
-            ...(body === undefined ? {} : { body }),
-            payload: JSON.stringify({
-              channel: FILE_PEER_CHANNEL,
-              args: [{ action: 'attachment', connection: out.remote, request }],
-            }),
-          });
+          const send = (r: Record<string, unknown>) =>
+            command({
+              action: 'invoke',
+              connection: out.id,
+              ...(timeoutMs ? { timeoutMs } : {}),
+              ...(body === undefined ? {} : { body }),
+              payload: JSON.stringify({
+                channel: FILE_PEER_CHANNEL,
+                args: [{ action: 'attachment', connection: out.remote, request: r }],
+              }),
+            });
+          const sent = send(request);
+          // A begin answered only after cancellation: the target created a ticket nobody will
+          // cancel, so drop it here (cleanup otherwise starts once the ticket is known).
+          if (request.op === 'begin')
+            void sent
+              .then((raw) => {
+                const ticket = signal?.aborted ? JSON.parse(raw!)?.result?.ticket : undefined;
+                if (typeof ticket === 'string') return send({ op: 'cancel', ticket });
+              })
+              .catch(() => {});
           // A cancelled upload stops waiting for in-flight blocks at once; their late replies are
           // ignored and the connection stays up, so the `cancel` request still reaches the target.
           const response = JSON.parse((await untilAborted(sent, signal))!);
