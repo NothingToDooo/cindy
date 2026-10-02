@@ -2,6 +2,7 @@ import { useState, type ComponentProps, type ReactNode } from "react";
 import { Stack } from "expo-router";
 import { HomeHeaderGlassButton } from "@/session/HomeHeaderGlassButton";
 import { QuietSyncIndicator } from '@/components/QuietSyncIndicator';
+import { useDelayedConnectionNotice } from '@/components/ConnectionNoticeOverlay';
 import { ChevronDown, Menu } from "lucide-react-native";
 import { Pressable, StyleSheet, View } from "react-native";
 import { useSafeAreaFrame, useSafeAreaInsets } from "react-native-safe-area-context";
@@ -86,6 +87,9 @@ export function HomeNativeStackHeader({
   const gapWidth = Math.max(navigationChrome.target, Math.min(360,
     barWidth - navigationChrome.target * (1 + trailingItems) - spacing.lg * 4 - spacing.xs));
   const [naturalWidth, setNaturalWidth] = useState<number | null>(null);
+  // One delayed visibility for the glyph and its measured footprint, so a short
+  // sync that never shows the glyph never moves the title either.
+  const syncVisible = useDelayedConnectionNotice(syncing);
   const pinnedTrailing = trailingItems > 1
     && naturalWidth != null
     && naturalWidth > mirroredWidth - spacing.xs * 2;
@@ -120,7 +124,7 @@ export function HomeNativeStackHeader({
             size={iconSize.xs}
             strokeWidth={iconStroke.medium}
           />
-          <QuietSyncIndicator active={syncing} />
+          <QuietSyncIndicator active={syncVisible} immediate />
         </View>
       </Pressable>
     </NativePullDownMenu>
@@ -143,7 +147,7 @@ export function HomeNativeStackHeader({
         </Text>
         <ChevronDown size={iconSize.xs} strokeWidth={iconStroke.medium} />
         {/* Same footprint as the sync glyph, without a second accessible spinner. */}
-        {syncing ? <View style={styles.titleMeasureSync} /> : null}
+        {syncVisible ? <View style={styles.titleMeasureSync} /> : null}
       </View>
     </View>
   );

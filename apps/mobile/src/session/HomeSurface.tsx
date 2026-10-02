@@ -2065,6 +2065,8 @@ function HomeScreenContent({ active = true, onModeChange, width, onDismiss, newS
   }, [home.deviceFilters, restoredDeviceName, selectedDeviceId, t]);
   // 设备名放得下时居中在顶栏中线;放不下时贴住右侧按钮,向左侧富余空间伸展后才截断。
   const homeTitle = useBalancedTitle();
+  // Embedded drawers never show the remote-desktop action.
+  const showHeaderRemoteDesktop = Boolean(selectedDeviceId) && !embedded;
   const reportHomeTitleSlot = homeTitle.reportSlot;
   const [homeHeaderWidth, setHomeHeaderWidth] = useState(0);
   const [homeTitleSlotFrame, setHomeTitleSlotFrame] = useState<{ x: number; width: number } | null>(null);
@@ -2906,7 +2908,7 @@ function HomeScreenContent({ active = true, onModeChange, width, onDismiss, newS
         <View style={{ paddingTop: nativeHomeHeader ? 0 : embedded ? spacing.lg : edgePadding.paddingTop }}>
         {nativeHomeHeader ? null : (
         <View onLayout={(e) => setHomeHeaderWidth(e.nativeEvent.layout.width)} style={styles.homeHeader}>
-        <View style={[styles.headerLeadingActions, embedded && styles.headerEmbeddedActions]}>
+        <View style={styles.headerLeadingActions}>
         <HomeHeaderGlassButton
           accessibilityLabel={onDismiss ? t('home.drawer.closeA11y') : t('devices.list.a11y.openMenu')}
           onPress={onDismiss ?? openChromeMenu}
@@ -2953,10 +2955,10 @@ function HomeScreenContent({ active = true, onModeChange, width, onDismiss, newS
           </View>
         )}
         {showRemoteGuide ? (
-          <View style={[styles.headerActions, embedded && styles.headerEmbeddedActions]} />
+          <View style={styles.headerActions} />
         ) : (
-          <View style={[styles.headerActions, embedded && styles.headerEmbeddedActions]}>
-            {selectedDeviceId && !embedded ? (
+          <View style={[styles.headerActions, showHeaderRemoteDesktop && styles.headerActionsWide]}>
+            {showHeaderRemoteDesktop ? (
               <HomeHeaderGlassButton accessibilityLabel={t('remoteDesktop.title')} onPress={openSelectedRemoteDesktop} testID="home.remoteDesktopButton">
                 <Monitor color={colors.textPrimary} size={iconSize.action} strokeWidth={iconStroke.regular} />
               </HomeHeaderGlassButton>
@@ -4723,18 +4725,18 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     justifyContent: 'center',
     width: navigationChrome.target,
   },
+  // Sized to the buttons actually shown, so the guide's brand title stays
+  // centered and a long device name is not cut short by an empty slot.
   headerActions: {
     alignItems: 'center',
     flexDirection: 'row',
     flexShrink: 0,
     gap: spacing.xs,
     justifyContent: 'flex-end',
-    width: navigationChrome.target * 2 + spacing.xs,
-  },
-  headerEmbeddedActions: {
-    // Embedded drawers never show the remote-desktop action, so the trailing
-    // side holds one button like the leading side.
     width: navigationChrome.target,
+  },
+  headerActionsWide: {
+    width: navigationChrome.target * 2 + spacing.xs,
   },
   // 菜单外层替标题占住顶栏中间的剩余宽度,长设备名在这里截断而不是挤开右侧按钮。
   headerTitleSlot: {
