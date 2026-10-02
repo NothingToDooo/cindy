@@ -1,10 +1,34 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { constants } from 'node:fs';
 import { access, stat } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import type { CindyMakeTaskPreparation } from '../../shared/cindyMakeDoctor.js';
 import { createMakeBuildOutput } from './buildDiagnostic.js';
 import { createMakeBuildLineOutput } from './buildProgress.js';
+
+/**
+ * The credential-free environment an install or cache warm of unverified content
+ * may see: process essentials and Cindy's own toolchain settings only. Anything
+ * else — above all credentials inherited from how Cindy was launched — stays out,
+ * because `${VAR}` in a content `.npmrc` expands it into a request to a host the
+ * content chooses; even an allowlisted name is dropped when it names a credential.
+ * `userconfig` is pinned to the null device so the user's own `.npmrc` is not
+ * loaded either.
+ */
+export function unverifiedPnpmEnv(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return {
+    ...Object.fromEntries(
+      Object.entries(environment).filter(
+        ([key]) =>
+          /^(?:path|systemroot|windir|comspec|tmp|temp|home|userprofile|lang|lc_.*|tz|corepack_.*|pnpm_manage_package_manager_versions|pythondontwritebytecode|pythonutf8|python|npm_config_(?:manage_package_manager_versions|managepackagemanagerversions|python)|cindy_[a-z_]*|xdt_[a-z_]*)$/i.test(
+            key,
+          ) && !/(?:token|password|auth|secret|credential)/i.test(key),
+      ),
+    ),
+    npm_config_userconfig: os.devNull,
+  };
+}
 
 export function parseMakeDependencyProgress(
   text: string,

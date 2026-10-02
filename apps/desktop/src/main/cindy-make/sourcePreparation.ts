@@ -9,7 +9,7 @@ import {
 } from './toolchainEnvironment.js';
 import type { MakeSourceGitProgress, MakeSourceStatus } from '../../shared/cindyMakeDoctor.js';
 import { runSourceGit } from './sourceGit.js';
-import { runSourcePnpm } from './sourcePnpm.js';
+import { runSourcePnpm, unverifiedPnpmEnv } from './sourcePnpm.js';
 import { assertPnpmConfigContained } from './pnpmWriteRoots.js';
 import { readSourceRevisions, type SourceRevisions } from './sourceRevisions.js';
 import { CINDY_PERSONAL_BRANCH } from './sourcePaths.js';
@@ -661,6 +661,9 @@ async function prepareCindySourceInternal(
     // settings (`configDependencies` runs code, path keys redirect writes) or a
     // config symlink skip the warming entirely — the install paths run their own
     // full check (see `pnpmWriteRoots`), and a skipped warm costs only downloads.
+    // When it does run, it sees the same credential-free environment as an
+    // unverified install (see `unverifiedPnpmEnv`): a content `.npmrc` must not
+    // expand an inherited `${NPM_TOKEN}` into a credential sent to its registry.
     const warmable = await assertPnpmConfigContained(sourcePath).then(
       () => true,
       () => false,
@@ -670,7 +673,7 @@ async function prepareCindySourceInternal(
     // stale ready marker. The personal baseline needs no installed dependencies.
     if (warmable)
       await runSourcePnpm(
-      processEnvironment,
+      unverifiedPnpmEnv(processEnvironment),
       [
         'fetch',
         '--frozen-lockfile',
@@ -687,6 +690,7 @@ async function prepareCindySourceInternal(
         // run the required lifecycle scripts as usual.
         '--config.node-linker=isolated',
         '--config.enable-modules-dir=false',
+        '--config.strict-ssl=true',
       ],
       sourcePath,
       signal,
