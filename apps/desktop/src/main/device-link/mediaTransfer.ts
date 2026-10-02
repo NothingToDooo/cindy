@@ -125,6 +125,18 @@ async function presignPut(
   });
 }
 
+/** Rejects as soon as `signal` aborts; the abandoned promise's result is ignored. */
+function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(new Error('UPLOAD_CANCELLED'));
+    if (signal.aborted) abort();
+    else signal.addEventListener('abort', abort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
+  });
+}
+const REMOVE_REMOTE_TIMEOUT_MS = 15_000;
+
 /** 向 relay server 申请下载预签名(server 校验请求方 == key 内嵌 userId)。 */
 async function presignGet(key: string): Promise<PresignGetResponse> {
   requireAppCapability('canUseDeviceLink', 'Device Link requires a Cindy account.');
@@ -423,7 +435,8 @@ export async function uploadLocalFile(
     opts.extHint !== undefined ? opts.extHint.replace(/^\.+/, '').toLowerCase() : extOf(localPath);
   const contentType = opts.contentType ?? mimeOf(ext);
   opts.signal?.throwIfAborted();
-  const { putUrl, key } = await presignPut(size, ext, contentType);
+  // A presign creates no object, so a result that arrives after cancellation needs no cleanup.
+  const { putUrl, key } = await abortable(presignPut(size, ext, contentType), opts.signal);
   let sha256: string;
 
   try {
@@ -532,8 +545,10 @@ export async function uploadLocalFile(
       sha256 = uploadedAttempt.sha256;
     }
   } catch (error) {
-    // Cleanup is best-effort after every post-presign transfer failure.
-    await removeRemote(key);
+    // Cleanup is best-effort after every post-presign transfer failure; a cancelled upload
+    // does not wait for it.
+    const removing = removeRemote(key);
+    if (!opts.signal?.aborted) await removing;
     throw error;
   }
   log.debug(`uploaded key=${key} size=${size} ct=${contentType} integrity=sha256`);
@@ -687,6 +702,9 @@ export async function removeRemote(key: string): Promise<void> {
       method: 'DELETE',
       body: { key },
       baseUrl: deviceLinkApiBase,
+      // Best-effort (the OSS lifecycle rule is the backstop): never let an unresponsive relay
+      // hold up the upload failure or copy cancellation waiting on it.
+      timeoutMs: REMOVE_REMOTE_TIMEOUT_MS,
     });
     log.debug(`removed key=${key}`);
   } catch (err) {

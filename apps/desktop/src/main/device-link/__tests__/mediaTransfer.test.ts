@@ -192,6 +192,40 @@ describe('uploadLocalFile — 小文件整体 PUT', () => {
     expect(undiciFetchMock).not.toHaveBeenCalled();
   });
 
+  it('预签名无响应时取消 → 立即中止,不发 PUT;清理删除有期限且取消不等它', async () => {
+    const abort = new AbortController();
+    apiFetch.mockImplementation((path: string) =>
+      path === PUT_PATH ? new Promise(() => {}) : Promise.resolve({ deleted: true }),
+    );
+    const upload = uploadLocalFile('/tmp/a.png', { signal: abort.signal });
+    await vi.waitFor(() => expect(apiFetch).toHaveBeenCalled());
+    abort.abort();
+    await expect(upload).rejects.toThrow('UPLOAD_CANCELLED');
+    expect(undiciFetchMock).not.toHaveBeenCalled();
+    // A cancelled PUT does not wait for the (possibly hanging) delete; the delete itself is bounded.
+    apiFetch.mockClear();
+    apiFetch.mockImplementation((path: string) =>
+      path === PUT_PATH
+        ? Promise.resolve({ putUrl: 'https://oss.example/put', key: KEY, expiresAt: 'x' })
+        : new Promise(() => {}),
+    );
+    const second = new AbortController();
+    undiciFetchMock.mockImplementation(
+      (_url: string, init: RequestInit) =>
+        new Promise((_, reject) => {
+          init.signal?.addEventListener('abort', () =>
+            reject(new DOMException('aborted', 'AbortError')),
+          );
+          second.abort();
+        }),
+    );
+    await expect(uploadLocalFile('/tmp/a.png', { signal: second.signal })).rejects.toThrow(
+      'UPLOAD_CANCELLED',
+    );
+    const deleteCall = apiFetch.mock.calls.find(([path]) => path === DEL_PATH);
+    expect(deleteCall?.[1]).toMatchObject({ method: 'DELETE', timeoutMs: 15_000 });
+  });
+
   it('路径不是文件 → 抛错', async () => {
     statMock.mockResolvedValue({ isFile: () => false, size: 0 });
     await expect(uploadLocalFile('/tmp/dir')).rejects.toThrow();
