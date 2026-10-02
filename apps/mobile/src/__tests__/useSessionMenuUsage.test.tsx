@@ -34,9 +34,7 @@ const session = (id: string): RemoteSession =>
 function reader(): SessionMenuUsageReader {
   return {
     getCodexRateLimits: vi.fn(async () => account),
-    getAccountUsage: vi.fn(async () => {
-      throw new Error("unavailable");
-    }),
+    getAccountUsage: vi.fn(async (): Promise<unknown> => null),
     getSubscriptionUsage: vi.fn(async () => null),
     getClaudeSessionRoute: vi.fn(async () => null),
     getSessionEstimatedValue: vi.fn(async () => ({
@@ -223,6 +221,7 @@ describe("menu usage refresh lifecycle", () => {
     vi.mocked(r.getCodexRateLimits).mockRejectedValue(
       new Error("DEVICE_OFFLINE"),
     );
+    vi.mocked(r.getAccountUsage).mockRejectedValue(new Error("DEVICE_OFFLINE"));
     vi.mocked(r.getSessionEstimatedValue).mockRejectedValue(
       new Error("DEVICE_OFFLINE"),
     );
@@ -238,6 +237,7 @@ describe("menu usage refresh lifecycle", () => {
     vi.mocked(r.getCodexRateLimits).mockRejectedValue(
       new Error("CHANNEL_NOT_ALLOWED"),
     );
+    vi.mocked(r.getAccountUsage).mockRejectedValue(new Error("unavailable"));
     const h = harness(r);
     await h.render();
     expect(h.value.account).toBeNull();

@@ -552,6 +552,31 @@ describe("subscription quota for every subscription family", () => {
     expect(r.getAccountUsage).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { code: "NOT_CONNECTED", message: "offline" },
+    new Error("[DEVICE_LINK_TIMEOUT] timed out"),
+  ])("fails the read on a transient route lookup error so cached quota is kept: %o", async (error) => {
+    const r = reader();
+    r.getClaudeSessionRoute.mockRejectedValue(error);
+    await expect(
+      readSessionMenuAccountUsage(
+        { ...session, agentKind: "cc", providerId: null, model: "claude-opus-5-5" },
+        r,
+      ),
+    ).rejects.toBe(error);
+    expect(r.getSubscriptionUsage).not.toHaveBeenCalled();
+  });
+
+  it("treats a channel-not-allowed error message as an older host", async () => {
+    const r = reader();
+    r.getClaudeSessionRoute.mockRejectedValue(new Error("[DEVICE_LINK_CHANNEL_NOT_ALLOWED] nope"));
+    const result = await readSessionMenuAccountUsage(
+      { ...session, agentKind: "cc", providerId: null, model: "claude-opus-5-5" },
+      r,
+    );
+    expect(result.source).toBe("unavailable");
+  });
+
   it("surfaces an old host's missing subscription channel as a failed read", async () => {
     const r = reader();
     const error = { code: "CHANNEL_NOT_ALLOWED" };
@@ -636,12 +661,11 @@ describe("ChatGPT credits", () => {
     });
   });
 
-  it("keeps quota when the credits read fails", async () => {
+  it("fails the read when the credits snapshot is transiently unavailable", async () => {
     const r = reader();
-    r.getAccountUsage.mockRejectedValue(new Error("offline"));
-    const result = await readSessionMenuAccountUsage(session, r);
-    expect(result.windows).toHaveLength(1);
-    expect(result).not.toHaveProperty("credits");
+    const error = new Error("[NOT_CONNECTED] offline");
+    r.getAccountUsage.mockRejectedValue(error);
+    await expect(readSessionMenuAccountUsage(session, r)).rejects.toBe(error);
   });
 
   it("reads credits of the selected independent account only", async () => {

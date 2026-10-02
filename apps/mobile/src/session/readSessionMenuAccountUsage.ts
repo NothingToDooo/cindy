@@ -1,4 +1,5 @@
 import { selectCodexUsageForModel } from "@cindy/maker-shared/codex-usage-buckets";
+import { formatRemoteError } from "@cindy/maker-shared/device-link-contract";
 import {
   isXaiWeeklyUsageCurrent,
   matchScopedWindowForModel,
@@ -147,6 +148,10 @@ const SUBSCRIPTION_READERS: Record<NativeSubscriptionAuth, FamilyReader> = {
   xai: readXaiAccount,
 };
 
+function isChannelNotAllowedError(error: unknown): boolean {
+  return formatRemoteError(error).includes("CHANNEL_NOT_ALLOWED");
+}
+
 /** The host's observed billing route for a default-route Claude Code task. */
 async function readDefaultClaudeRoute(
   session: RemoteSession,
@@ -160,8 +165,12 @@ async function readDefaultClaudeRoute(
     model.startsWith("xai/")
   )
     return null;
-  // Older hosts lack the channel; an unknown route keeps the task unattributed.
-  const route = await reader.getClaudeSessionRoute(session.id).catch(() => null);
+  // Only an older host without the channel means "route unknown". Transient failures
+  // must reject so the menu keeps the previous quota and marks it stale.
+  const route = await reader.getClaudeSessionRoute(session.id).catch((error) => {
+    if (isChannelNotAllowedError(error)) return null;
+    throw error;
+  });
   return route === "gateway" || route === "subscription" ? route : null;
 }
 
@@ -343,8 +352,9 @@ async function readCodexAccount(
     plan = result.account.planType;
     observedAt = Date.now();
     // The control read omits credits; the desktop card reads them from the account
-    // snapshot this read just recorded. A failed credits read only hides that row.
-    const usage = record(await readAccountUsage().catch(() => null));
+    // snapshot this read just recorded. Every host has that channel, so a failure is
+    // transient and fails the read: the menu keeps the previous values marked stale.
+    const usage = record(await readAccountUsage());
     creditSources = [usage, ...Object.values(record(usage.appServerBuckets))];
   } catch (error) {
     if ((session.providerId && session.providerId !== 'openai') || !shouldFallbackToLegacyCodexUsage(error)) throw error;
