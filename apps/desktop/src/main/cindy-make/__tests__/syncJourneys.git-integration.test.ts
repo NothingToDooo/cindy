@@ -181,9 +181,13 @@ async function computer(w: World, name: string) {
         saved = structuredClone(next);
       },
       publish: (state) => {
-        // Every adopted update or combine is lineage for the next upload (as in the app).
+        // Every adopted update or combine is lineage for the next upload (as in the app),
+        // and a combine's fork tip is unverified here until a version covers it.
         const rewrite = state && adoptedRewrite(state);
-        if (rewrite) remote.recordRewrite(rewrite.from, rewrite.to);
+        if (rewrite) {
+          if (state.remote?.commit) remote.recordUnverifiedRemote(state.remote.commit);
+          remote.recordRewrite(rewrite.from, rewrite.to);
+        }
         sync?.operationChanged(state);
       },
       owner: () => 'owner',
@@ -454,6 +458,9 @@ journey('both computers changed the same line: the conflict task keeps both, the
   expect(await w.forkTip()).toBe(await a.tip());
   await b.resolve('feature.txt', set(4, 'from a and b'));
   expect(b.state()).toEqual({ done: { at: 1, ref: 'v1' } });
+  // The combine adopted the fork's tip through the shared merge lifecycle: its
+  // content is unverified on this computer until a generated version covers it.
+  expect(b.record().unverifiedRemote ?? []).toContain(await a.tip());
   expect(await w.forkTip()).toBe(await b.tip());
   await a.sync();
   expect(await a.read('feature.txt')).toBe(text(set(4, 'from a and b')));
