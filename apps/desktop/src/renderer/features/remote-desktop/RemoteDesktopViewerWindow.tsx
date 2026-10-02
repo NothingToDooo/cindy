@@ -11,7 +11,11 @@ import {
   X,
   Monitor,
 } from 'lucide-react';
-import type { RemoteDesktopDisplayMode } from '@cindy/device-link';
+import {
+  REMOTE_DESKTOP_VIDEO_QUALITIES,
+  type RemoteDesktopDisplayMode,
+  type RemoteDesktopVideoQuality,
+} from '@cindy/device-link';
 import { WindowControls } from '@/components/title-bar/WindowControls';
 import { useMacFullscreen } from '@/hooks/useMacFullscreen';
 import i18n from '@/i18n';
@@ -23,6 +27,12 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { Switch } from '@/components/ui/switch';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Tip } from '@/components/ui/tooltip';
+
+const QUALITY_LABELS = {
+  auto: 'remoteDesktop.viewer.automatic',
+  saver: 'remoteDesktop.viewer.saver',
+  hd: 'remoteDesktop.viewer.hd',
+} as const satisfies Record<RemoteDesktopVideoQuality, string>;
 
 /** A clean, standalone remote desktop surface. No App, router, agent or task providers. */
 export function RemoteDesktopViewerWindow() {
@@ -354,6 +364,7 @@ export function RemoteDesktopViewerWindow() {
                 </FormField>
                 <FormField
                   label={t('remoteDesktop.viewer.quality')}
+                  hint={t('remoteDesktop.viewer.qualityHint')}
                   className="remote-viewer-field"
                 >
                   {({ id }) => (
@@ -361,16 +372,14 @@ export function RemoteDesktopViewerWindow() {
                       id={id}
                       className="w-full"
                       label={t('remoteDesktop.viewer.quality')}
-                      value={String(state.settings.bitrate)}
-                      options={[0, 2000000, 8000000, 20000000].map((value, index) => ({
-                        value: String(value),
-                        label: t(
-                          `remoteDesktop.viewer.${['automatic', 'smooth', 'balanced', 'clear'][index]}`,
-                        ),
+                      value={state.settings.quality}
+                      options={REMOTE_DESKTOP_VIDEO_QUALITIES.map((value) => ({
+                        value,
+                        label: t(QUALITY_LABELS[value]),
                       }))}
                       onValueChange={(value) =>
                         controller.current?.settings({
-                          bitrate: Number(value) as 0 | 2000000 | 8000000 | 20000000,
+                          quality: value as RemoteDesktopVideoQuality,
                         })
                       }
                       onOpenChange={onSelectOpenChange}
