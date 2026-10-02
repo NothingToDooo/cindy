@@ -4,6 +4,7 @@ import path from 'node:path';
 import type { CindyMakeTaskPreparation, MakeTaskWorkspace } from '../../shared/cindyMakeDoctor.js';
 import { runSourceGit } from './sourceGit.js';
 import { contentRef, snapshotContent, applyContent, taskContentRef } from './sourceContent.js';
+import { assertPnpmInstallContained } from './pnpmWriteRoots.js';
 import { runSourcePnpm } from './sourcePnpm.js';
 import {
   CINDY_MAKE_RUN_ID_PATTERN,
@@ -169,20 +170,10 @@ export async function installCindyMakeWorktree(
   if (options.ignoreScripts) {
     // Unverified synced content must not point pnpm's write roots outside the
     // worktree: a tracked `node_modules` symlink would have it install through
-    // the link, writing wherever it points.
-    const git = deps.git ?? runSourceGit;
-    const listed = await git(
-      deps.processEnvironment,
-      ['ls-files', '-s'],
-      workspace.path,
-      signal,
-    );
-    const linkedWriteRoot = listed.split(/\r?\n/).some((line) => {
-      const tab = line.indexOf('\t');
-      return line.startsWith('120000') && tab >= 0 && line.slice(tab + 1).split(/[\\/]/).includes('node_modules');
-    });
-    if (linkedWriteRoot)
-      throw Object.assign(new Error('tracked node_modules link'), { code: 'gitFailed' });
+    // the link, and content `.npmrc` / `pnpm-workspace.yaml` settings move the
+    // write roots outright. Every write root must be a real descendant of the
+    // worktree (see `pnpmWriteRoots`).
+    await assertPnpmInstallContained(workspace.path);
   }
   await pnpm(
     options.ignoreScripts

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -66,23 +66,55 @@ describe('prepareCindyMakeWorkspace', () => {
     expect(phases).toEqual(['checking', 'creating', 'installing']);
   });
 
-  it('runs no lifecycle scripts and no pnpm hooks for unverified synced content', async () => {
-    const pnpm = vi.fn(async () => undefined);
-    const git = vi.fn(async () => '');
-    const worktreePath = path.join(userData, 'cindy-make', 'worktrees', 'run-9');
-    await installCindyMakeWorktree(
+  /** Windows without Developer Mode cannot create symlinks; Git stores plain files there. */
+  const linkIfPossible = async (target: string, link: string): Promise<boolean> => {
+    try {
+      await symlink(target, link, 'dir');
+      return true;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'EPERM' || code === 'EACCES' || code === 'UNKNOWN') return false;
+      throw error;
+    }
+  };
+
+  const withManifest = async (runId: string): Promise<string> => {
+    const worktreePath = path.join(userData, 'cindy-make', 'worktrees', runId);
+    await mkdir(worktreePath, { recursive: true });
+    await writeFile(path.join(worktreePath, 'package.json'), '{"name":"app","version":"1.0.0"}');
+    return worktreePath;
+  };
+
+  const installUnverified = (
+    runId: string,
+    worktreePath: string,
+    deps: Parameters<typeof installCindyMakeWorktree>[3],
+  ) =>
+    installCindyMakeWorktree(
       userData,
-      { path: worktreePath, branch: 'cindy-make/run-9', baseCommit: 'b'.repeat(40) },
+      { path: worktreePath, branch: `cindy-make/${runId}`, baseCommit: 'b'.repeat(40) },
       new AbortController().signal,
-      {
-        processEnvironment: { PATH: '', npm_config_registry: 'http://attacker.invalid' },
-        git,
-        pnpm,
-      },
+      deps,
       undefined,
       undefined,
       { ignoreScripts: true },
     );
+
+  it('runs no lifecycle scripts and no pnpm hooks for unverified synced content', async () => {
+    const pnpm = vi.fn(async () => undefined);
+    const worktreePath = await withManifest('run-9');
+    await writeFile(
+      path.join(worktreePath, '.npmrc'),
+      'node-linker=hoisted\nfrozen-lockfile=true\nengine-strict=true\n',
+    );
+    await writeFile(
+      path.join(worktreePath, 'pnpm-workspace.yaml'),
+      'packages:\n  - "apps/*"\n  - "packages/*"\n',
+    );
+    await installUnverified('run-9', worktreePath, {
+      processEnvironment: { PATH: '', npm_config_registry: 'http://attacker.invalid' },
+      pnpm,
+    });
     expect(pnpm).toHaveBeenCalledWith(
       // No `npm_config_*` setting of the content's own can turn the guards back on;
       // pnpm's write roots stay inside the worktree whatever `.npmrc` says; and the
@@ -105,26 +137,98 @@ describe('prepareCindyMakeWorkspace', () => {
     );
   });
 
-  it('refuses to install unverified content through a tracked node_modules link', async () => {
+  it('refuses to install unverified content through a node_modules link', async () => {
     const pnpm = vi.fn(async () => undefined);
-    const git = vi.fn(async () =>
-      ['120000 0123456789abcdef 0\tnode_modules', '100644 0123456789abcdef 0\tpackage.json'].join(
-        '\n',
-      ),
-    );
-    const worktreePath = path.join(userData, 'cindy-make', 'worktrees', 'run-10');
+    const worktreePath = await withManifest('run-10');
+    // The link is the write root: pnpm would create `<link>/<dependency name>`
+    // wherever it points.
+    if (!(await linkIfPossible(os.tmpdir(), path.join(worktreePath, 'node_modules')))) return;
     await expect(
-      installCindyMakeWorktree(
-        userData,
-        { path: worktreePath, branch: 'cindy-make/run-10', baseCommit: 'b'.repeat(40) },
-        new AbortController().signal,
-        { processEnvironment: { PATH: '' }, git, pnpm },
-        undefined,
-        undefined,
-        { ignoreScripts: true },
-      ),
+      installUnverified('run-10', worktreePath, { processEnvironment: { PATH: '' }, pnpm }),
     ).rejects.toMatchObject({ code: 'gitFailed' });
     expect(pnpm).not.toHaveBeenCalled();
+  });
+
+  it('refuses unverified content whose links leave the worktree under any name', async () => {
+    const pnpm = vi.fn(async () => undefined);
+    const worktreePath = await withManifest('run-11');
+    if (!(await linkIfPossible(os.tmpdir(), path.join(worktreePath, '.m')))) return;
+    await expect(
+      installUnverified('run-11', worktreePath, { processEnvironment: { PATH: '' }, pnpm }),
+    ).rejects.toMatchObject({ code: 'gitFailed' });
+    expect(pnpm).not.toHaveBeenCalled();
+  });
+
+  it('refuses unverified content that redirects the pnpm store from .npmrc', async () => {
+    const pnpm = vi.fn(async () => undefined);
+    const worktreePath = await withManifest('run-12');
+    await writeFile(path.join(worktreePath, '.npmrc'), 'store-dir=/attacker/store\n');
+    await expect(
+      installUnverified('run-12', worktreePath, { processEnvironment: { PATH: '' }, pnpm }),
+    ).rejects.toMatchObject({ code: 'gitFailed' });
+    expect(pnpm).not.toHaveBeenCalled();
+  });
+
+  it('refuses unverified content that moves pnpm write roots from workspace settings', async () => {
+    const pnpm = vi.fn(async () => undefined);
+    const worktreePath = await withManifest('run-13');
+    await writeFile(
+      path.join(worktreePath, 'pnpm-workspace.yaml'),
+      'packages:\n  - "apps/*"\nvirtualStoreDir: .elsewhere\n',
+    );
+    await expect(
+      installUnverified('run-13', worktreePath, { processEnvironment: { PATH: '' }, pnpm }),
+    ).rejects.toMatchObject({ code: 'gitFailed' });
+    expect(pnpm).not.toHaveBeenCalled();
+  });
+
+  it('refuses unverified workspace globs and manifest settings that leave the worktree', async () => {
+    const pnpm = vi.fn(async () => undefined);
+    const worktreePath = await withManifest('run-14');
+    await writeFile(
+      path.join(worktreePath, 'pnpm-workspace.yaml'),
+      'packages:\n  - "../*"\n',
+    );
+    await expect(
+      installUnverified('run-14', worktreePath, { processEnvironment: { PATH: '' }, pnpm }),
+    ).rejects.toMatchObject({ code: 'gitFailed' });
+    await writeFile(path.join(worktreePath, 'pnpm-workspace.yaml'), 'packages:\n  - "apps/*"\n');
+    await writeFile(
+      path.join(worktreePath, 'package.json'),
+      '{"name":"app","version":"1.0.0","pnpm":{"storeDir":"/attacker/store"}}',
+    );
+    await expect(
+      installUnverified('run-14', worktreePath, { processEnvironment: { PATH: '' }, pnpm }),
+    ).rejects.toMatchObject({ code: 'gitFailed' });
+    expect(pnpm).not.toHaveBeenCalled();
+  });
+
+  it('refuses when an existing write root resolves outside the worktree', async () => {
+    const pnpm = vi.fn(async () => undefined);
+    const worktreePath = await withManifest('run-15');
+    await mkdir(path.join(worktreePath, 'node_modules'), { recursive: true });
+    if (!(await linkIfPossible(os.tmpdir(), path.join(worktreePath, 'node_modules', '.pnpm'))))
+      return;
+    await expect(
+      installUnverified('run-15', worktreePath, { processEnvironment: { PATH: '' }, pnpm }),
+    ).rejects.toMatchObject({ code: 'gitFailed' });
+    expect(pnpm).not.toHaveBeenCalled();
+  });
+
+  it('lets verified content configure the machine\'s own pnpm store', async () => {
+    const pnpm = vi.fn(async () => undefined);
+    const worktreePath = await withManifest('run-16');
+    await writeFile(
+      path.join(worktreePath, '.npmrc'),
+      `store-dir=${path.join(os.tmpdir(), 'own-store')}\n`,
+    );
+    await installCindyMakeWorktree(
+      userData,
+      { path: worktreePath, branch: 'cindy-make/run-16', baseCommit: 'b'.repeat(40) },
+      new AbortController().signal,
+      { processEnvironment: { PATH: '' }, pnpm },
+    );
+    expect(pnpm).toHaveBeenCalledOnce();
   });
 
   it('reuses an existing worktree on the task branch and refuses a foreign directory', async () => {
