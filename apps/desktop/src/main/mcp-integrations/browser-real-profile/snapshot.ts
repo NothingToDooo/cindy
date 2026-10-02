@@ -208,11 +208,15 @@ function parseJsonObject(raw: string | null): Record<string, unknown> | null {
 /**
  * Source `Preferences` refreshed onto dest, except the `extensions` subtree,
  * which belongs to the agent browser (install signature, commands, pins).
- * When the source is not a JSON object (e.g. caught mid-write), keep a valid
- * dest unchanged rather than clobber its extension state; return null only
- * when neither side is usable, so the caller copies the source verbatim.
+ * When the source is missing or not a JSON object (e.g. caught mid-write),
+ * keep a valid dest unchanged rather than drop its extension state; return
+ * null only when neither side is usable, so the caller falls back to the source
+ * file as-is (or to no file).
  */
-export function mergeManagedPreferences(sourceRaw: string, destRaw: string | null): string | null {
+export function mergeManagedPreferences(
+  sourceRaw: string | null,
+  destRaw: string | null,
+): string | null {
   const dest = parseJsonObject(destRaw);
   const source = parseJsonObject(sourceRaw);
   if (!source) return dest ? destRaw : null;
@@ -606,13 +610,14 @@ export async function snapshotRealProfile(options: {
 
     for (const relative of PLAIN_PROFILE_FILES) {
       const src = path.join(sourceProfileDir, relative);
-      if (!fs.existsSync(src)) continue;
+      const sourceRaw = readFileIfExists(src);
       const dest = path.join(stagingProfileDir, relative);
       const merged = mergeManagedPreferences(
-        await fs.promises.readFile(src, 'utf8'),
+        sourceRaw,
         readFileIfExists(path.join(destDir, 'Default', relative)),
       );
       if (merged === null) {
+        if (sourceRaw === null) continue;
         await fs.promises.copyFile(src, dest);
       } else {
         await fs.promises.writeFile(dest, merged, 'utf8');

@@ -336,7 +336,7 @@ describe('snapshotRealProfile', () => {
     expect(fs.readFileSync(path.join(destDir, 'Default', 'Preferences'), 'utf8')).toBe('not-json');
   });
 
-  it('keeps a valid dest Preferences when the source one is malformed', async () => {
+  it('keeps a valid dest Preferences when the source one is malformed or missing', async () => {
     const root = makeTempDir();
     const source = seedSource(root);
     const destDir = realProfileDestDir(path.join(root, 'runtime'));
@@ -344,8 +344,13 @@ describe('snapshotRealProfile', () => {
     const destPrefs = path.join(destDir, 'Default', 'Preferences');
     const agentPrefs = JSON.stringify({ extensions: { install_signature: 'agent' } });
     fs.writeFileSync(destPrefs, agentPrefs);
-    fs.writeFileSync(path.join(source.userDataDir, 'Profile 6', 'Preferences'), '{"trunc');
+    const sourcePrefs = path.join(source.userDataDir, 'Profile 6', 'Preferences');
+    fs.writeFileSync(sourcePrefs, '{"trunc');
 
+    await snapshotRealProfile({ source, destDir, platform: 'darwin' });
+    expect(fs.readFileSync(destPrefs, 'utf8')).toBe(agentPrefs);
+
+    fs.rmSync(sourcePrefs);
     await snapshotRealProfile({ source, destDir, platform: 'darwin' });
     expect(fs.readFileSync(destPrefs, 'utf8')).toBe(agentPrefs);
   });
