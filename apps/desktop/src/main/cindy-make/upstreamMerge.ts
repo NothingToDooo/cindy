@@ -487,6 +487,17 @@ async function editsSurvive(
       for (const word of words) if (word === needed[at]) at += 1;
       return at === needed.length;
     };
+    // A kept deletion hides behind punctuation the whitespace tokens cannot see:
+    // deleted `deny();` retained as `if (deny()) { ... }` differs token-wise, so
+    // the removed-line check below compares words with punctuation stripped and
+    // fails closed whenever the absence of the deleted text cannot be proved.
+    const bareWordsOf = (line: string) =>
+      line
+        .replace(/[^\p{L}\p{N}_$]+/gu, ' ')
+        .split(/\s+/)
+        .filter(Boolean);
+    const possiblyWithin = (content: string, line: string) =>
+      within(bareWordsOf(content).join(' '), bareWordsOf(line).join(' '));
     const carriers = (content: string, among: string[]) =>
       among.filter((line) => within(content, line)).length;
     // Occurrences must survive: one pre-existing line never vouches for an added
@@ -500,8 +511,10 @@ async function editsSurvive(
     }
     // A removed line is gone only when no line of the result carries its content:
     // a resolution that kept it adapted (`deny()` as `deny() // upstream note`)
-    // did not apply the deletion and must not vouch for the change.
-    if (removed.some((content) => lines.some((line) => within(content, line)))) return false;
+    // did not apply the deletion and must not vouch for the change. Absence must
+    // be provable, so wrapped-in-punctuation keeps count as carried too.
+    if (removed.some((content) => lines.some((line) => within(content, line) || possiblyWithin(content, line))))
+      return false;
   }
   // A deleted path must remain absent: a resolution that restored the file with
   // other content did not apply the deletion, whatever became of its lines.

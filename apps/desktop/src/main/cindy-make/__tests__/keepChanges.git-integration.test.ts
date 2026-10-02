@@ -247,6 +247,35 @@ it('names a change whose added line a resolved rebase only reordered', async () 
   }
 }, 60_000);
 
+it('names a change whose deletion a resolved rebase kept only wrapped in punctuation', async () => {
+  const h = await repos();
+  try {
+    // One change deletes a line and edits another; the resolution keeps the edit
+    // but retains the deleted code wrapped in new punctuation (`2` as `(2)`) —
+    // the whitespace tokens cannot see through the wrap, yet the deletion was
+    // not applied and must not vouch for the change.
+    await h.write(h.source, 'feature.txt', [
+      'mine',
+      ...LINES.slice(1).filter((line) => line !== '2'),
+    ]);
+    const deleted = await h.commit(h.source, '', 6_000);
+    await h.write(h.official, 'feature.txt', replace(0, 'official'));
+    const target = await h.commit(h.official, 'official v2');
+    const state = await prepareUpstreamMerge(h.userData, update(h, target), h.git, async () => {});
+    expect(state.status).toBe('conflict');
+    const worktree = mergeWorktree(h.userData, state.id);
+    await h.write(worktree, 'feature.txt', ['mine', '(2)', ...LINES.slice(2)]);
+    await h.git(['add', '-A'], worktree);
+    await h.git([...h.identity(true), 'rebase', '--continue'], worktree);
+    await expect(applyUpstreamMerge(h.userData, state, h.git)).rejects.toMatchObject({
+      code: 'checksFailed',
+      missing: { count: 1, commits: [deleted] },
+    });
+  } finally {
+    await h.clean();
+  }
+}, 60_000);
+
 it('names a binary change whose same-identity replacement has different content', async () => {
   const h = await repos();
   try {
