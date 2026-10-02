@@ -519,6 +519,105 @@ describe('PersonalContribution', () => {
     expect(fetchFn.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
   });
 
+  it('reconciles a lost pull request response on any occupied candidate before renaming', async () => {
+    const HASH_TIP = 'd'.repeat(40);
+    const pushes: string[] = [];
+    const git = vi.fn(async (args: string[]) => {
+      const op = args.includes('commit-tree')
+        ? 'commit-tree'
+        : args.includes('write-tree')
+          ? 'write-tree'
+          : args[0];
+      switch (op) {
+        case 'fetch':
+        case 'read-tree':
+        case 'apply':
+          return '';
+        case 'push': {
+          const lease = args
+            .find((arg) => arg.startsWith('--force-with-lease='))!
+            .split(':')
+            .at(-1)!;
+          const branch = args.at(-1)!.split(':').at(-1)!;
+          pushes.push(`${branch}:${lease}`);
+          // The canonical name belongs to an earlier closed pull request's
+          // branch; `-2` is this client's own earlier push whose pull request
+          // response was lost (its absent lease fails).
+          if (lease === '') throw new Error('remote ref already exists');
+          return '';
+        }
+        case 'ls-remote':
+          return `${HASH_TIP}\trefs/heads/${args.at(-1)}\n`;
+        case 'diff':
+          return args.includes('--name-only') ? 'app.txt\0' : '';
+        case 'ls-files':
+          return '';
+        case 'rev-parse':
+          return args[1]?.includes('{tree}') ? A : B;
+        case 'write-tree':
+        case 'commit-tree':
+          return B;
+        default:
+          throw new Error('unexpected git ' + args.join(' '));
+      }
+    });
+    const fetchFn = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      if (target.includes('/pulls?state=open')) {
+        const head = new URL(target).searchParams.get('head') ?? '';
+        // The canonical name has no open pull request (earlier one is closed);
+        // `-2` holds the open pull request whose creation response was lost.
+        return new Response(
+          JSON.stringify(
+            head.endsWith('cindy-make-pr/run-2')
+              ? [{ number: 7, html_url: 'https://github.com/makecindy/cindy/pull/7' }]
+              : [],
+          ),
+          { status: 200 },
+        );
+      }
+      if (target.endsWith('/pulls/7'))
+        return new Response(
+          JSON.stringify({
+            number: 7,
+            html_url: 'https://github.com/makecindy/cindy/pull/7',
+            state: 'open',
+          }),
+          { status: 200 },
+        );
+      return new Response('{}', { status: 404 });
+    });
+    let store: Record<string, ContributionRecord> = {};
+    const { contribution } = harness({
+      git: git as unknown as ContributionDeps['git'],
+      fetch: fetchFn as unknown as typeof fetch,
+      ledgerPath: () => 'ledger.json',
+      readStore: () => structuredClone(store),
+      writeStore: (_file, next) => {
+        store = structuredClone(next);
+      },
+    });
+    await expect(
+      contribution.submit({
+        runId: 'run',
+        title: 'feat: x',
+        body: '',
+        name: 'Ada',
+        email: 'ada@example.com',
+      }),
+    ).resolves.toMatchObject({ number: 7, state: 'open' });
+    // The occupied `-2` is reconciled against its own open pull request: the
+    // change lands there and no third name or second public PR is published.
+    expect(pushes).toEqual([
+      'refs/heads/cindy-make-pr/run:',
+      'refs/heads/cindy-make-pr/run-2:',
+      `refs/heads/cindy-make-pr/run-2:${HASH_TIP}`,
+    ]);
+    expect(fetchFn.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+    expect(fetchFn.mock.calls.some(([, init]) => init?.method === 'PATCH')).toBe(true);
+    expect(store.run).toMatchObject({ number: 7, branch: 'cindy-make-pr/run-2', commit: B });
+  });
+
   it('reports pull request states and caches them briefly', async () => {
     const fetchFn = vi.fn(async (url: string | URL | Request) =>
       String(url).endsWith('/1')

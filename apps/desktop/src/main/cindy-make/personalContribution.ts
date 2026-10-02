@@ -543,30 +543,31 @@ export class PersonalContribution {
               // name is retried under a new one.
               if (attempt === 3 || classifyRemoteGitError(error) !== 'failed')
                 throw pushFailed(error);
-              // For the canonical name that can be this client's own earlier push
-              // whose pull request response was lost: reconcile that pull request
-              // instead of publishing a second one.
-              if (attempt === 0) {
-                const found = await this.openPullFor(base, identity);
-                if (found) {
-                  const tip = (
-                    await this.git(
-                      ['ls-remote', '--refs', PERSONAL_REMOTE_NAME, `refs/heads/${base}`],
-                      { auth },
-                    ).catch((lookup: unknown) => {
-                      throw pushFailed(lookup);
-                    })
-                  )
-                    .split(/\s/)[0]
-                    ?.trim();
-                  if (!tip || !HASH.test(tip)) throw pushFailed(error);
-                  await push(base, tip).catch((retry: unknown) => {
-                    throw pushFailed(retry);
-                  });
-                  branch = base;
-                  reconciled = found;
-                  break;
-                }
+              // Any occupied candidate can be this client's own earlier push whose
+              // pull request response was lost — the canonical name may belong to
+              // an earlier closed pull request, sending this change to `-2` before
+              // its own response is lost in turn. Reconcile the pull request of
+              // this exact candidate instead of publishing a second one, and only
+              // leave the name behind when it has no open pull request.
+              const found = await this.openPullFor(candidate, identity);
+              if (found) {
+                const tip = (
+                  await this.git(
+                    ['ls-remote', '--refs', PERSONAL_REMOTE_NAME, `refs/heads/${candidate}`],
+                    { auth },
+                  ).catch((lookup: unknown) => {
+                    throw pushFailed(lookup);
+                  })
+                )
+                  .split(/\s/)[0]
+                  ?.trim();
+                if (!tip || !HASH.test(tip)) throw pushFailed(error);
+                await push(candidate, tip).catch((retry: unknown) => {
+                  throw pushFailed(retry);
+                });
+                branch = candidate;
+                reconciled = found;
+                break;
               }
             }
           }
