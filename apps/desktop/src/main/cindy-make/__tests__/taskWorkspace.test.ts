@@ -221,6 +221,117 @@ describe('prepareCindyMakeWorkspace', () => {
     expect(pnpm).not.toHaveBeenCalled();
   });
 
+  it('refuses unverified content whose pnpm overrides escape the worktree', async () => {
+    const pnpm = vi.fn(async () => undefined);
+    const worktreePath = await withManifest('run-18');
+    // `pnpm.overrides` values become installed dependency specs: a frozen
+    // lockfile honors them verbatim and links the outside directory in.
+    await writeFile(
+      path.join(worktreePath, 'package.json'),
+      JSON.stringify({
+        name: 'app',
+        version: '1.0.0',
+        pnpm: { overrides: { 'private-data': 'link:../private' } },
+      }),
+    );
+    await expect(
+      installUnverified('run-18', worktreePath, { processEnvironment: {}, pnpm }),
+    ).rejects.toMatchObject({ code: 'gitFailed' });
+    // The same settings live in `pnpm-workspace.yaml` and nested override
+    // selectors; a patch path outside the worktree is refused just the same.
+    await writeFile(
+      path.join(worktreePath, 'package.json'),
+      '{"name":"app","version":"1.0.0"}',
+    );
+    await writeFile(
+      path.join(worktreePath, 'pnpm-workspace.yaml'),
+      'packages:\n  - "apps/*"\noverrides:\n  foo:\n    ".": "file:../../private"\n',
+    );
+    await expect(
+      installUnverified('run-18', worktreePath, { processEnvironment: {}, pnpm }),
+    ).rejects.toMatchObject({ code: 'gitFailed' });
+    await writeFile(path.join(worktreePath, 'pnpm-workspace.yaml'), 'packages:\n  - "apps/*"\n');
+    await writeFile(
+      path.join(worktreePath, 'package.json'),
+      JSON.stringify({
+        name: 'app',
+        version: '1.0.0',
+        pnpm: { patchedDependencies: { 'foo@1.0.0': '../outside.patch' } },
+      }),
+    );
+    await expect(
+      installUnverified('run-18', worktreePath, { processEnvironment: {}, pnpm }),
+    ).rejects.toMatchObject({ code: 'gitFailed' });
+    expect(pnpm).not.toHaveBeenCalled();
+  });
+
+  it('refuses unverified content with a traversal dependency name', async () => {
+    const pnpm = vi.fn(async () => undefined);
+    const worktreePath = await withManifest('run-19');
+    // pnpm joins each installed name under `node_modules`: a traversal name
+    // reaches outside the worktree whatever the write roots are, letting the
+    // install replace an occupied outside directory with a link to the payload.
+    await writeFile(
+      path.join(worktreePath, 'package.json'),
+      JSON.stringify({
+        name: 'app',
+        version: '1.0.0',
+        dependencies: { '../../../../../autostart': 'link:./payload' },
+      }),
+    );
+    await expect(
+      installUnverified('run-19', worktreePath, { processEnvironment: {}, pnpm }),
+    ).rejects.toMatchObject({ code: 'gitFailed' });
+    // Override keys and package extension names travel the same join.
+    await writeFile(
+      path.join(worktreePath, 'package.json'),
+      JSON.stringify({
+        name: 'app',
+        version: '1.0.0',
+        pnpm: { packageExtensions: { '../escape@1': { dependencies: { safe: '1.0.0' } } } },
+      }),
+    );
+    await expect(
+      installUnverified('run-19', worktreePath, { processEnvironment: {}, pnpm }),
+    ).rejects.toMatchObject({ code: 'gitFailed' });
+    expect(pnpm).not.toHaveBeenCalled();
+  });
+
+  it('refuses when an installed link leaves the worktree', async () => {
+    const worktreePath = await withManifest('run-20');
+    // The pre-install scan cannot see into the write roots the install fills:
+    // whatever it linked is checked again before the content is handed on.
+    const pnpm = vi.fn(async () => {
+      await mkdir(path.join(worktreePath, 'node_modules'), { recursive: true });
+      if (!(await linkIfPossible(os.tmpdir(), path.join(worktreePath, 'node_modules', 'private-data'))))
+        throw new Error('symlink unavailable');
+    });
+    await expect(
+      installUnverified('run-20', worktreePath, { processEnvironment: {}, pnpm }),
+    ).rejects.toMatchObject({ code: 'gitFailed' });
+    expect(pnpm).toHaveBeenCalledOnce();
+  });
+
+  it('installs unverified content whose overrides and links stay in the worktree', async () => {
+    const pnpm = vi.fn(async () => undefined);
+    const worktreePath = await withManifest('run-21');
+    await mkdir(path.join(worktreePath, 'local'), { recursive: true });
+    await writeFile(
+      path.join(worktreePath, 'package.json'),
+      JSON.stringify({
+        name: 'app',
+        version: '1.0.0',
+        dependencies: { '@scope/innocuous': '1.0.0', local: 'link:./local' },
+        pnpm: {
+          overrides: { 'left-pad': '1.3.0', nested: { '.': 'npm:@scope/replacement@1' } },
+          catalog: { fast: 'file:./local' },
+        },
+      }),
+    );
+    await installUnverified('run-21', worktreePath, { processEnvironment: {}, pnpm });
+    expect(pnpm).toHaveBeenCalledOnce();
+  });
+
   it('refuses to install unverified content through a node_modules link', async () => {
     const pnpm = vi.fn(async () => undefined);
     const worktreePath = await withManifest('run-10');

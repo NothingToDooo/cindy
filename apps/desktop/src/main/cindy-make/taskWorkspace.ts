@@ -3,7 +3,7 @@ import path from 'node:path';
 import type { CindyMakeTaskPreparation, MakeTaskWorkspace } from '../../shared/cindyMakeDoctor.js';
 import { runSourceGit } from './sourceGit.js';
 import { contentRef, snapshotContent, applyContent, taskContentRef } from './sourceContent.js';
-import { assertPnpmInstallContained } from './pnpmWriteRoots.js';
+import { assertPnpmInstallContained, assertPnpmInstallLinksContained } from './pnpmWriteRoots.js';
 import { runSourcePnpm, unverifiedPnpmEnv } from './sourcePnpm.js';
 import {
   CINDY_MAKE_RUN_ID_PATTERN,
@@ -207,6 +207,10 @@ export async function installCindyMakeWorktree(
     ...(onProgress ? [onProgress] : []),
   );
   signal.throwIfAborted();
+  // The install populated the write roots the pre-install scan could not see
+  // into: whatever it linked must resolve inside the worktree (see
+  // `pnpmWriteRoots`).
+  if (options.ignoreScripts) await assertPnpmInstallLinksContained(workspace.path);
   return workspace;
 }
 

@@ -23,7 +23,14 @@ import yaml from 'js-yaml';
  *   configuration or pnpm's default);
  * - the prospective write roots themselves (`node_modules` and its virtual store
  *   under every package directory) still resolve inside the worktree when they
- *   already exist as links from a previous run.
+ *   already exist as links from a previous run;
+ * - every dependency name and every setting that generates dependency specs
+ *   (`pnpm.overrides` and friends, even honored by a frozen lockfile) keeps
+ *   inside the worktree: pnpm joins each installed name under its write roots,
+ *   so a traversal name escapes no matter where the write roots point;
+ * - after the install, no link pnpm created may resolve outside the worktree
+ *   (`assertPnpmInstallLinksContained`) — the pre-install scan cannot see into
+ *   the write roots the install is about to populate.
  *
  * The check runs on the filesystem, not `git ls-files`: Git's captured output is
  * truncated and quoted paths are escaped, and a reused worktree may hold links
@@ -77,6 +84,36 @@ function refusedSetting(key: string): boolean {
   );
 }
 
+/**
+ * A name (or override key) that could turn into a path outside `node_modules`:
+ * `..` segments, absolute/drive paths, `~` and backslashes. Override keys stay
+ * patterns (`foo@^1`, `bar>baz`, `*`, the nested `.` selector), so this wider
+ * net only refuses names that could never match a package either.
+ */
+function refusedPathLikeName(name: string): boolean {
+  return (
+    !name ||
+    name.includes('\0') ||
+    name.includes('\\') ||
+    name.startsWith('~') ||
+    path.isAbsolute(name) ||
+    /^[a-zA-Z]:/.test(name) ||
+    /(^|\/)\.\.(\/|$)/.test(name)
+  );
+}
+
+/**
+ * An installed package name. pnpm joins it under `node_modules`, so anything
+ * outside `[@scope/]name` (leading dots, extra slashes, drive letters) can
+ * escape the write roots no matter where they point.
+ */
+function refusedDependencyName(name: string): boolean {
+  return (
+    refusedPathLikeName(name) ||
+    !/^(?:@[a-zA-Z0-9~][a-zA-Z0-9\-._~]*\/)?[a-zA-Z0-9_\-][a-zA-Z0-9\-._~]*$/.test(name)
+  );
+}
+
 /** Workspace globs stay relative and inside the tree: `..`, absolute paths and `~` leave it. */
 function refusedWorkspacePattern(value: unknown): boolean {
   return (
@@ -126,7 +163,7 @@ export async function assertPnpmConfigContained(root: string): Promise<void> {
     if (!entry.isFile()) continue;
     if (name === '.npmrc') checkIni(full, await readConfig(full));
     else if (name === 'package.json') checkPackageJson(full, root, await readConfig(full));
-    else checkWorkspaceYaml(full, await readConfig(full));
+    else checkWorkspaceYaml(full, root, await readConfig(full));
   }
 }
 
@@ -141,7 +178,12 @@ function checkIni(file: string, text: string): void {
   }
 }
 
-function checkSettings(where: string, settings: Record<string, unknown>): void {
+function checkSettings(
+  where: string,
+  settings: Record<string, unknown>,
+  file: string,
+  base: string,
+): void {
   for (const [key, value] of Object.entries(settings)) {
     if (refusedSetting(key)) throw refuse(`pnpm config redirects writes: ${key} in ${where}`);
     if (key === 'packages' || key === 'workspaces') {
@@ -150,6 +192,42 @@ function checkSettings(where: string, settings: Record<string, unknown>): void {
         if (refusedWorkspacePattern(pattern))
           throw refuse(`pnpm workspace leaves the worktree: ${String(pattern)}`);
     }
+    // Settings that generate dependency specs when pnpm resolves: a frozen
+    // lockfile honors `overrides` values verbatim, so `link:../private` links
+    // the outside directory in even with every direct dependency checked.
+    if (key === 'overrides' || key === 'resolutions' || key === 'patchedDependencies')
+      checkSpecMap(file, base, `${where}#${key}`, value, 'pattern');
+    else if (key === 'catalog' || key === 'catalogs' || key === 'packageExtensions')
+      checkSpecMap(file, base, `${where}#${key}`, value, 'name');
+  }
+}
+
+/**
+ * A map whose values pnpm turns into installed dependency specs (or, for
+ * `patchedDependencies`, patch paths): values naming paths must resolve inside
+ * the worktree, and keys must not traverse out of the write roots. Nested
+ * entries (npm-style `"foo": { ".": "1" }` overrides, `catalogs`, package
+ * extension fields) recurse under the same rule.
+ */
+function checkSpecMap(
+  file: string,
+  base: string,
+  where: string,
+  value: unknown,
+  keys: 'name' | 'pattern',
+  depth = 0,
+): void {
+  if (depth > 16) throw refuse(`pnpm dependency config nests too deeply: ${where}`);
+  if (typeof value === 'string') return checkDependencySpec(file, base, where, value);
+  if (Array.isArray(value)) {
+    for (const nested of value) checkSpecMap(file, base, where, nested, keys, depth + 1);
+    return;
+  }
+  if (typeof value !== 'object' || value === null) return;
+  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+    if (keys === 'name' ? refusedDependencyName(key) : refusedPathLikeName(key))
+      throw refuse(`pnpm dependency name leaves the worktree: ${key} in ${where}`);
+    checkSpecMap(file, base, `${where}#${key}`, nested, keys, depth + 1);
   }
 }
 
@@ -159,6 +237,26 @@ function checkSettings(where: string, settings: Record<string, unknown>): void {
  * collaborator can point at credentials or user data. Unverified content may
  * depend on registry packages or on paths that stay inside the tree only.
  */
+function checkDependencySpec(file: string, base: string, name: string, spec: string): void {
+  const value = spec.trim();
+  const linked = /^(?:link|file):/i.exec(value);
+  const target = linked ? value.slice(linked[0].length) : value;
+  const namedPath =
+    !!linked ||
+    target.startsWith('./') ||
+    target.startsWith('../') ||
+    path.isAbsolute(target) ||
+    /^[a-zA-Z]:/.test(target) ||
+    target.startsWith('~') ||
+    target.includes('\\') ||
+    /(^|\/)\.\.(\/|$)/.test(target);
+  if (!namedPath) return;
+  const resolved = path.resolve(path.dirname(file), target);
+  const relative = path.relative(base, resolved);
+  if (relative.startsWith('..') || path.isAbsolute(relative))
+    throw refuse(`pnpm dependency leaves the worktree: ${name}`);
+}
+
 function checkDependencySpecs(
   file: string,
   base: string,
@@ -168,27 +266,17 @@ function checkDependencySpecs(
     const specs = manifest[field];
     if (typeof specs !== 'object' || specs === null || Array.isArray(specs)) continue;
     for (const [name, spec] of Object.entries(specs as Record<string, unknown>)) {
-      if (typeof spec !== 'string') continue;
-      const value = spec.trim();
-      const linked = /^(?:link|file):/i.exec(value);
-      const target = linked ? value.slice(linked[0].length) : value;
-      const namedPath =
-        !!linked ||
-        target.startsWith('./') ||
-        target.startsWith('../') ||
-        path.isAbsolute(target) ||
-        /^[a-zA-Z]:/.test(target) ||
-        target.startsWith('~');
-      if (!namedPath) continue;
-      const resolved = path.resolve(path.dirname(file), target);
-      const relative = path.relative(base, resolved);
-      if (relative.startsWith('..') || path.isAbsolute(relative))
-        throw refuse(`pnpm dependency leaves the worktree: ${name}`);
+      // pnpm joins each installed name under its write roots: a traversal name
+      // escapes wherever those point (`node_modules/../../..` reaches outside
+      // the worktree), so names are checked before any spec.
+      if (refusedDependencyName(name))
+        throw refuse(`pnpm dependency name leaves the worktree: ${name}`);
+      if (typeof spec === 'string') checkDependencySpec(file, base, name, spec);
     }
   }
 }
 
-function checkWorkspaceYaml(file: string, text: string): void {
+function checkWorkspaceYaml(file: string, base: string, text: string): void {
   let settings: unknown;
   try {
     settings = yaml.load(text);
@@ -199,7 +287,7 @@ function checkWorkspaceYaml(file: string, text: string): void {
   if (settings === null || settings === undefined) return;
   if (typeof settings !== 'object' || Array.isArray(settings))
     throw refuse(`unrecognized ${path.basename(file)}`);
-  checkSettings(path.basename(file), settings as Record<string, unknown>);
+  checkSettings(path.basename(file), settings as Record<string, unknown>, file, base);
 }
 
 function checkPackageJson(file: string, base: string, text: string): void {
@@ -215,8 +303,13 @@ function checkPackageJson(file: string, base: string, text: string): void {
   const record = manifest as Record<string, unknown>;
   const pnpm = record.pnpm;
   if (typeof pnpm === 'object' && pnpm !== null && !Array.isArray(pnpm))
-    checkSettings(`${path.basename(file)}#pnpm`, pnpm as Record<string, unknown>);
+    checkSettings(`${path.basename(file)}#pnpm`, pnpm as Record<string, unknown>, file, base);
   checkDependencySpecs(file, base, record);
+  // npm-style top-level `overrides` and yarn-style `resolutions` generate
+  // dependency specs just like `pnpm.overrides` does.
+  for (const key of ['overrides', 'resolutions'])
+    if (key in record)
+      checkSpecMap(file, base, `${path.basename(file)}#${key}`, record[key], 'pattern');
   if ('workspaces' in record) {
     const value = record.workspaces;
     const patterns =
@@ -335,7 +428,7 @@ export async function assertPnpmInstallContained(root: string): Promise<void> {
       }
       if (entry.name === '.npmrc') checkIni(full, await readConfig(full));
       else if (entry.name === 'pnpm-workspace.yaml' || entry.name === 'pnpm-workspace.yml')
-        checkWorkspaceYaml(full, await readConfig(full));
+        checkWorkspaceYaml(full, base, await readConfig(full));
       else if (entry.name === 'package.json') {
         packageDirectories.push(directory);
         checkPackageJson(full, base, await readConfig(full));
@@ -345,4 +438,44 @@ export async function assertPnpmInstallContained(root: string): Promise<void> {
   await walk(base, 0);
   for (const directory of packageDirectories)
     await assertWriteRootDescends(base, rootReal, directory);
+}
+
+/**
+ * After installing unverified content, every link the install created under the
+ * write roots must resolve within the worktree: a frozen lockfile carries specs
+ * the pre-install manifest checks never saw, and installed package content may
+ * ship links of its own. Plain files are skipped — only directories and links
+ * can lead a later read outside the tree.
+ */
+export async function assertPnpmInstallLinksContained(root: string): Promise<void> {
+  const base = path.resolve(root);
+  let rootReal = base;
+  try {
+    rootReal = await realpath(base);
+  } catch {
+    throw refuse('unreadable worktree');
+  }
+  let scanned = 0;
+  const walk = async (directory: string, depth: number): Promise<void> => {
+    if (depth > MAX_DEPTH) throw refuse('worktree nests too deeply');
+    let entries;
+    try {
+      entries = await readdir(directory, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw refuse('unreadable worktree');
+    }
+    for (const entry of entries) {
+      const full = path.join(directory, entry.name);
+      if (entry.isSymbolicLink()) {
+        if (++scanned > MAX_SCANNED_ENTRIES) throw refuse('worktree holds too many entries');
+        await contained(full, path.resolve(directory, await readlink(full)), base, rootReal);
+        continue; // never walk through a link
+      }
+      if (!entry.isDirectory() || entry.name === '.git') continue;
+      if (++scanned > MAX_SCANNED_ENTRIES) throw refuse('worktree holds too many entries');
+      await walk(full, depth + 1);
+    }
+  };
+  await walk(base, 0);
 }
