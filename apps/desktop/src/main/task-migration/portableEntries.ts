@@ -28,6 +28,7 @@ function nonportable(name: string): boolean {
         part === '.' ||
         part === '..' ||
         part.toLowerCase() === '.git' ||
+        // eslint-disable-next-line no-control-regex -- control characters are not portable names.
         /[\x00-\x1f:*?"<>|]/.test(part) ||
         /[ .]$/.test(part) ||
         /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(part),
@@ -41,14 +42,23 @@ function unsafeLinkText(target: string): boolean {
   );
 }
 
+/** Case- and normalization-insensitive key: the target filesystem may fold either way. */
+const fold = (name: string) => name.normalize('NFC').toLowerCase();
+
+function ancestorsOf(name: string): string[] {
+  const parts = name.split('/');
+  return parts.slice(0, -1).map((_, index) => parts.slice(0, index + 1).join('/'));
+}
+
 /**
- * Resolve `link` the way the filesystem would, following links through the manifest.
+ * Resolve `link` the way the filesystem would, following links through `folded` (kept
+ * entries by `fold`ed path, so a case variant cannot slip past a link on a folding target).
  * Inside means every step stays under the root and never touches `.git`; a missing
  * component is fine (a dangling link cannot reach anything), so it continues lexically.
  */
-function linkStaysInside(files: Record<string, FileEvidence>, link: string): boolean {
+function linkStaysInside(folded: Map<string, FileEvidence>, link: string): boolean {
   const resolved = link.split('/').slice(0, -1);
-  let pending = files[link].hash.split('/');
+  let pending = folded.get(fold(link))!.hash.split('/');
   let hops = 0;
   while (pending.length) {
     const part = pending.shift()!;
@@ -60,7 +70,7 @@ function linkStaysInside(files: Record<string, FileEvidence>, link: string): boo
     }
     if (part.toLowerCase() === '.git') return false;
     resolved.push(part);
-    const entry = files[resolved.join('/')];
+    const entry = folded.get(fold(resolved.join('/')));
     if (entry?.kind !== 'link') continue;
     if (++hops > MAX_LINK_HOPS || unsafeLinkText(entry.hash)) return false;
     resolved.pop();
@@ -100,41 +110,39 @@ export function selectPortableEntries(
     assertEvidence(entry);
     byPosix[posix(name)] = entry;
   }
-  const skipped: SkippedEntry[] = unsupported.map((name) => ({
-    path: posix(name),
-    code: 'MIGRATION_UNSUPPORTED_ENTRY',
-  }));
   const reason = new Map<string, SkipCode>();
-  const folded = new Set<string>();
-  for (const name of Object.keys(byPosix)) {
-    if (nonportable(name)) {
-      reason.set(name, 'MIGRATION_NONPORTABLE_PATH');
-      continue;
-    }
-    const key = name.normalize('NFC').toLowerCase();
-    if (folded.has(key)) reason.set(name, 'MIGRATION_PATH_COLLISION');
-    else folded.add(key);
+  // A skipped directory takes its subtree with it: those entries are neither kept nor reported.
+  const dropped = (name: string) => ancestorsOf(name).some((ancestor) => reason.has(ancestor));
+  // Parents decide first, so a skipped directory's subtree never competes with what is kept.
+  const byDepth = Object.keys(byPosix).sort((a, b) => a.split('/').length - b.split('/').length);
+  const folded = new Map<string, FileEvidence>();
+  for (const name of byDepth) {
+    if (dropped(name)) continue;
+    if (nonportable(name)) reason.set(name, 'MIGRATION_NONPORTABLE_PATH');
+    else if (folded.has(fold(name))) reason.set(name, 'MIGRATION_PATH_COLLISION');
+    else folded.set(fold(name), byPosix[name]);
   }
   // Resolve links against what the target will hold; a link into a skipped entry just dangles.
-  const named: Record<string, FileEvidence> = Object.create(null);
-  for (const [name, entry] of Object.entries(byPosix)) if (!reason.has(name)) named[name] = entry;
-  for (const [name, entry] of Object.entries(named)) {
-    if (entry.kind === 'link' && (unsafeLinkText(entry.hash) || !linkStaysInside(named, name)))
+  for (const name of byDepth) {
+    const entry = byPosix[name];
+    if (entry.kind !== 'link' || reason.has(name) || dropped(name)) continue;
+    if (unsafeLinkText(entry.hash) || !linkStaysInside(folded, name))
       reason.set(name, 'MIGRATION_EXTERNAL_LINK');
   }
+  const skipped: SkippedEntry[] = unsupported
+    .map(posix)
+    .filter((name) => !dropped(name))
+    .map((name) => ({ path: name, code: 'MIGRATION_UNSUPPORTED_ENTRY' }));
   const kept: Record<string, FileEvidence> = Object.create(null);
   for (const [name, entry] of Object.entries(files)) {
     const relative = posix(name);
-    const parts = relative.split('/');
-    const ancestors = parts.slice(0, -1).map((_, index) => parts.slice(0, index + 1).join('/'));
-    // A skipped directory takes its subtree with it; report only the directory.
-    if (ancestors.some((ancestor) => reason.has(ancestor))) continue;
+    if (dropped(relative)) continue;
     const code = reason.get(relative);
     if (code) {
       skipped.push({ path: relative, code });
       continue;
     }
-    if (ancestors.some((ancestor) => byPosix[ancestor]?.kind !== 'directory'))
+    if (ancestorsOf(relative).some((ancestor) => byPosix[ancestor]?.kind !== 'directory'))
       throw new Error('MIGRATION_INVALID_MANIFEST');
     kept[name] = entry;
   }

@@ -70,6 +70,31 @@ describe('selectPortableEntries', () => {
     ]);
   });
 
+  it('decides parents first, so a skipped folder never costs the kept one its files', () => {
+    const { files, skipped } = select(
+      { foo: dir, Foo: dir, 'Foo/x': file, 'foo/x': file, 'Foo/up': link('../..') },
+      ['Foo/pipe'],
+    );
+    expect(Object.keys(files)).toEqual(['foo', 'foo/x']);
+    expect(skipped).toEqual([{ path: 'Foo', code: 'MIGRATION_PATH_COLLISION' }]);
+  });
+
+  it('treats a link into a skipped folder as dangling, not external', () => {
+    const { files, skipped } = select({
+      'bad ': dir,
+      'bad /up': link('../..'),
+      via: link('bad /up/x'),
+    });
+    expect(Object.keys(files)).toEqual(['via']);
+    expect(skipped).toEqual([{ path: 'bad ', code: 'MIGRATION_NONPORTABLE_PATH' }]);
+  });
+
+  it('resolves links case-insensitively, as a folding target filesystem would', () => {
+    const { files, skipped } = select({ a: dir, 'a/up': link('../..'), sneaky: link('A/UP/x') });
+    expect(Object.keys(files)).toEqual(['a']);
+    expect(skipped.map((entry) => entry.path)).toEqual(['a/up', 'sneaky']);
+  });
+
   it('accepts platform separators and returns the original keys', () => {
     const { files, skipped } = selectPortableEntries(
       { a: dir, 'a\\b': file, 'a\\c': link('b') },
