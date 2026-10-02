@@ -221,6 +221,30 @@ it('names a change whose edits a resolved rebase kept only half of', async () =>
   }
 }, 60_000);
 
+it('names a change whose added line a resolved rebase only reordered', async () => {
+  const h = await repos();
+  try {
+    // One change adds a line; the conflict resolution keeps its words but flips
+    // their order — the same unordered word set, a different meaning.
+    await h.write(h.source, 'feature.txt', replace(0, 'return a - b'));
+    const reordered = await h.commit(h.source, '', 4_000);
+    await h.write(h.official, 'feature.txt', replace(0, 'official'));
+    const target = await h.commit(h.official, 'official v2');
+    const state = await prepareUpstreamMerge(h.userData, update(h, target), h.git, async () => {});
+    expect(state.status).toBe('conflict');
+    const worktree = mergeWorktree(h.userData, state.id);
+    await h.write(worktree, 'feature.txt', replace(0, 'return b - a'));
+    await h.git(['add', '-A'], worktree);
+    await h.git([...h.identity(true), 'rebase', '--continue'], worktree);
+    await expect(applyUpstreamMerge(h.userData, state, h.git)).rejects.toMatchObject({
+      code: 'checksFailed',
+      missing: { count: 1, commits: [reordered] },
+    });
+  } finally {
+    await h.clean();
+  }
+}, 60_000);
+
 it('keeps a merge commit’s own edits: missing until the resolver puts them back', async () => {
   const h = await repos();
   try {
