@@ -371,6 +371,21 @@ describe('host task cards on Mobile', () => {
       expect(views.get('mac')?.resources[0].revision).toBe('current');
     },
   );
+  it('does not alert an action failure that settles after the app left the foreground', async () => {
+    await render();
+    const pending = deferred<{ effects: [] }>();
+    h.action.mockReturnValueOnce(pending.promise);
+    let run!: Promise<void>;
+    act(() => {
+      run = views.get('mac')!.act(views.get('mac')!.resources[0], 'start');
+    });
+    foreground('background');
+    await act(async () => {
+      pending.reject(new Error('timeout'));
+      await run;
+    });
+    expect(h.alert).not.toHaveBeenCalled();
+  });
   it('refreshes after foreground and reconnect without replaying a timed-out action', async () => {
     await render();
     h.action.mockRejectedValueOnce(new Error('timeout after host accepted'));

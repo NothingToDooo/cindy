@@ -333,7 +333,12 @@ export function useSessionResourceCards(
         i18n.language,
       );
     } catch (error) {
-      if (current.current === scope)
+      // Only surface the failure where the user still is; the card itself recovers by polling.
+      if (
+        current.current === scope &&
+        focused.current &&
+        AppState.currentState === 'active'
+      )
         Alert.alert(t('session.screen.operationFailed'), humanizeRemoteError(error));
     } finally {
       if (request.current === token) {
