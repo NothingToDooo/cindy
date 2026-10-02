@@ -156,6 +156,11 @@ export function startDesktopCaptureHost(api: DesktopCaptureApi): () => void {
       }
       return;
     }
+    if (command.op === 'display-swap') {
+      // Same stream and peer: frames of the previous geometry are just dropped.
+      if (command.lease === activeLease) native?.skipStale();
+      return;
+    }
     stop();
     if (
       command.op !== 'offer' ||

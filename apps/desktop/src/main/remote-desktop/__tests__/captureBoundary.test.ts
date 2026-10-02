@@ -688,6 +688,43 @@ it.each(['darwin', 'win32'])(
   },
 );
 
+it('holds native video across a display change and resumes it on the new display', async () => {
+  vi.stubGlobal('process', { ...process, platform: 'darwin' });
+  expect((await h.deps.capabilities()).liveDisplaySwitch).toBe(true);
+  // No video yet: nothing to hold.
+  expect(h.deps.pauseVideo!()).toBe(false);
+  const pending = h.deps.offer(
+    { lease: h.lease, display: { id: '1' } },
+    'sdp',
+    undefined,
+    false,
+    'attempt',
+  );
+  h.handlers.get(DESKTOP_LOCAL.REGISTER)(event());
+  await flush();
+  h.handlers.get(DESKTOP_LOCAL.REPLY)(event(), h.owner.send.mock.calls[0][1].id, 'answer');
+  await pending;
+  const owner = h.owner;
+  const frame = h.handlers.get(DESKTOP_LOCAL.NATIVE_FRAME);
+  expect(h.deps.pauseVideo!()).toBe(true);
+  h.nativeFrame.mockClear();
+  // Frames of the old geometry never reach the held stream.
+  await expect(frame(event(), h.lease)).resolves.toBeNull();
+  expect(h.nativeFrame).not.toHaveBeenCalled();
+  h.nativeStop.mockClear();
+  expect(h.deps.resumeVideo!({ id: '5', name: 'Viewer', width: 900, height: 1600 })).toBe(true);
+  // Same capture process and peer; only the source follows the new display.
+  expect(h.owner).toBe(owner);
+  expect(owner.dead).toBe(false);
+  expect(h.nativeStop).toHaveBeenCalled();
+  expect(owner.send.mock.calls.at(-1)[1]).toMatchObject({ op: 'display-swap', lease: h.lease });
+  await frame(event(), h.lease);
+  expect(h.nativeFrame).toHaveBeenLastCalledWith('5', false, undefined);
+  // A stopped stream cannot be resumed and is not reported as kept.
+  h.deps.stopVideo();
+  expect(h.deps.resumeVideo!({ id: '1', name: 'Main', width: 1920, height: 1080 })).toBe(false);
+});
+
 it('does not advertise or select Windows overlays without a ready native service', async () => {
   vi.stubGlobal('process', { ...process, platform: 'win32' });
   const { readWindowsDesktopSupport } = await import('../windowsHost');

@@ -31,7 +31,7 @@ export const DESKTOP_LOCAL = {
 export interface DesktopHostCommand {
   iceServers?: DesktopIceServer[];
   id: string;
-  op: 'offer' | 'stop' | 'capture-reset' | 'ice' | 'prepare' | 'frame';
+  op: 'offer' | 'stop' | 'capture-reset' | 'display-swap' | 'ice' | 'prepare' | 'frame';
   /** Local-only: retain the system-selected Wayland stream for this lease. */
   portalCapture?: boolean;
   attemptId?: string;

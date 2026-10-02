@@ -10,7 +10,12 @@ export async function nativeCaptureStream(
   cursor: (value: RemoteDesktopCursor | null) => void = () => {},
   fps = 15,
   onMotion?: (moving: boolean) => void,
-): Promise<{ stream: MediaStream; stop(): void; clear(): void }> {
+): Promise<{
+  stream: MediaStream;
+  stop(): void;
+  clear(): void;
+  skipStale(): void;
+}> {
   const canvas = document.createElement('canvas');
   const context = canvas.getContext('2d');
   if (!context) throw new Error('DESKTOP_VIDEO_UNAVAILABLE');
@@ -103,6 +108,10 @@ export async function nativeCaptureStream(
     clear: () => {
       epoch++;
       context.clearRect(0, 0, canvas.width, canvas.height);
+    },
+    // Drop frames already requested for the previous display; keep the picture.
+    skipStale: () => {
+      epoch++;
     },
   };
 }

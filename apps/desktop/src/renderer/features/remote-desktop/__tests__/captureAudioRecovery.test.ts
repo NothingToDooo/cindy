@@ -32,10 +32,12 @@ function setup() {
   vi.useFakeTimers();
   const video = media(false);
   const nativeStop = vi.fn();
+  const skipStale = vi.fn();
   vi.mocked(nativeCaptureStream).mockResolvedValue({
     stream: video,
     stop: nativeStop,
     clear: vi.fn(),
+    skipStale,
   } as any);
   const capture = vi.fn().mockRejectedValue(new Error('NotAllowedError'));
   vi.stubGlobal('navigator', { mediaDevices: { getDisplayMedia: capture } });
@@ -136,6 +138,8 @@ function setup() {
     api,
     video,
     nativeStop,
+    skipStale,
+    swap: (lease = 'lease') => command({ id: 'swap', op: 'display-swap', lease }),
     peers,
     capture,
     reply,
@@ -543,4 +547,20 @@ it('answers control requests while input batches fill their own bound', async ()
   expect(h.api.stop).not.toHaveBeenCalled();
   batch(9);
   expect(h.api.stop).toHaveBeenCalled();
+});
+
+it('follows a display swap on the same peer without restarting capture', async () => {
+  const h = setup();
+  h.offer(false);
+  await flush();
+  const [peer] = h.peers;
+  h.swap('other-lease');
+  expect(h.skipStale).not.toHaveBeenCalled();
+  h.swap();
+  await flush();
+  expect(h.skipStale).toHaveBeenCalledOnce();
+  expect(h.peers).toHaveLength(1);
+  expect(peer.close).not.toHaveBeenCalled();
+  expect(h.nativeStop).not.toHaveBeenCalled();
+  expect(h.api.stop).not.toHaveBeenCalled();
 });

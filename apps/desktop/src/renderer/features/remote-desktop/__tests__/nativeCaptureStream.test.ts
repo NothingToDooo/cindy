@@ -117,3 +117,31 @@ it('reports still after a quiet second and moving again on a large change', asyn
   expect(onMotion).toHaveBeenLastCalledWith(true);
   owner.stop();
 });
+it('drops a frame read before a display swap but keeps the stream and picture', async () => {
+  const h = setup();
+  const clearRect = vi.fn();
+  h.canvas.getContext = () => ({ drawImage: h.drawImage, clearRect });
+  const owner = await nativeCaptureStream(
+    async () => 'anBlZw==',
+    () => true,
+    vi.fn(),
+  );
+  let finish!: (value: ImageBitmap) => void;
+  vi.mocked(createImageBitmap).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  await vi.advanceTimersByTimeAsync(67);
+  owner.skipStale();
+  finish(h.bitmap);
+  await vi.advanceTimersByTimeAsync(0);
+  // Only the initial frame was drawn; the stale one is dropped, not cleared.
+  expect(h.drawImage).toHaveBeenCalledOnce();
+  expect(clearRect).not.toHaveBeenCalled();
+  expect(h.track.stop).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(67);
+  expect(h.drawImage).toHaveBeenCalledTimes(2);
+  owner.stop();
+});

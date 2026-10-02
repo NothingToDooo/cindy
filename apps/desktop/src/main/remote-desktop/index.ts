@@ -24,6 +24,7 @@ import {
   isRemoteDesktopChannelRequest,
   type RemoteDesktopIceRequest,
   type RemoteDesktopIceReply,
+  type RemoteDesktopDisplay,
   type RemoteDesktopLease,
   type RemoteDesktopVideoSettings,
 } from '@cindy/device-link';
@@ -223,7 +224,30 @@ let pending: {
 // failure: release control and keep the lease, capture and media running.
 const input = new DesktopInputHost(() => remoteDesktop.releaseControl());
 const clipboardCounter = new ClipboardCounter(resolveDesktopInputBinary);
+// A display change holds native capture instead of stopping it: frames pause
+// until the changed display is known, then the same stream follows it.
+let videoPaused = false;
+function pauseVideo(): boolean {
+  if (!videoLease || !nativeDisplay || !host || host.isDestroyed()) return false;
+  videoPaused = true;
+  return true;
+}
+function resumeVideo(display: RemoteDesktopDisplay): boolean {
+  if (!videoPaused || !videoLease || !host || host.isDestroyed()) return false;
+  nativeDisplay = display.id;
+  // Helpers bind their capture geometry at start; the next frame restarts them.
+  nativeCapture.stop();
+  hyprlandCapture.stop();
+  videoPaused = false;
+  host.send(DESKTOP_LOCAL.COMMAND, {
+    id: randomUUID(),
+    op: 'display-swap',
+    lease: videoLease,
+  } satisfies DesktopHostCommand);
+  return true;
+}
 function stopVideo(): void {
+  videoPaused = false;
   offerGeneration++;
   portalReady = null;
   portalGrant = false;
@@ -559,6 +583,11 @@ export const remoteDesktop: RemoteDesktopController = new RemoteDesktopControlle
       viewerDisplay,
       viewerDisplayRestore: viewerDisplay,
       channelRequests: true,
+      // Native canvas capture can follow a display change without a new offer.
+      liveDisplaySwitch:
+        process.platform === 'darwin' ||
+        (process.platform === 'win32' && windowsAvailable) ||
+        Boolean(enabled && nativeWayland()),
       displayModes: process.platform === 'darwin' || Boolean(linuxDisplays?.length),
       enabled,
       canControl:
@@ -737,6 +766,8 @@ export const remoteDesktop: RemoteDesktopController = new RemoteDesktopControlle
   },
   stopInput: () => input.stop(),
   releaseInput: () => input.release(),
+  pauseVideo,
+  resumeVideo,
   ...(process.platform === 'darwin' || supportsLinuxLock()
     ? {
         lockScreen: async (isCurrent: () => boolean, signal: AbortSignal) => {
@@ -893,6 +924,8 @@ export function registerRemoteDesktopIpc(
       !remoteDesktop.hasLease(lease)
     )
       throwIpcError('PERMISSION_DENIED', 'Invalid desktop capture lease');
+    // Frames from the previous display geometry must not reach the held stream.
+    if (videoPaused) return null;
     const generation = offerGeneration;
     const jpeg = await (
       nativeWayland()

@@ -13,6 +13,7 @@ import {
   type RemoteDesktopVideoSettings,
   type RemoteDesktopDisplayMode,
   type RemoteDesktopCapabilities,
+  type RemoteDesktopDisplay,
   type RemoteDesktopLease,
   type RemoteDesktopPermissions,
   type RemoteDesktopIceRequest,
@@ -53,6 +54,13 @@ export interface DesktopControllerDeps {
   stopInput(): void;
   releaseInput?(): Promise<void>;
   stopVideo(): void;
+  /**
+   * Hold the current video stream across a display change instead of stopping
+   * it. Returns false when the active capture cannot follow a display change.
+   */
+  pauseVideo?(): boolean;
+  /** Point a held video stream at the changed display; false if it is gone. */
+  resumeVideo?(display: RemoteDesktopDisplay): boolean;
   lockScreen?(isCurrent: () => boolean, signal: AbortSignal): Promise<void>;
   offer(
     lease: RemoteDesktopLease,
@@ -265,10 +273,23 @@ export class RemoteDesktopController {
     this.deps.changed();
     return restoring;
   }
+  /** A display change keeps the viewer's video only when it asked and capture can follow. */
+  private holdVideo(keepVideo: boolean | undefined): boolean {
+    if (keepVideo && this.deps.pauseVideo?.()) return true;
+    this.deps.stopVideo();
+    return false;
+  }
+  /** A held stream that cannot follow the new display is stopped like before. */
+  private resumeVideo(display: RemoteDesktopDisplay): boolean {
+    if (this.deps.resumeVideo?.(display)) return true;
+    this.deps.stopVideo();
+    return false;
+  }
   private async temporaryResolution(
     peer: string,
     active: NonNullable<RemoteDesktopController['active']>,
     modeId: string,
+    keepVideo?: boolean,
   ): Promise<RemoteDesktopLease> {
     if (!active.controlling) throw new Error('DESKTOP_VIEW_ONLY');
     if (!this.deps.resolution || !this.deps.displayModes)
@@ -286,7 +307,7 @@ export class RemoteDesktopController {
     this.displayChanging = true;
     try {
       this.deps.stopInput();
-      this.deps.stopVideo();
+      const videoKept = this.holdVideo(keepVideo);
       await this.clearSafety();
       requireCurrent();
       await this.deps.releaseInput?.();
@@ -326,8 +347,14 @@ export class RemoteDesktopController {
       this.viewerGeometryManaged = true;
       active.controlling = false;
       this.controlGeneration++;
+      const resumed = videoKept && this.resumeVideo(active.display);
       this.deps.changed();
-      return { lease: active.lease, display: active.display, controlling: false };
+      return {
+        lease: active.lease,
+        display: active.display,
+        controlling: false,
+        ...(resumed ? { videoKept: true } : {}),
+      };
     } catch (error) {
       if (this.active === active) this.stop(peer);
       throw error;
@@ -652,7 +679,7 @@ export class RemoteDesktopController {
         try {
           // Wait for held keys/buttons to be released in the old coordinate space.
           this.deps.stopInput();
-          this.deps.stopVideo();
+          const videoKept = this.holdVideo(request.keepVideo);
           // Safety effects belong to the old capture/control session, even though
           // resizing retains its lease. Invalidate pending enables before waiting.
           await this.clearSafety();
@@ -705,11 +732,13 @@ export class RemoteDesktopController {
           active.display = display;
           active.controlling = false;
           this.controlGeneration++;
+          const resumed = videoKept && this.resumeVideo(display);
           this.deps.changed();
           return {
             lease: active.lease,
             display,
             controlling: false,
+            ...(resumed ? { videoKept: true } : {}),
             ...(request.op === 'viewerDisplay'
               ? {
                   viewerDisplayRequest: { width: request.width, height: request.height },
@@ -880,7 +909,8 @@ export class RemoteDesktopController {
         return modes;
       }
       case 'resolution': {
-        if (request.temporary) return this.temporaryResolution(peer, active, request.modeId);
+        if (request.temporary)
+          return this.temporaryResolution(peer, active, request.modeId, request.keepVideo);
         if (!active.controlling) throw new Error('DESKTOP_VIEW_ONLY');
         if (!this.deps.resolution) throw new Error('DESKTOP_DISPLAY_MODES_UNAVAILABLE');
         if (this.inputStarting || this.clipboardPending || this.locking || this.starting)
