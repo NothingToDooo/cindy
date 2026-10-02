@@ -100,12 +100,22 @@ export function configurePersonalSync(): void {
     target: resolveSyncTarget,
     base: async () => {
       const recorded = await readCommit(PERSONAL_UPSTREAM_REF);
-      if (recorded) return recorded;
+      const personal = await readCommit(`refs/heads/${CINDY_PERSONAL_BRANCH}`);
+      // The recorded base is trusted only as the personal tip's ancestor — the
+      // same clamp as the source-status and merge-runtime reads: an interrupted
+      // move leaves "old tip + new base", and Sync seeing that base would skip
+      // the update it needs while the source stays old. The shared history of
+      // the two recovers the base the tip really sits on.
+      if (recorded && (!personal || (await isAncestor(recorded, personal)))) return recorded;
+      const clamped =
+        recorded && personal
+          ? (await git(['merge-base', personal, recorded]).catch(() => '')).trim()
+          : '';
+      if (COMMIT.test(clamped)) return clamped;
       // Sources prepared before the base was recorded: the official commit they were made
       // from (the same fallback the status uses). Recorded once so the combine reads it too.
       const tools = await createMakeToolchainEnvironment(userData);
       const derived = (await readCurrentCindySourceStatus(root, tools)).baseCommit;
-      const personal = await readCommit(`refs/heads/${CINDY_PERSONAL_BRANCH}`);
       if (!derived || !COMMIT.test(derived) || !personal || !(await isAncestor(derived, personal)))
         return undefined;
       // Create-only: never overwrites a base recorded meanwhile.
