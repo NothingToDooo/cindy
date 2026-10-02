@@ -97,34 +97,34 @@ export function withDesktopBitrateHints(sdp: string, profile: DesktopVideoProfil
     `x-google-max-bitrate=${Math.round(profile.maxBitrate / 1000)}`;
   const eol = sdp.includes('\r\n') ? '\r\n' : '\n';
   const lines = sdp.split(eol);
-  const out: string[] = [];
-  let video = false;
-  const pending = new Set<string>();
-  const flush = () => {
-    for (const pt of pending) out.push(`a=fmtp:${pt} ${hints}`);
-    pending.clear();
-  };
+  const trailing = lines.at(-1) === '' ? lines.pop() : undefined;
+  // Attribute order inside a media section is free, so collect the section's
+  // media payload types before rewriting any fmtp line.
+  const sections: string[][] = [[]];
   for (const line of lines) {
-    if (line.startsWith('m=')) {
-      flush();
-      video = line.startsWith('m=video');
+    if (line.startsWith('m=')) sections.push([]);
+    sections[sections.length - 1].push(line);
+  }
+  const out = sections.flatMap((section) => {
+    if (!section[0]?.startsWith('m=video')) return section;
+    const media = new Set<string>();
+    for (const line of section) {
+      const rtpmap = /^a=rtpmap:(\d+) ([^/]+)\//.exec(line);
+      if (rtpmap && MEDIA_CODECS.test(rtpmap[2])) media.add(rtpmap[1]);
     }
-    const rtpmap = video && /^a=rtpmap:(\d+) ([^/]+)\//.exec(line);
-    if (rtpmap && MEDIA_CODECS.test(rtpmap[2])) pending.add(rtpmap[1]);
-    const fmtp = video && /^a=fmtp:(\d+) (.*)$/.exec(line);
-    if (fmtp && pending.has(fmtp[1])) {
-      pending.delete(fmtp[1]);
+    const missing = new Set(media);
+    const rewritten = section.map((line) => {
+      const fmtp = /^a=fmtp:(\d+) (.*)$/.exec(line);
+      if (!fmtp || !media.has(fmtp[1])) return line;
+      missing.delete(fmtp[1]);
       const kept = fmtp[2]
         .split(';')
         .filter((p) => p && !BITRATE_HINTS.includes(p.split('=')[0].trim()));
-      out.push(`a=fmtp:${fmtp[1]} ${[...kept, hints].join(';')}`);
-      continue;
-    }
-    // Codecs without their own fmtp line get one at the end of the section.
-    if (line === '' && pending.size) flush();
-    out.push(line);
-  }
-  flush();
+      return `a=fmtp:${fmtp[1]} ${[...kept, hints].join(';')}`;
+    });
+    return [...rewritten, ...[...missing].map((pt) => `a=fmtp:${pt} ${hints}`)];
+  });
+  if (trailing !== undefined) out.push(trailing);
   return out.join(eol);
 }
 

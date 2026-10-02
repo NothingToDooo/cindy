@@ -23,6 +23,7 @@ import { DesktopViewerController, type ViewerSnapshot } from './viewerController
 import { Select } from '@/components/ui/select';
 import { Button } from '@/components/ui/button';
 import { FormField } from '@/components/ui/form-field';
+import { SegmentedControl } from '@/components/ui/segmented-control';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { Switch } from '@/components/ui/switch';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -345,12 +346,11 @@ export function RemoteDesktopViewerWindow() {
             {state?.caps?.videoSettings && (
               <>
                 <FormField label={t('remoteDesktop.viewer.fps')} className="remote-viewer-field">
-                  {({ id }) => (
-                    <Select
-                      id={id}
-                      className="w-full"
-                      label={t('remoteDesktop.viewer.fps')}
-                      value={String(state.settings.fps)}
+                  {() => (
+                    <SegmentedControl
+                      fullWidth
+                      aria-label={t('remoteDesktop.viewer.fps')}
+                      value={String(state.settings.fps) as '30' | '60'}
                       options={[
                         { value: '30', label: '30 fps' },
                         { value: '60', label: '60 fps' },
@@ -358,7 +358,6 @@ export function RemoteDesktopViewerWindow() {
                       onValueChange={(value) =>
                         controller.current?.settings({ fps: Number(value) as 30 | 60 })
                       }
-                      onOpenChange={onSelectOpenChange}
                     />
                   )}
                 </FormField>
@@ -367,22 +366,16 @@ export function RemoteDesktopViewerWindow() {
                   hint={t('remoteDesktop.viewer.qualityHint')}
                   className="remote-viewer-field"
                 >
-                  {({ id }) => (
-                    <Select
-                      id={id}
-                      className="w-full"
-                      label={t('remoteDesktop.viewer.quality')}
+                  {() => (
+                    <SegmentedControl
+                      fullWidth
+                      aria-label={t('remoteDesktop.viewer.quality')}
                       value={state.settings.quality}
                       options={REMOTE_DESKTOP_VIDEO_QUALITIES.map((value) => ({
                         value,
                         label: t(QUALITY_LABELS[value]),
                       }))}
-                      onValueChange={(value) =>
-                        controller.current?.settings({
-                          quality: value as RemoteDesktopVideoQuality,
-                        })
-                      }
-                      onOpenChange={onSelectOpenChange}
+                      onValueChange={(quality) => controller.current?.settings({ quality })}
                     />
                   )}
                 </FormField>

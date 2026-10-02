@@ -56,6 +56,21 @@ describe('remote desktop quality tiers', () => {
     expect(lines.at(-1)).toBe('');
   });
 
+  it('rewrites an fmtp line that precedes its rtpmap instead of adding a second one', () => {
+    const profile = desktopVideoProfile();
+    const reordered = [
+      'm=video 9 UDP/TLS/RTP/SAVPF 100',
+      'a=fmtp:100 x-google-min-bitrate=30',
+      'a=rtpmap:100 VP8/90000',
+      '',
+    ].join('\n');
+    const lines = withDesktopBitrateHints(reordered, profile).split('\n');
+    expect(lines.filter((line) => line.startsWith('a=fmtp:100'))).toEqual([
+      'a=fmtp:100 x-google-start-bitrate=4000;x-google-min-bitrate=1000;x-google-max-bitrate=20000',
+    ]);
+    expect(lines.at(-1)).toBe('');
+  });
+
   it('separates large screen changes from small localized activity', () => {
     const frame = (fill: number) => new Uint8ClampedArray(64 * 36 * 4).fill(fill);
     const still = frame(100);
