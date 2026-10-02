@@ -2640,9 +2640,12 @@ export function RemoteDesktopSession({
             ? { kind: "mode", modeId, width, height }
             : fittedTo.width > 0 && fittedTo.height > 0
               ? {
+                  // The requested size, not the host's logical one: a HiDPI
+                  // host may answer with a smaller mode of the same ratio,
+                  // which must not shrink the request on every reconnect.
                   kind: "fit",
-                  width: next.display.width,
-                  height: next.display.height,
+                  width: size.width,
+                  height: size.height,
                   viewport: { ...fittedTo },
                   window: {
                     width: Math.round(windowSizeRef.current.width),

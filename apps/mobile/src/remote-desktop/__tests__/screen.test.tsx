@@ -2360,6 +2360,64 @@ describe("remote desktop controls", () => {
     expect(measured()).toEqual([]);
   });
 
+  it("remembers the requested fit when a HiDPI host answers with a smaller mode", async () => {
+    const original = fixture.invoke.getMockImplementation()!;
+    fixture.invoke.mockImplementation(async (...args) => {
+      const request = args[2][0];
+      if (request.op === "capabilities")
+        return {
+          ...(await original(...args)),
+          viewerDisplay: true,
+          viewerDisplayRestore: true,
+          videoSettings: true,
+        };
+      // Same ratio at half the size, with the request echoed as a receipt.
+      if (request.op === "viewerDisplay")
+        return {
+          lease: "lease",
+          controlling: false,
+          display: {
+            ...display,
+            id: "virtual",
+            width: request.width / 2,
+            height: request.height / 2,
+          },
+          viewerDisplayRequest: {
+            width: request.width,
+            height: request.height,
+          },
+        };
+      return original(...args);
+    });
+    const fitted = () =>
+      requests().filter((request) => request.op === "viewerDisplay");
+    await connect();
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    await act(async () =>
+      fixture.message!({
+        nativeEvent: {
+          data: JSON.stringify({
+            type: "viewportSize",
+            epoch: "lease",
+            width: 390,
+            height: 760,
+          }),
+        },
+      }),
+    );
+    const [first] = fitted();
+    expect(first).toBeDefined();
+    await act(async () => root.unmount());
+    fixture.invoke.mockClear();
+    fixture.post.mockClear();
+    root = createRoot(host);
+    act(() => root.render(<RemoteDesktopScreen />));
+    await connect();
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    // Same window: requested again at the original size, before any video.
+    expect(fitted()).toEqual([first]);
+  });
+
   it.each([
     ["a different window in the same orientation", { width: 600, height: 844 }],
     ["no recorded window", undefined],
