@@ -118,7 +118,7 @@ describe("existing remote quota compatibility", () => {
         currency: "CNY",
       });
       for (const agentKind of ["pi", "cc"] as const) {
-        for (const model of ["claude-sonnet-4-6", "chatgpt/gpt-5"]) {
+        for (const model of ["claude-sonnet-4-6"]) {
           const result = await readSessionMenuAccountUsage(
             { ...session, agentKind, providerId, model },
             r,
@@ -488,15 +488,34 @@ describe("subscription quota for every subscription family", () => {
     expect(result).toMatchObject({ source: "xai", plan: "SuperGrok", windows: [], amounts: [] });
   });
 
-  it("does not attribute a bridge model to an account the task did not select", async () => {
+  it.each([
+    ["cc", "chatgpt/gpt-5", "chatgpt", "codex"],
+    ["pi", "chatgpt/gpt-5", "chatgpt", "codex"],
+    ["cc", "xai/grok-4.6", "xai", "xai"],
+    ["codex", "xai/grok-4.6", "xai", "xai"],
+  ] as const)(
+    "attributes a providerless %s %s task to the default %s account",
+    async (agentKind, model, source, kind) => {
+      const r = reader();
+      const result = await readSessionMenuAccountUsage(
+        { ...session, agentKind, providerId: null, model },
+        r,
+      );
+      expect(result.source).toBe(source);
+      if (kind === "xai") expect(r.getSubscriptionUsage).toHaveBeenCalledWith("xai", undefined);
+      else expect(r.getAccountUsage).toHaveBeenCalledWith("codex");
+      expect(r.getClaudeSessionRoute).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not attribute a bridge model to another family's selected account", async () => {
     const r = reader();
     const result = await readSessionMenuAccountUsage(
-      { ...session, agentKind: "cc", providerId: null, model: "xai/grok-4.6" },
+      { ...session, agentKind: "cc", providerId: "anthropic", model: "xai/grok-4.6" },
       r,
     );
     expect(result.source).toBe("unavailable");
     expect(r.getSubscriptionUsage).not.toHaveBeenCalled();
-    expect(r.getClaudeSessionRoute).not.toHaveBeenCalled();
   });
 
   it.each([

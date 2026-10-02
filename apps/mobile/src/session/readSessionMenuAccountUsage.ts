@@ -100,8 +100,8 @@ function accountFamily(
 
 /**
  * The subscription this task consumes, mirroring the desktop device-link chip.
- * Model bridge prefixes decide the consumed account; an unselected route is only
- * attributed when the host has observed it (claudeRoute), never from login state.
+ * Model bridge prefixes decide the consumed account; an unselected Claude Code route
+ * is only attributed when the host has observed it (claudeRoute), never from login state.
  */
 export function sessionSubscriptionFamily(
   session: Pick<
@@ -116,9 +116,14 @@ export function sessionSubscriptionFamily(
   const provider = session.providerId?.trim() || null;
   const family = accountFamily(provider, accountProvider);
   const model = session.model.trim();
+  // The host routes these prefixes to the subscription bridge on their own; with no
+  // selected provider they consume the family's default account.
   if (model.startsWith("chatgpt/"))
-    return session.agentKind !== "codex" && family === "codex" ? "codex" : null;
-  if (model.startsWith("xai/")) return family === "xai" ? "xai" : null;
+    return session.agentKind !== "codex" && (family === "codex" || provider === null)
+      ? "codex"
+      : null;
+  if (model.startsWith("xai/"))
+    return family === "xai" || provider === null ? "xai" : null;
   // Pi catalog ids lack the xai/ prefix, so the selected account decides.
   if (family === "xai" || family === "claude") return family;
   return provider === null &&

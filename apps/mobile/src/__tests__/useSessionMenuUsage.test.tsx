@@ -194,8 +194,10 @@ describe("menu usage refresh lifecycle", () => {
       agentKind: "pi" as const,
       model: "chatgpt/gpt-5",
     };
+    // A providerless non-bridge Pi model has no confirmed account route.
+    const unresolved = { ...task, providerId: null, model: "gpt-5" };
     await h.render(task);
-    await h.render({ ...task, providerId: null });
+    await h.render(unresolved);
     expect(h.value.account?.source).toBe("unavailable");
     expect(r.getAccountUsage).toHaveBeenCalledTimes(1);
     vi.mocked(r.getAccountUsage).mockResolvedValue({
@@ -209,7 +211,7 @@ describe("menu usage refresh lifecycle", () => {
     );
     expect(h.value.account?.source).toBe("gateway");
     expect(h.value.account?.windows).toEqual([]);
-    await h.render({ ...task, providerId: null });
+    await h.render(unresolved);
     expect(h.value.account?.source).toBe("unavailable");
     expect(h.value.account?.amounts).toEqual([]);
     expect(r.getAccountUsage).toHaveBeenCalledTimes(2);
