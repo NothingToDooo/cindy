@@ -202,6 +202,25 @@ describe('prepareCindyMakeWorkspace', () => {
     expect(pnpm).not.toHaveBeenCalled();
   });
 
+  it('refuses unverified content with a dependency that escapes the worktree', async () => {
+    const pnpm = vi.fn(async () => undefined);
+    const worktreePath = await withManifest('run-14');
+    await writeFile(
+      path.join(worktreePath, 'package.json'),
+      JSON.stringify({
+        name: 'app',
+        version: '1.0.0',
+        dependencies: { 'private-data': 'link:../private', innocuous: '1.0.0' },
+      }),
+    );
+    // A frozen lockfile can name a path dependency; pnpm would symlink the
+    // outside directory into the worktree at install time.
+    await expect(
+      installUnverified('run-14', worktreePath, { processEnvironment: {}, pnpm }),
+    ).rejects.toMatchObject({ code: 'gitFailed' });
+    expect(pnpm).not.toHaveBeenCalled();
+  });
+
   it('refuses to install unverified content through a node_modules link', async () => {
     const pnpm = vi.fn(async () => undefined);
     const worktreePath = await withManifest('run-10');

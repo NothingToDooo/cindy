@@ -125,7 +125,7 @@ export async function assertPnpmConfigContained(root: string): Promise<void> {
     if (entry.isSymbolicLink()) throw refuse(`pnpm config is a symlink: ${name}`);
     if (!entry.isFile()) continue;
     if (name === '.npmrc') checkIni(full, await readConfig(full));
-    else if (name === 'package.json') checkPackageJson(full, await readConfig(full));
+    else if (name === 'package.json') checkPackageJson(full, root, await readConfig(full));
     else checkWorkspaceYaml(full, await readConfig(full));
   }
 }
@@ -153,6 +153,41 @@ function checkSettings(where: string, settings: Record<string, unknown>): void {
   }
 }
 
+/**
+ * A path dependency (`link:`, `file:`, a relative or absolute path) makes pnpm
+ * symlink or copy whatever it names — including outside the worktree, where a
+ * collaborator can point at credentials or user data. Unverified content may
+ * depend on registry packages or on paths that stay inside the tree only.
+ */
+function checkDependencySpecs(
+  file: string,
+  base: string,
+  manifest: Record<string, unknown>,
+): void {
+  for (const field of ['dependencies', 'devDependencies', 'optionalDependencies']) {
+    const specs = manifest[field];
+    if (typeof specs !== 'object' || specs === null || Array.isArray(specs)) continue;
+    for (const [name, spec] of Object.entries(specs as Record<string, unknown>)) {
+      if (typeof spec !== 'string') continue;
+      const value = spec.trim();
+      const linked = /^(?:link|file):/i.exec(value);
+      const target = linked ? value.slice(linked[0].length) : value;
+      const namedPath =
+        !!linked ||
+        target.startsWith('./') ||
+        target.startsWith('../') ||
+        path.isAbsolute(target) ||
+        /^[a-zA-Z]:/.test(target) ||
+        target.startsWith('~');
+      if (!namedPath) continue;
+      const resolved = path.resolve(path.dirname(file), target);
+      const relative = path.relative(base, resolved);
+      if (relative.startsWith('..') || path.isAbsolute(relative))
+        throw refuse(`pnpm dependency leaves the worktree: ${name}`);
+    }
+  }
+}
+
 function checkWorkspaceYaml(file: string, text: string): void {
   let settings: unknown;
   try {
@@ -167,7 +202,7 @@ function checkWorkspaceYaml(file: string, text: string): void {
   checkSettings(path.basename(file), settings as Record<string, unknown>);
 }
 
-function checkPackageJson(file: string, text: string): void {
+function checkPackageJson(file: string, base: string, text: string): void {
   let manifest: unknown;
   try {
     // JSON.parse is exactly what pnpm reads, modulo a byte-order mark.
@@ -181,6 +216,7 @@ function checkPackageJson(file: string, text: string): void {
   const pnpm = record.pnpm;
   if (typeof pnpm === 'object' && pnpm !== null && !Array.isArray(pnpm))
     checkSettings(`${path.basename(file)}#pnpm`, pnpm as Record<string, unknown>);
+  checkDependencySpecs(file, base, record);
   if ('workspaces' in record) {
     const value = record.workspaces;
     const patterns =
@@ -302,7 +338,7 @@ export async function assertPnpmInstallContained(root: string): Promise<void> {
         checkWorkspaceYaml(full, await readConfig(full));
       else if (entry.name === 'package.json') {
         packageDirectories.push(directory);
-        checkPackageJson(full, await readConfig(full));
+        checkPackageJson(full, base, await readConfig(full));
       }
     }
   };
