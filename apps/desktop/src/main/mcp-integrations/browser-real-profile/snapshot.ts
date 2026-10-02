@@ -142,22 +142,19 @@ const DISCARDABLE_PROFILE_CACHE_NAMES = new Set([
 ]);
 
 /**
- * Extensions installed inside the agent browser. Never copied from the source
- * profile, so they carry no source credentials; dropping them on every launch
- * would uninstall the user's agent-browser extensions. `Secure Preferences`
- * holds the extension registry and its MACs on macOS.
+ * State of extensions installed inside the agent browser. Never copied from
+ * the source profile, so it carries no source credentials; dropping it on every
+ * launch would uninstall the user's agent-browser extensions.
+ *
+ * Chrome names every profile-level extension store with "Extension"
+ * (`Extensions`, `Local Extension Settings`, `Extension State`,
+ * `DNR Extension Rules`, `Extension Cookies` and its SQLite `-wal` / `-journal`
+ * sidecars, ...), so match the word rather than enumerate a list that misses
+ * new stores. `Secure Preferences` holds the extension registry and its MACs.
  */
-const AGENT_EXTENSION_STATE_NAMES = new Set([
-  'Extensions',
-  'Secure Preferences',
-  'Local Extension Settings',
-  'Sync Extension Settings',
-  'Managed Extension Settings',
-  'Extension State',
-  'Extension Rules',
-  'Extension Scripts',
-  'Extension Cookies',
-]);
+function isAgentExtensionState(name: string): boolean {
+  return name === 'Secure Preferences' || /Extension/.test(name);
+}
 
 /** Per-origin IndexedDB folder owned by an extension (e.g. 1Password's vault). */
 const EXTENSION_INDEXED_DB_ENTRY = /^chrome-extension_/;
@@ -177,17 +174,11 @@ function pruneSiteIndexedDb(indexedDbDir: string): void {
  */
 export function pruneNonAuthProfileState(destProfileDir: string): void {
   const keep = new Set<string>(DISCARDABLE_PROFILE_CACHE_NAMES);
-  // SQLite stores (e.g. `Extension Cookies`) stay together with their WAL /
-  // hot journal; dropping a sidecar can lose committed rows or corrupt the db.
-  for (const name of AGENT_EXTENSION_STATE_NAMES) {
-    keep.add(name);
-    for (const suffix of SQLITE_SIDECARS) keep.add(name + suffix);
-  }
   for (const relative of SNAPSHOT_PROFILE_RELATIVE_PATHS) {
     keep.add(relative.split(/[/\\]/)[0] ?? relative);
   }
   for (const entry of fs.readdirSync(destProfileDir, { withFileTypes: true })) {
-    if (keep.has(entry.name)) continue;
+    if (keep.has(entry.name) || isAgentExtensionState(entry.name)) continue;
     if (entry.name === 'IndexedDB' && entry.isDirectory()) {
       pruneSiteIndexedDb(path.join(destProfileDir, entry.name));
       continue;

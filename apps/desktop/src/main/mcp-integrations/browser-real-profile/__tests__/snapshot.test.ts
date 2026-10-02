@@ -274,12 +274,14 @@ describe('snapshotRealProfile', () => {
     for (const name of extensionCookieFiles) {
       fs.writeFileSync(path.join(destDefault, name), name);
     }
+    fs.mkdirSync(path.join(destDefault, 'DNR Extension Rules', extensionId), { recursive: true });
 
     await snapshotRealProfile({ source, destDir, platform: 'darwin' });
 
     for (const name of extensionCookieFiles) {
       expect(fs.readFileSync(path.join(destDefault, name), 'utf8'), name).toBe(name);
     }
+    expect(fs.existsSync(path.join(destDefault, 'DNR Extension Rules', extensionId))).toBe(true);
 
     expect(
       fs.existsSync(path.join(destDefault, 'Extensions', extensionId, '8.0.0_0', 'manifest.json')),
