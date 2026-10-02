@@ -421,9 +421,17 @@ async function editsSurvive(
     return false;
   const edits = new Map<string, { added: string[]; removed: string[]; lines: number }>();
   const deleted: string[] = [];
+  const modes = new Map<string, string>();
   let file: string | undefined;
   let previous: string | undefined;
+  let pendingMode: string | undefined;
   for (const line of hunks) {
+    const modeLine = /^(?:new file mode|new mode) (\d{6})$/.exec(line.trim());
+    if (modeLine) {
+      // The mode header precedes its file's `---`/`+++` pair.
+      pendingMode = modeLine[1];
+      continue;
+    }
     if (line.startsWith('--- ')) {
       const source = line.slice(4).trim();
       previous = source.startsWith('a/') || source.startsWith('b/') ? source.slice(2) : undefined;
@@ -435,6 +443,10 @@ async function editsSurvive(
       file = name ?? previous;
       // A hunk that cannot be attributed to a file is never counted as kept.
       if (!file) return false;
+      if (pendingMode) {
+        modes.set(file, pendingMode);
+        pendingMode = undefined;
+      }
       if (target === '/dev/null') deleted.push(file);
       edits.set(file, { added: [], removed: [], lines: 0 });
       continue;
@@ -496,6 +508,12 @@ async function editsSurvive(
   for (const name of deleted)
     if ((await git(['ls-tree', '--name-only', result, '--', name], cwd).catch(() => name)).trim())
       return false;
+  // A file's mode is part of the change: a resolution that dropped an executable
+  // bit or a symlink type kept only half of it.
+  for (const [name, mode] of modes) {
+    const listed = (await git(['ls-tree', result, '--', name], cwd).catch(() => '')).trim();
+    if (!listed.startsWith(mode + ' ')) return false;
+  }
   return true;
 }
 
