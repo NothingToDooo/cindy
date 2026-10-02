@@ -401,13 +401,36 @@ export async function inspectPersonalFork(
       throw remoteError('forkMissing');
     throw remoteError([401, 403].includes(response.status) ? 'github' : 'failed');
   }
-  let info: { full_name?: unknown; archived?: unknown; permissions?: { push?: unknown } };
+  let info: {
+    full_name?: unknown;
+    archived?: unknown;
+    fork?: unknown;
+    owner?: { login?: unknown };
+    parent?: { full_name?: unknown };
+    source?: { full_name?: unknown };
+    permissions?: { push?: unknown };
+  };
   try {
     info = (await response.json()) as typeof info;
   } catch {
     throw remoteError('failed');
   }
   if (!isGithubRepository(info.full_name)) throw remoteError('failed');
+  // The saved name must still be this account's fork of the official repository:
+  // after the fork was deleted, an unrelated repository can answer under the same
+  // name, and the managed branches must never be pushed into it. A stale binding
+  // is reported (like a deleted one), never used.
+  const official = (name: unknown) =>
+    typeof name === 'string' && name.toLowerCase() === OFFICIAL_GITHUB_REPOSITORY;
+  if (
+    info.fork !== true ||
+    !sameGithubLogin(
+      typeof info.owner?.login === 'string' ? info.owner.login : undefined,
+      identity.login,
+    ) ||
+    !(official(info.parent?.full_name) || official(info.source?.full_name))
+  )
+    throw remoteError('forkMissing');
   return {
     repository: info.full_name,
     archived: info.archived === true,

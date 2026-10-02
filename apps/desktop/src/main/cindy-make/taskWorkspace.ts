@@ -166,13 +166,23 @@ export async function installCindyMakeWorktree(
     throw Object.assign(new Error('invalid task workspace'), { code: 'gitFailed' });
   }
   await pnpm(
-    deps.processEnvironment,
+    options.ignoreScripts
+      ? // Unverified synced content runs no install-time code: no lifecycle scripts
+        // and no `.pnpmfile.cjs` hooks (which `--ignore-scripts` alone would still
+        // execute), with `npm_config_*` out of the environment so no setting of
+        // theirs can turn either back on.
+        Object.fromEntries(
+          Object.entries(deps.processEnvironment).filter(
+            ([key]) => !/^npm_config_/i.test(key),
+          ),
+        )
+      : deps.processEnvironment,
     [
       'install',
       '--frozen-lockfile',
       '--prefer-offline',
       '--prod=false',
-      ...(options.ignoreScripts ? ['--ignore-scripts'] : []),
+      ...(options.ignoreScripts ? ['--ignore-scripts', '--ignore-pnpmfile'] : []),
     ],
     workspace.path,
     signal,

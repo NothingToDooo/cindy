@@ -532,7 +532,14 @@ describe('inspectPersonalFork', () => {
 
   it('reads the repository without following redirects with the credential', async () => {
     const fetchFn = vi.fn(async () =>
-      reply(200, { full_name: 'octo/cindy', archived: false, permissions: { push: true } }),
+      reply(200, {
+        full_name: 'octo/cindy',
+        archived: false,
+        fork: true,
+        owner: { login: 'octo' },
+        parent: { full_name: 'makecindy/cindy' },
+        permissions: { push: true },
+      }),
     );
     await expect(
       inspectPersonalFork(fetchFn as unknown as typeof fetch, identity, 'octo/cindy'),
@@ -556,6 +563,9 @@ describe('inspectPersonalFork', () => {
         return reply(200, {
           full_name: 'octo/my-cindy',
           archived: false,
+          fork: true,
+          owner: { login: 'octo' },
+          parent: { full_name: 'makecindy/cindy' },
           permissions: { push: true },
         });
       throw new Error('unexpected ' + url);
@@ -575,6 +585,36 @@ describe('inspectPersonalFork', () => {
       inspectPersonalFork(elsewhere as unknown as typeof fetch, identity, 'octo/cindy'),
     ).rejects.toMatchObject({ code: 'forkMissing' });
     expect(elsewhere).toHaveBeenCalledOnce();
+  });
+
+  it('reports a stale binding when the saved name is no longer the official fork', async () => {
+    // The fork was deleted and an unrelated repository now answers under the name:
+    // the managed branches must never be pushed into it.
+    const unrelated = vi.fn(async () =>
+      reply(200, {
+        full_name: 'octo/cindy',
+        archived: false,
+        fork: false,
+        owner: { login: 'octo' },
+        permissions: { push: true },
+      }),
+    );
+    await expect(
+      inspectPersonalFork(unrelated as unknown as typeof fetch, identity, 'octo/cindy'),
+    ).rejects.toMatchObject({ code: 'forkMissing' });
+    const foreignFork = vi.fn(async () =>
+      reply(200, {
+        full_name: 'octo/cindy',
+        archived: false,
+        fork: true,
+        owner: { login: 'octo' },
+        parent: { full_name: 'someone/else' },
+        permissions: { push: true },
+      }),
+    );
+    await expect(
+      inspectPersonalFork(foreignFork as unknown as typeof fetch, identity, 'octo/cindy'),
+    ).rejects.toMatchObject({ code: 'forkMissing' });
   });
 });
 

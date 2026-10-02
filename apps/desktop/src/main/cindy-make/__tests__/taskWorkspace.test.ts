@@ -66,6 +66,37 @@ describe('prepareCindyMakeWorkspace', () => {
     expect(phases).toEqual(['checking', 'creating', 'installing']);
   });
 
+  it('runs no lifecycle scripts and no pnpm hooks for unverified synced content', async () => {
+    const pnpm = vi.fn(async () => undefined);
+    const worktreePath = path.join(userData, 'cindy-make', 'worktrees', 'run-9');
+    await installCindyMakeWorktree(
+      userData,
+      { path: worktreePath, branch: 'cindy-make/run-9', baseCommit: 'b'.repeat(40) },
+      new AbortController().signal,
+      {
+        processEnvironment: { PATH: '', npm_config_registry: 'http://attacker.invalid' },
+        pnpm,
+      },
+      undefined,
+      undefined,
+      { ignoreScripts: true },
+    );
+    expect(pnpm).toHaveBeenCalledWith(
+      // No `npm_config_*` setting of the content's own can turn the guards back on.
+      { PATH: '' },
+      [
+        'install',
+        '--frozen-lockfile',
+        '--prefer-offline',
+        '--prod=false',
+        '--ignore-scripts',
+        '--ignore-pnpmfile',
+      ],
+      worktreePath,
+      expect.anything(),
+    );
+  });
+
   it('reuses an existing worktree on the task branch and refuses a foreign directory', async () => {
     const worktreePath = path.join(userData, 'cindy-make', 'worktrees', 'run-2');
     await mkdir(worktreePath, { recursive: true });

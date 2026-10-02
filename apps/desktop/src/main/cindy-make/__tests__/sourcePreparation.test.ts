@@ -179,6 +179,7 @@ describe('Source and dependency preparation', () => {
           '--prefer-offline',
           '--prod=false',
           '--ignore-scripts',
+          '--ignore-pnpmfile',
           '--config.node-linker=isolated',
           '--config.enable-modules-dir=false',
         ],

@@ -667,6 +667,11 @@ async function prepareCindySourceInternal(
         '--prefer-offline',
         '--prod=false',
         '--ignore-scripts',
+        // Pure cache warming from the lockfile: no content-controlled hook runs here
+        // either. Unverified synced content must not get code execution out of the
+        // silent preparation; worktree installs of verified content still honour
+        // the repository's own `.pnpmfile.cjs`.
+        '--ignore-pnpmfile',
         // The hoisted linker imports packages even with modules disabled. Override
         // only this command; worktree installs keep the repository's linker and
         // run the required lifecycle scripts as usual.
