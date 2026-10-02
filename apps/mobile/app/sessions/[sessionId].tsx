@@ -4223,15 +4223,22 @@ export default function SessionScreen() {
   // 「出现 → 熄灭 → 再出现」。只作用于活动条,不改 isSessionStreaming 的停止 / 横幅语义。
   // 只读本会话的 durable 记录(enqueue 在途即 state=sending):页面级的
   // sendingQueueClientIds 不带会话身份、也不看连接,不能拿来驱动活动条。
-  const remoteQueuedClientIds = useMemo(
-    () => new Set(inputProjection.pendingQueue.map((item) => item.clientId)),
-    [inputProjection.pendingQueue],
+  const confirmedUserClientIds = useMemo(() => confirmedHistoryUserClientIds(historyView.snapshot, rawMessages),
+    [historyView.snapshot, rawMessages]);
+  // 已进被控端队列(归队列管)或已回流进历史(已落定,只是 outbox 还没对账清掉)的消息
+  // 不再算交接,否则快速 turn 结束后活动条要等后台对账才熄灭。
+  const handoffSettledClientIds = useMemo(
+    () => new Set([
+      ...inputProjection.pendingQueue.map((item) => item.clientId),
+      ...confirmedUserClientIds,
+    ]),
+    [inputProjection.pendingQueue, confirmedUserClientIds],
   );
   const messageHandoffActive = hasActiveOutboxHandoff(
     durableOutboxRecords,
     { deviceId, sessionId },
     outboxConnectionState,
-    remoteQueuedClientIds,
+    handoffSettledClientIds,
   );
   const composerActivitySignal = isSessionStreaming || messageHandoffActive;
   // 活动条信号去抖:composerActivitySignal 由多个来源(sending / 消息交接 / canStopQueue /
@@ -4270,8 +4277,6 @@ export default function SessionScreen() {
     ),
     [currentSession?.createdAt, currentSession?.forkedAtMessageId, currentSession?.parentSessionId],
   );
-  const confirmedUserClientIds = useMemo(() => confirmedHistoryUserClientIds(historyView.snapshot, rawMessages),
-    [historyView.snapshot, rawMessages]);
   // inline 排队区去重集:已回流进消息流的 clientId 不再渲染排队气泡(排队气泡消失的
   // 同帧正式气泡已在流里,视觉上原位变实心,无跳变)。
   const queueHiddenClientIds = useMemo(() => {

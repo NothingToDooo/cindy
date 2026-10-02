@@ -130,8 +130,13 @@ describe('hasActiveOutboxHandoff', () => {
     expect(hasActiveOutboxHandoff([record({ state: 'host-owned', retrySafe: true, cancelRequested: true })], target, online, none)).toBe(false);
   });
 
-  it('已进被控端队列的条目归队列管', () => {
+  it('已进被控端队列或已回流进历史的条目不算交接', () => {
     expect(hasActiveOutboxHandoff([record({ state: 'host-owned', retrySafe: true })], target, online, new Set(['client-1']))).toBe(false);
+    // 历史已确认的 clientId 同样走这个集合:快速 turn 结束后不必等 outbox 对账。
+    expect(hasActiveOutboxHandoff([
+      record({ state: 'host-owned', retrySafe: true }),
+      record({ state: 'host-owned', retrySafe: true, item: { sessionId: 'session-1', clientId: 'client-2' } as ReturnType<typeof record>['item'] }),
+    ], target, online, new Set(['client-1', 'client-2']))).toBe(false);
   });
 });
 

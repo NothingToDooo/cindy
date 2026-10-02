@@ -61,8 +61,9 @@ export function shouldHoldOutboxDispatchForConnection(
  * 的下降沿去抖,中间会熄灭一次再亮。
  *
  * 按投递的真实推进口径判断(records 须保持 store 的 FIFO 顺序):
- * - 已移交被控端、还没被历史确认的记录算交接中;已出现在被控端队列里的归队列管
- *   (队列暂停时不该显示「思考中」),不再计入。
+ * - 已移交被控端、还没被历史确认的记录算交接中。settledClientIds 里的不再计入:已出现在
+ *   被控端队列里的归队列管(队列暂停时不该显示「思考中」);已回流进历史的已经落定,
+ *   只是 outbox 还没对账清掉。
  * - 未移交的记录只看会话 FIFO 队首——投递只派发它。队首在正常推进(待发 / enqueue
  *   在途)才算;队首出错重试 / 待确认 / 失败 / 撤销中 / 挂起时,后面的消息也走不动,
  *   不能说成「思考中」。
@@ -76,7 +77,7 @@ export function hasActiveOutboxHandoff(
   >[],
   target: { deviceId: string; sessionId: string },
   connection: MobileOutboxConnectionState,
-  remoteQueuedClientIds: ReadonlySet<string>,
+  settledClientIds: ReadonlySet<string>,
 ): boolean {
   if (
     !connection.relayOnline
@@ -89,7 +90,7 @@ export function hasActiveOutboxHandoff(
     && record.cleanupOutcome === undefined);
   if (group.some((record) => isDurableOutboxHandedOff(record)
     && !record.cancelRequested
-    && !remoteQueuedClientIds.has(record.item.clientId))) return true;
+    && !settledClientIds.has(record.item.clientId))) return true;
   const head = group.find((record) => !isDurableOutboxHandedOff(record));
   return !!head
     && (head.state === 'queued' || head.state === 'sending')
