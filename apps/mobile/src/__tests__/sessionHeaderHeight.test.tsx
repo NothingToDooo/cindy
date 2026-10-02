@@ -58,6 +58,22 @@ describe('task header geometry during native preload', () => {
     await render(); expect(height).toBe(82);
     state.focused = true; state.height = 82; await render(); await settle(); expect(height).toBe(82);
   });
+  it('keeps holding after release until the restored bar reports a new height', async () => {
+    await render(); await settle(); expect(height).toBe(82);
+    hold = true; state.height = 24; await render(); expect(height).toBe(82);
+    // The drawer is gone but the native bar has not been measured again yet.
+    hold = false; await render(); expect(height).toBe(82);
+    state.height = 82; await render(); expect(height).toBe(82);
+    state.height = 90; await render(); expect(height).toBe(90);
+  });
+  it('does not cache the hidden height left over after release', async () => {
+    await render(); await settle();
+    hold = true; state.height = 24; await render();
+    hold = false; await render(); expect(height).toBe(82);
+    await act(async () => root.render(null));
+    state.focused = false; state.height = 120;
+    await render(); expect(height).toBe(82);
+  });
   it('does not record offscreen estimates or a closing transition as measured geometry', async () => {
     await render();
     await act(async () => state.listener?.({ data: { closing: true } }));
