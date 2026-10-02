@@ -289,6 +289,24 @@ describe('ensureOfficialFork', () => {
       code: 'forkConflict',
     });
   });
+
+  it('keeps looking past the first pages of the account repositories', async () => {
+    const page = (n: number) =>
+      jsonResponse(
+        200,
+        Array.from({ length: 100 }, (_, i) => ({ full_name: `octo/r${n}-${i}`, fork: false })),
+      );
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(422, {}))
+      .mockResolvedValueOnce(jsonResponse(404, {}))
+      .mockResolvedValueOnce(page(1))
+      .mockResolvedValueOnce(page(2))
+      .mockResolvedValueOnce(page(3))
+      .mockResolvedValueOnce(jsonResponse(200, [{ full_name: 'octo/cindy-1', fork: true }]))
+      .mockResolvedValueOnce(jsonResponse(200, fork));
+    await expect(ensureOfficialFork(fetchFn, identity)).resolves.toBe('octo/cindy-1');
+  });
 });
 
 /** In-memory model of the managed checkout and the fork, driven by the exact Git commands. */
@@ -855,6 +873,13 @@ describe('PersonalRemoteController', () => {
     // An adopted rewrite carries the unverified content under its new commit:
     // the tip list follows the content, however often history is rewritten.
     h.controller.recordRewrite([LOCAL], NEWER);
+    expect(h.record().unverifiedRemote).toEqual([OTHER, NEWER]);
+  });
+
+  it('carries unverified provenance through rewrites even without a binding', () => {
+    const h = harness({ record: { schema: 1, unverifiedRemote: [OTHER] } });
+    h.controller.recordRewrite([LOCAL], NEWER);
+    expect(h.record().rewrites).toEqual([{ from: [LOCAL], to: NEWER }]);
     expect(h.record().unverifiedRemote).toEqual([OTHER, NEWER]);
   });
 

@@ -415,17 +415,14 @@ async function editsSurvive(
   );
   // Output at the capture limit may be cut: a partial verdict never counts as kept.
   if (diff.length >= 60 * 1024) return false;
+  const hunks = diff.split(/\r?\n/);
   // A binary change has no lines to compare; only the strict checks may vouch for it.
-  if (
-    diff
-      .split(/\r?\n/)
-      .some((line) => line.startsWith('Binary files ') || line.startsWith('GIT binary patch'))
-  )
+  if (hunks.some((line) => line.startsWith('Binary files ') || line.startsWith('GIT binary patch')))
     return false;
   const edits = new Map<string, { added: string[]; removed: string[]; lines: number }>();
   let file: string | undefined;
   let previous: string | undefined;
-  for (const line of diff.split(/\r?\n/)) {
+  for (const line of hunks) {
     if (line.startsWith('--- ')) {
       const source = line.slice(4).trim();
       previous = source.startsWith('a/') || source.startsWith('b/') ? source.slice(2) : undefined;
@@ -452,6 +449,9 @@ async function editsSurvive(
       if (content) bucket.removed.push(content);
     }
   }
+  // Every touched file must lead to text hunks: a mode-only change or an empty-file
+  // operation has none, and nothing here can prove it was kept.
+  if (edits.size !== hunks.filter((line) => line.startsWith('diff --git ')).length) return false;
   for (const [name, { added, removed, lines: touched }] of edits) {
     // Blank-line edits and empty-file or mode operations have no words to compare:
     // they must be proven preserved by the strict checks, never vouched here.

@@ -306,7 +306,9 @@ export async function ensureOfficialFork(
     const canonical = await read(`${API}/repos/${identity.login}/cindy`);
     if (canonical && accepted(canonical as GithubRepositoryInfo))
       return canonical as GithubRepositoryInfo;
-    for (let page = 1; page <= 3; page += 1) {
+    // Follow the pages to the end: a fork outside the first screens must still be
+    // found, because the create endpoint cannot make a second one.
+    for (let page = 1; ; page += 1) {
       const listed = await read(
         `${API}/user/repos?per_page=100&page=${page}&affiliation=owner&sort=pushed`,
       );
@@ -1199,7 +1201,14 @@ export class PersonalRemoteController {
       rewrite.to === to &&
       rewrite.from.length === from.length &&
       rewrite.from.every((commit, index) => commit === from[index]);
-    if (!record.repository || (record.rewrites ?? []).some(same)) return;
+    // Provenance must survive without a binding: the rewrite history carries the
+    // unverified content through official updates even after a disconnect, so it
+    // is recorded whenever there is content to carry.
+    if (
+      (!record.repository && !(record.unverifiedRemote ?? []).length) ||
+      (record.rewrites ?? []).some(same)
+    )
+      return;
     const tips = record.unverifiedRemote ?? [];
     this.update({
       rewrites: [...(record.rewrites ?? []), { from, to }].slice(-MAX_REWRITES),
