@@ -14,7 +14,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createHash } from 'node:crypto';
-import { PassThrough, Readable } from 'node:stream';
+import { PassThrough, Readable, addAbortSignal } from 'node:stream';
 
 /** Electron net.fetch(Chromium 网络栈):OSS GET / range,以及 PUT 的回退跳。 */
 const netFetchMock = vi.hoisted(() => vi.fn());
@@ -325,6 +325,33 @@ describe('uploadLocalFile — 流式上传取消', () => {
       (error: Error) => ({ error: error.message, closed: source.closed }),
     );
     expect(settled).toEqual({ error: 'UPLOAD_CANCELLED', closed: true });
+  });
+});
+
+describe('uploadLocalFile — 小文件预读取消', () => {
+  it('预读卡在慢盘时取消 → 立即停止读取,等读流关闭后返回,不发 PUT', async () => {
+    statMock.mockResolvedValue({ isFile: () => true, size: 100 });
+    let source!: Readable;
+    // A read that never completes, honouring the signal the way fs streams do.
+    createReadStreamMock.mockImplementation((_path: string, options: { signal?: AbortSignal }) => {
+      source = new Readable({
+        read() {},
+        destroy(error, callback) {
+          setTimeout(() => callback(error), 30);
+        },
+      });
+      return options.signal ? addAbortSignal(options.signal, source) : source;
+    });
+    const abort = new AbortController();
+    const upload = uploadLocalFile('/tmp/a.png', { maxBytes: 100, signal: abort.signal });
+    await vi.waitFor(() => expect(createReadStreamMock).toHaveBeenCalled());
+    abort.abort();
+    const settled = await upload.then(
+      () => ({ failed: false, closed: source.closed }),
+      () => ({ failed: true, closed: source.closed }),
+    );
+    expect(settled).toEqual({ failed: true, closed: true });
+    expect(undiciFetchMock).not.toHaveBeenCalled();
   });
 });
 

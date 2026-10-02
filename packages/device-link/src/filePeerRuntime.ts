@@ -88,6 +88,8 @@ export function createFilePeerRuntime(bridge: FilePeerRuntimeBridge) {
         resolve(value: string): void;
         reject(error: Error): void;
         timer: ReturnType<typeof setTimeout>;
+        /** Restarts the deadline; only requests with a body queue behind each other on the wire. */
+        rearm?(): void;
       }
     >();
     const fragments = new Map<
@@ -233,6 +235,9 @@ export function createFilePeerRuntime(bridge: FilePeerRuntimeBridge) {
           pending.delete(m.key);
           clearTimeout(p.timer);
           p.resolve(f.data);
+          // An answer is progress: blocks still queued behind it get their full deadline again,
+          // so a slow but live link is never cut off (the receiver's stall timer is the mirror).
+          for (const other of pending.values()) other.rearm?.();
         } else dispatch(m.key, f.data);
       } catch {
         close(id);
@@ -246,16 +251,28 @@ export function createFilePeerRuntime(bridge: FilePeerRuntimeBridge) {
           return Promise.reject(new Error("FILE_PEER_UNAVAILABLE"));
         return new Promise((resolve, reject) => {
           const key = String(++sequence);
-          const timer = setTimeout(() => {
+          const ms = rpcTimeoutMs(timeoutMs);
+          const expire = () => {
             pending.delete(key);
             reject(new Error("FILE_PEER_TIMEOUT"));
-          }, rpcTimeoutMs(timeoutMs));
-          pending.set(key, { resolve, reject, timer });
+          };
+          const entry: {
+            resolve(value: string): void;
+            reject(error: Error): void;
+            timer: ReturnType<typeof setTimeout>;
+            rearm?(): void;
+          } = { resolve, reject, timer: setTimeout(expire, ms) };
+          if (body)
+            entry.rearm = () => {
+              clearTimeout(entry.timer);
+              entry.timer = setTimeout(expire, ms);
+            };
+          pending.set(key, entry);
           try {
             send(key, false, payload, body);
           } catch (error) {
             pending.delete(key);
-            clearTimeout(timer);
+            clearTimeout(entry.timer);
             reject(error);
           }
         });

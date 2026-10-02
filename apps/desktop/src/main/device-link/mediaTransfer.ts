@@ -450,14 +450,20 @@ export async function uploadLocalFile(
         // One extra byte detects growth without reading an arbitrarily enlarged file.
         const chunks: Buffer[] = [];
         let received = 0;
-        for await (const chunk of createReadStream(localPath, { end: size })) {
+        // Cancellation stops the pre-read too; the catch below waits for this stream to close.
+        const source = createReadStream(localPath, {
+          end: size,
+          ...(opts.signal ? { signal: opts.signal } : {}),
+        });
+        sourcesClosed.push(new Promise((resolve) => source.once('close', () => resolve())));
+        for await (const chunk of source) {
           received += chunk.length;
           if (received > size) throw new Error('REMOTE_FILE_TOO_LARGE');
           chunks.push(chunk);
         }
         buf = Buffer.concat(chunks);
       } else {
-        buf = await readFile(localPath);
+        buf = await readFile(localPath, opts.signal ? { signal: opts.signal } : undefined);
       }
       if (buf.byteLength !== size) {
         throw new Error(`文件在上传前发生变化:预期 ${size} 字节,实际 ${buf.byteLength} 字节`);
