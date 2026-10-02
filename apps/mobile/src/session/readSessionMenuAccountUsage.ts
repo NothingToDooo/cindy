@@ -1,16 +1,28 @@
 import { selectCodexUsageForModel } from "@cindy/maker-shared/codex-usage-buckets";
+import {
+  isXaiWeeklyUsageCurrent,
+  matchScopedWindowForModel,
+  type ClaudeScopedUsageWindow,
+  type XaiSubscriptionUsageSnapshot,
+} from "@cindy/maker-shared/subscription-usage";
+import {
+  NATIVE_SUBSCRIPTION_DEFAULT_PROVIDER_IDS,
+  type NativeSubscriptionAuth,
+} from "@cindy/model-providers/types";
 import type { MobileMakerTransport } from "@/device-link/mobileMakerTransport";
 import type { RemoteSession } from "./types";
 import {
   canUseLocalCodexRateLimitControl,
-  isSessionOpenAiAccount,
   type OpenAiAccountProvider,
   shouldFallbackToLegacyCodexUsage,
 } from "./sessionControls";
 
 type Reader = Pick<
   MobileMakerTransport,
-  "getCodexRateLimits" | "getAccountUsage"
+  | "getCodexRateLimits"
+  | "getAccountUsage"
+  | "getSubscriptionUsage"
+  | "getClaudeSessionRoute"
 >;
 /** Mobile presentation only; this shape is never sent through device-link. */
 export interface SessionMenuAccountUsage {
@@ -32,7 +44,25 @@ export interface SessionMenuAccountUsage {
   }>;
   /** The account read cannot prove this task's frozen auth route. */
   accountOnly?: boolean;
+  /** ChatGPT's own credits (not money): a remaining balance or the account's credit state. */
+  credits?:
+    | { kind: "balance"; amount: number }
+    | { kind: "unlimited" | "depleted" | "available" };
 }
+/** Display source of each subscription family; keyed so a new family cannot be skipped. */
+export const SUBSCRIPTION_USAGE_SOURCES = {
+  codex: "chatgpt",
+  claude: "claude",
+  xai: "xai",
+} as const satisfies Record<NativeSubscriptionAuth, SessionMenuAccountUsage["source"]>;
+export function isSubscriptionUsageSource(
+  source: SessionMenuAccountUsage["source"] | undefined,
+): boolean {
+  return (Object.values(SUBSCRIPTION_USAGE_SOURCES) as string[]).includes(
+    source ?? "",
+  );
+}
+
 const empty = (
   source: SessionMenuAccountUsage["source"],
 ): SessionMenuAccountUsage => ({
@@ -48,8 +78,88 @@ const record = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === "object"
     ? (value as Record<string, unknown>)
     : {};
+const clampPercent = (value: number) => Math.max(0, Math.min(100, value));
 
-/** Reuse the existing remote Codex read, including its account-change fallback guard. */
+type ClaudeSessionRoute = "gateway" | "subscription" | null;
+
+/** The subscription family behind a provider selection, or null for Gateway / API routes. */
+function accountFamily(
+  providerId: string | null,
+  accountProvider?: OpenAiAccountProvider,
+): NativeSubscriptionAuth | null {
+  if (!providerId) return null;
+  for (const [family, id] of Object.entries(
+    NATIVE_SUBSCRIPTION_DEFAULT_PROVIDER_IDS,
+  ))
+    if (id === providerId) return family as NativeSubscriptionAuth;
+  if (accountProvider?.id !== providerId || accountProvider.auth?.method !== "oauth")
+    return null;
+  return accountProvider.auth.native ?? null;
+}
+
+/**
+ * The subscription this task consumes, mirroring the desktop device-link chip.
+ * Model bridge prefixes decide the consumed account; an unselected route is only
+ * attributed when the host has observed it (claudeRoute), never from login state.
+ */
+export function sessionSubscriptionFamily(
+  session: Pick<
+    RemoteSession,
+    "agentKind" | "model" | "providerId" | "remoteHostId"
+  >,
+  accountProvider?: OpenAiAccountProvider,
+  claudeRoute: ClaudeSessionRoute = null,
+): NativeSubscriptionAuth | null {
+  if (session.remoteHostId?.trim()) return null;
+  if (canUseLocalCodexRateLimitControl(session, accountProvider)) return "codex";
+  const provider = session.providerId?.trim() || null;
+  const family = accountFamily(provider, accountProvider);
+  const model = session.model.trim();
+  if (model.startsWith("chatgpt/"))
+    return session.agentKind !== "codex" && family === "codex" ? "codex" : null;
+  if (model.startsWith("xai/")) return family === "xai" ? "xai" : null;
+  // Pi catalog ids lack the xai/ prefix, so the selected account decides.
+  if (family === "xai" || family === "claude") return family;
+  return provider === null &&
+    session.agentKind === "cc" &&
+    claudeRoute === "subscription"
+    ? "claude"
+    : null;
+}
+
+type FamilyReader = (
+  session: RemoteSession,
+  reader: Reader,
+) => Promise<SessionMenuAccountUsage>;
+/** One reader per subscription family. Adding a family without a reader fails type checking. */
+const SUBSCRIPTION_READERS: Record<NativeSubscriptionAuth, FamilyReader> = {
+  codex: (session, reader) =>
+    session.agentKind === "codex"
+      ? readCodexAccount(session, reader)
+      : readChatgptBridgeAccount(session, reader),
+  claude: readClaudeAccount,
+  xai: readXaiAccount,
+};
+
+/** The host's observed billing route for a default-route Claude Code task. */
+async function readDefaultClaudeRoute(
+  session: RemoteSession,
+  reader: Reader,
+): Promise<ClaudeSessionRoute> {
+  const model = session.model.trim();
+  if (
+    session.agentKind !== "cc" ||
+    session.providerId?.trim() ||
+    model.startsWith("chatgpt/") ||
+    model.startsWith("xai/")
+  )
+    return null;
+  // Older hosts lack the channel; an unknown route keeps the task unattributed.
+  const route = await reader.getClaudeSessionRoute(session.id).catch(() => null);
+  return route === "gateway" || route === "subscription" ? route : null;
+}
+
+/** Read the account quota behind this task's route; never another route's account. */
 export async function readSessionMenuAccountUsage(
   session: RemoteSession,
   reader: Reader,
@@ -57,34 +167,17 @@ export async function readSessionMenuAccountUsage(
 ): Promise<SessionMenuAccountUsage> {
   if (session.remoteHostId?.trim()) return empty("unavailable");
   // The host projects runtime-effective selection onto providerId. Missing
-  // selection alone proves neither a Gateway nor an OpenAI web account route.
+  // selection alone proves neither a Gateway nor a subscription route.
   const provider = session.providerId?.trim() || null;
   const model = session.model.trim();
-  if (canUseLocalCodexRateLimitControl(session, accountProvider))
-    return readCodexAccount(session, reader);
-  if (
-    session.agentKind !== "codex" &&
-    isSessionOpenAiAccount(provider, accountProvider) &&
-    model.startsWith("chatgpt/")
-  ) {
-    const payload = record(await (session.providerId && session.providerId !== 'openai' ? reader.getAccountUsage("codex", session.providerId) : reader.getAccountUsage("codex")));
-    // The ChatGPT bridge uses the web slot, not the CLI's app-server bucket.
-    const web =
-      payload.webSnapshot ?? (payload.source === "openai-web" ? payload : null);
-    return projectCodexAccount(
-      web,
-      session.model,
-      undefined,
-      null,
-      null,
-      false,
-    );
-  }
+  const claudeRoute = await readDefaultClaudeRoute(session, reader);
+  const family = sessionSubscriptionFamily(session, accountProvider, claudeRoute);
+  if (family) return SUBSCRIPTION_READERS[family](session, reader);
   const gateway =
     provider === "xd" ||
     (provider === null &&
-      session.agentKind === "codex" &&
-      model.startsWith("codex/"));
+      ((session.agentKind === "codex" && model.startsWith("codex/")) ||
+        claudeRoute === "gateway"));
   if (gateway) {
     const payload = record(await reader.getAccountUsage("claude-code"));
     const result = empty("gateway");
@@ -114,12 +207,112 @@ export async function readSessionMenuAccountUsage(
     }
     return result;
   }
-  // Claude/xAI subscription and personal balance reads are not exposed by existing remote APIs.
   return empty(
-    provider && !["anthropic", "xai", "openai"].includes(provider)
-      ? "api"
-      : "unavailable",
+    provider && !accountFamily(provider, accountProvider) ? "api" : "unavailable",
   );
+}
+
+/** Independent accounts are read by their own id; the family default reads without one. */
+function accountScope(session: RemoteSession): string | undefined {
+  return session.providerId?.trim() || undefined;
+}
+
+async function readChatgptBridgeAccount(
+  session: RemoteSession,
+  reader: Reader,
+): Promise<SessionMenuAccountUsage> {
+  const payload = record(await (session.providerId && session.providerId !== 'openai' ? reader.getAccountUsage("codex", session.providerId) : reader.getAccountUsage("codex")));
+  // The ChatGPT bridge uses the web slot, not the CLI's app-server bucket.
+  const web =
+    payload.webSnapshot ?? (payload.source === "openai-web" ? payload : null);
+  return projectCodexAccount(
+    web,
+    session.model,
+    undefined,
+    null,
+    null,
+    false,
+  );
+}
+
+async function readClaudeAccount(
+  session: RemoteSession,
+  reader: Reader,
+): Promise<SessionMenuAccountUsage> {
+  const snapshot = record(
+    await reader.getSubscriptionUsage("claude", accountScope(session)),
+  );
+  const result = empty("claude");
+  result.plan =
+    typeof snapshot.subscriptionType === "string" &&
+    snapshot.subscriptionType.trim()
+      ? snapshot.subscriptionType.trim()
+      : null;
+  result.updatedAt = finite(snapshot.updatedAt) ? snapshot.updatedAt : null;
+  const now = Date.now();
+  const add = (
+    id: string,
+    minutes: number,
+    raw: unknown,
+    modelLabel?: string,
+  ) => {
+    const window = record(raw);
+    if (!finite(window.utilization)) return;
+    const resetsAt = finite(window.resetsAt) ? window.resetsAt : null;
+    if (resetsAt !== null && resetsAt * 1000 <= now) return;
+    result.windows.push({
+      id,
+      ...(modelLabel ? { modelLabel } : {}),
+      minutes,
+      remainingPercent: clampPercent(100 - window.utilization),
+      resetsAt,
+    });
+  };
+  // Overall and model-specific limits both constrain the task; show each that applies.
+  add("five-hour", 300, snapshot.fiveHour);
+  add("seven-day", 10080, snapshot.sevenDay);
+  const scoped = (Array.isArray(snapshot.scoped) ? snapshot.scoped : []).filter(
+    (window): window is ClaudeScopedUsageWindow =>
+      typeof record(window).modelDisplayName === "string",
+  );
+  const modelWindow = matchScopedWindowForModel(scoped, session.model);
+  if (modelWindow)
+    add("model:seven-day", 10080, modelWindow, modelWindow.modelDisplayName);
+  return result;
+}
+
+async function readXaiAccount(
+  session: RemoteSession,
+  reader: Reader,
+): Promise<SessionMenuAccountUsage> {
+  const snapshot = record(
+    await reader.getSubscriptionUsage("xai", accountScope(session)),
+  );
+  const result = empty("xai");
+  result.plan =
+    typeof snapshot.planLabel === "string" && snapshot.planLabel.trim()
+      ? snapshot.planLabel.trim()
+      : null;
+  result.updatedAt = finite(snapshot.updatedAt) ? snapshot.updatedAt : null;
+  if (
+    isXaiWeeklyUsageCurrent(snapshot as XaiSubscriptionUsageSnapshot, Date.now()) &&
+    finite(snapshot.creditUsagePercent)
+  ) {
+    result.windows.push({
+      id: "week",
+      minutes: 10080,
+      remainingPercent: clampPercent(100 - snapshot.creditUsagePercent),
+      resetsAt: finite(snapshot.resetsAt) ? snapshot.resetsAt : null,
+    });
+  }
+  // A zero balance is not a free allowance; only show purchased credits.
+  if (finite(snapshot.prepaidBalance) && snapshot.prepaidBalance > 0)
+    result.amounts.push({
+      id: "balance",
+      amount: snapshot.prepaidBalance,
+      currency: "USD",
+    });
+  return result;
 }
 
 async function readCodexAccount(
@@ -207,6 +400,7 @@ function projectCodexAccount(
       });
     }
   }
+  const credits = projectCodexCredits([...snapshots, payload]);
   return {
     source: "chatgpt",
     accountOnly,
@@ -214,5 +408,31 @@ function projectCodexAccount(
     updatedAt: timestamps.length > 0 ? Math.min(...timestamps) : observedAt,
     windows,
     amounts: [],
+    ...(credits ? { credits } : {}),
   };
+}
+
+/** Credits are account-wide; same precedence as the desktop ChatGPT card. */
+function projectCodexCredits(
+  snapshots: Array<Record<string, unknown>>,
+): SessionMenuAccountUsage["credits"] | null {
+  const credits = snapshots
+    .map((snapshot) => record(snapshot.credits))
+    .find(
+      (value) =>
+        typeof value.hasCredits === "boolean" ||
+        typeof value.unlimited === "boolean",
+    );
+  if (!credits) return null;
+  if (credits.unlimited === true) return { kind: "unlimited" };
+  if (credits.hasCredits === false) return { kind: "depleted" };
+  const balance =
+    typeof credits.balance === "string"
+      ? Number(credits.balance.trim().replace(/,/g, ""))
+      : NaN;
+  return credits.balance !== "" && Number.isFinite(balance)
+    ? { kind: "balance", amount: balance }
+    : credits.hasCredits === true
+      ? { kind: "available" }
+      : null;
 }

@@ -37,6 +37,8 @@ function reader(): SessionMenuUsageReader {
     getAccountUsage: vi.fn(async () => {
       throw new Error("unavailable");
     }),
+    getSubscriptionUsage: vi.fn(async () => null),
+    getClaudeSessionRoute: vi.fn(async () => null),
     getSessionEstimatedValue: vi.fn(async () => ({
       totalValueMoney: {
         amount: 12,
@@ -178,7 +180,8 @@ describe("menu usage refresh lifecycle", () => {
         account: { ...account.account, planType: "wrong-provider" },
       }),
     );
-    expect(h.value.account?.source).toBe("unavailable");
+    expect(h.value.account?.source).toBe("xai");
+    expect(h.value.account?.plan).toBeNull();
     expect(h.value.account?.windows).toEqual([]);
   });
   it("does not reuse web quota across an unresolved source and a Gateway switch", async () => {

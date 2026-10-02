@@ -84,4 +84,21 @@ describe("task menu usage presentation", () => {
     });
     expect(rows[1]).toMatchObject({ value: "等待刷新", warning: false });
   });
+  it.each([
+    [{ kind: "balance", amount: 1234.5 }, "剩余 1,234.50", false],
+    [{ kind: "unlimited" }, "不限", false],
+    [{ kind: "depleted" }, "已耗尽", true],
+    [{ kind: "available" }, "可用", false],
+  ] as const)("shows ChatGPT credits %o after the quota windows", (credits, value, warning) => {
+    const account: SessionMenuAccountUsage = {
+      source: "chatgpt",
+      plan: null,
+      updatedAt: 1,
+      amounts: [],
+      windows: [{ id: "a", minutes: 300, remainingPercent: 50, resetsAt: null }],
+      credits,
+    };
+    const rows = accountUsageRows(account, i18n.t, "zh-CN");
+    expect(rows[1]).toEqual({ label: "Credits", value, warning });
+  });
 });
