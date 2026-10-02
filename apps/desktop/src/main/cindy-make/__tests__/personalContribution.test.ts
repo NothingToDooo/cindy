@@ -6,6 +6,7 @@ import {
   type ContributionDeps,
   type ContributionRecord,
 } from '../personalContribution';
+import { PersonalRemoteError } from '../personalRemote';
 
 const TOKEN = 'gho_fake-token-for-tests';
 const A = 'a'.repeat(40);
@@ -26,6 +27,7 @@ function harness(overrides: Partial<ContributionDeps> = {}) {
     ownerScope: () => 'owner-1',
     binding: () => ({ schema: 1, choice: 'github', login: 'octo', repository: 'octo/cindy' }),
     identity: async () => ({ status: 'connected', identity: { login: 'octo', token: TOKEN } }),
+    inspectFork: async () => ({ repository: 'octo/cindy', archived: false, canPush: true }),
     git: vi.fn(async (args: string[]) => {
       if (args[0] === 'diff') return ['apps/desktop/src/renderer/x.tsx', 'docs/a.md'].join('\0');
       throw new Error('unexpected git ' + args.join(' '));
@@ -136,6 +138,14 @@ describe('PersonalContribution', () => {
     ],
     ['unavailable', { change: () => undefined }],
     ['empty', { change: () => ({ title: 't', request: 'r', baseTree: A, tree: A }) }],
+    [
+      'notBound',
+      {
+        inspectFork: async () => {
+          throw new PersonalRemoteError('forkMissing');
+        },
+      },
+    ],
   ])('refuses a draft when %s', async (code, overrides) => {
     await expect(harness(overrides).contribution.draft('run')).rejects.toMatchObject({ code });
   });
@@ -203,6 +213,78 @@ describe('PersonalContribution', () => {
     // The other account's ledger stays empty and its identity never pushes.
     expect(writes).toEqual([]);
     expect(git.mock.calls.some(([args]) => args[0] === 'push')).toBe(false);
+  });
+
+  it('records the moved branch before updating the pull request', async () => {
+    let store: Record<string, ContributionRecord> = {
+      run: {
+        runId: 'run',
+        number: 3,
+        url: 'https://github.com/makecindy/cindy/pull/3',
+        branch: 'cindy-make-pr/run',
+        commit: A,
+        submittedAt: 1,
+      },
+    };
+    const git = vi.fn(async (args: string[]) => {
+      const op = args.includes('commit-tree')
+        ? 'commit-tree'
+        : args.includes('write-tree')
+          ? 'write-tree'
+          : args[0];
+      switch (op) {
+        case 'fetch':
+        case 'read-tree':
+        case 'apply':
+        case 'push':
+          return '';
+        case 'diff':
+          return args.includes('--name-only') ? 'app.txt\0' : '';
+        case 'ls-files':
+          return '';
+        case 'rev-parse':
+          return args[1]?.includes('{tree}') ? A : B;
+        case 'write-tree':
+          return B;
+        case 'commit-tree':
+          return B;
+        default:
+          throw new Error('unexpected git ' + args.join(' '));
+      }
+    });
+    const fetchFn = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      if (init?.method === 'PATCH') throw new Error('offline');
+      if (String(url).endsWith('/pulls/3'))
+        return new Response(
+          JSON.stringify({
+            number: 3,
+            html_url: 'https://github.com/makecindy/cindy/pull/3',
+            state: 'open',
+          }),
+          { status: 200 },
+        );
+      return new Response('{}', { status: 404 });
+    });
+    const { contribution } = harness({
+      git: git as unknown as ContributionDeps['git'],
+      fetch: fetchFn as unknown as typeof fetch,
+      readStore: () => structuredClone(store),
+      writeStore: (next) => {
+        store = structuredClone(next);
+      },
+    });
+    await expect(
+      contribution.submit({
+        runId: 'run',
+        title: 'feat: x',
+        body: '',
+        name: 'Ada',
+        email: 'ada@example.com',
+      }),
+    ).rejects.toMatchObject({ code: 'network' });
+    // The push this client already made is recorded: a retry leases against it
+    // instead of failing forever against a branch this client itself moved.
+    expect(store.run).toMatchObject({ number: 3, branch: 'cindy-make-pr/run', commit: B });
   });
 
   it('reports pull request states and caches them briefly', async () => {

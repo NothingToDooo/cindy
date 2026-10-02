@@ -15,9 +15,11 @@ import { isGithubRepository, sameGithubLogin } from '../../shared/cindyMakePerso
 import {
   OFFICIAL_GITHUB_REPOSITORY,
   PERSONAL_REMOTE_NAME,
+  PersonalRemoteError,
   classifyRemoteGitError,
   type GithubIdentity,
   type GithubIdentityResult,
+  type PersonalForkHealth,
   type PersonalRemoteGitOptions,
   type PersonalRemoteRecord,
 } from './personalRemote.js';
@@ -89,6 +91,8 @@ export interface ContributionDeps {
   ownerScope(): string;
   binding(): PersonalRemoteRecord;
   identity(): Promise<GithubIdentityResult>;
+  /** The bound repository as GitHub sees it now (see `inspectPersonalFork`). */
+  inspectFork(identity: GithubIdentity, repository: string): Promise<PersonalForkHealth>;
   git(args: string[], cwd: string, options?: PersonalRemoteGitOptions): Promise<string>;
   change(runId: string): ContributionChange | undefined;
   readStore(): Record<string, ContributionRecord>;
@@ -206,6 +210,22 @@ export class PersonalContribution {
     const identity = await this.deps.identity();
     if (identity.status !== 'connected') throw fail('github');
     if (!sameGithubLogin(record.login, identity.identity.login)) throw fail('account');
+    // The saved name must still be this account's official fork: after a deletion,
+    // an unrelated repository can answer under it, and nothing is ever pushed there.
+    try {
+      await this.deps.inspectFork(identity.identity, record.repository);
+    } catch (error) {
+      const code = error instanceof PersonalRemoteError ? error.code : undefined;
+      throw fail(
+        code === 'forkMissing'
+          ? 'notBound'
+          : code === 'github'
+            ? 'github'
+            : code === 'network'
+              ? 'network'
+              : 'failed',
+      );
+    }
     return { repository: record.repository, identity: identity.identity };
   }
 
@@ -487,6 +507,14 @@ export class PersonalContribution {
               throw pushFailed(retry);
             });
           }
+          // The moved branch is recorded before the PR API call: if that call or an
+          // account switch interrupts, a retry leases against this commit instead of
+          // failing forever against a branch this client itself moved.
+          this.assertScope(scope);
+          this.deps.writeStore({
+            ...this.deps.readStore(),
+            [input.runId]: { ...updating, commit },
+          });
         } else {
           // The lease requires the branch not to exist yet, so an earlier submission's
           // branch (whatever its pull request's state) is never rewritten.

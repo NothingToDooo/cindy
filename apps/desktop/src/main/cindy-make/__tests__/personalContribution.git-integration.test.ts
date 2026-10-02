@@ -99,6 +99,7 @@ async function fixture(conflict: boolean) {
     ownerScope: () => 'owner-1',
     binding: () => ({ schema: 1, choice: 'github', login: 'octo', repository: 'octo/cindy' }),
     identity: async () => ({ status: 'connected', identity: { login: 'octo', token: TOKEN } }),
+    inspectFork: async () => ({ repository: 'octo/cindy', archived: false, canPush: true }),
     git,
     change: (runId) =>
       runId === 'run-1'

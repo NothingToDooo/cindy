@@ -836,6 +836,10 @@ describe('PersonalRemoteController', () => {
     h.controller.recordUnverifiedRemote(OTHER);
     h.controller.recordUnverifiedRemote('not-a-commit');
     expect(h.record().unverifiedRemote).toEqual([OTHER]);
+    // An adopted rewrite carries the unverified content under its new commit:
+    // the tip list follows the content, however often history is rewritten.
+    h.controller.recordRewrite([LOCAL], NEWER);
+    expect(h.record().unverifiedRemote).toEqual([OTHER, NEWER]);
   });
 
   it('requires a connected GitHub account and the bound login', async () => {

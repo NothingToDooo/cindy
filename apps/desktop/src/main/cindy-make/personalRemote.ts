@@ -831,11 +831,13 @@ export class PersonalRemoteController {
   keepLocal(): CindyMakePersonalRemoteState {
     const record = this.deps.read();
     if (this.runningKind || record.repository) return this.state();
-    // Stopping the sharing keeps the content trust facts of what was already taken over.
+    // Stopping the sharing keeps the content trust facts of what was already taken
+    // over, including the rewrite history that carries their provenance.
     this.deps.write({
       schema: 1,
       choice: 'local',
       ...(record.unverifiedRemote ? { unverifiedRemote: record.unverifiedRemote } : {}),
+      ...(record.rewrites ? { rewrites: record.rewrites } : {}),
     });
     return this.publish();
   }
@@ -848,11 +850,12 @@ export class PersonalRemoteController {
         if (this.deps.sourceExists() && (await this.remoteUrl()) !== undefined)
           await this.git(['remote', 'remove', PERSONAL_REMOTE_NAME]);
       });
-      const { unverifiedRemote } = this.deps.read();
+      const { unverifiedRemote, rewrites } = this.deps.read();
       this.deps.write({
         schema: 1,
         choice: 'local',
         ...(unverifiedRemote ? { unverifiedRemote } : {}),
+        ...(rewrites ? { rewrites } : {}),
       });
     });
     await this.settled();
@@ -1192,7 +1195,16 @@ export class PersonalRemoteController {
       rewrite.from.length === from.length &&
       rewrite.from.every((commit, index) => commit === from[index]);
     if (!record.repository || (record.rewrites ?? []).some(same)) return;
-    this.update({ rewrites: [...(record.rewrites ?? []), { from, to }].slice(-MAX_REWRITES) });
+    const tips = record.unverifiedRemote ?? [];
+    this.update({
+      rewrites: [...(record.rewrites ?? []), { from, to }].slice(-MAX_REWRITES),
+      // Unverified content this rewrite carried keeps its provenance under the new
+      // commit: the tip list follows the content, so evicting old rewrite edges
+      // (or dropping them on disconnect) can never orphan it.
+      ...(tips.length && !tips.includes(to)
+        ? { unverifiedRemote: [...tips, to].slice(-MAX_UNVERIFIED_REMOTE) }
+        : {}),
+    });
   }
 
   /**

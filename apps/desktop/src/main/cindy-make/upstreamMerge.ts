@@ -415,6 +415,13 @@ async function editsSurvive(
   );
   // Output at the capture limit may be cut: a partial verdict never counts as kept.
   if (diff.length >= 60 * 1024) return false;
+  // A binary change has no lines to compare; only the strict checks may vouch for it.
+  if (
+    diff
+      .split(/\r?\n/)
+      .some((line) => line.startsWith('Binary files ') || line.startsWith('GIT binary patch'))
+  )
+    return false;
   const edits = new Map<string, { added: string[]; removed: string[] }>();
   let file: string | undefined;
   let previous: string | undefined;
@@ -448,8 +455,8 @@ async function editsSurvive(
         return needed.every((word) => words.has(word));
       });
     };
-    if (added.some((line) => !present(line)) || removed.some((line) => lines.includes(line)))
-      return false;
+    const stillThere = (content: string) => lines.some((line) => line.trim() === content);
+    if (added.some((line) => !present(line)) || removed.some(stillThere)) return false;
   }
   return true;
 }

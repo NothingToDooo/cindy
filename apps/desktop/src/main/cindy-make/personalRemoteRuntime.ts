@@ -115,6 +115,7 @@ export function configurePersonalRemote(): void {
     ownerScope: () => activeOwnerScopeKey(),
     binding: read,
     identity,
+    inspectFork: (identity, repository) => inspectPersonalFork(outboundFetch, identity, repository),
     git,
     // The latest completed round of this computer's change: its creation baseline and content.
     change: (runId) => {
@@ -162,6 +163,9 @@ export function configurePersonalRemote(): void {
     if (rewrite && lineage !== recorded) {
       recorded = lineage;
       try {
+        // A combine through the shared merge lifecycle adopts the fork tip too;
+        // its content is not verified on this computer until a version covers it.
+        if (next!.remote?.commit) controller?.recordUnverifiedRemote(next!.remote.commit);
         controller?.recordRewrite(rewrite.from, rewrite.to);
       } catch (error) {
         log.warn('cindy-make personal remote: lineage not recorded', {
