@@ -155,8 +155,9 @@ export function createFilePeerRuntime(bridge: FilePeerRuntimeBridge) {
       const f = receivingBody ? fragments.get(receivingBody) : undefined;
       if (!f?.body || !(data instanceof ArrayBuffer)) throw new Error();
       const bytes = new Uint8Array(data);
-      if (!bytes.length || bytes.length > Math.min(16384, f.body.remaining))
-        throw new Error();
+      // Exactly the sender's framing (16 KiB, shorter only at the end), like the files-v2 receive
+      // path: a peer cannot make the body arrive as millions of tiny frames.
+      if (bytes.length !== Math.min(16384, f.body.remaining)) throw new Error();
       f.body.parts.push(bytes);
       f.body.remaining -= bytes.length;
       clearTimeout(f.timer);
