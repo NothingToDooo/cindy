@@ -328,6 +328,47 @@ describe('uploadLocalFile — 流式上传取消', () => {
   });
 });
 
+describe('uploadLocalFile — 换栈重试后取消', () => {
+  it('等所有尝试打开过的源文件流都关闭后才返回', async () => {
+    const size = __testing.STREAM_THRESHOLD + 1;
+    statMock.mockResolvedValue({ isFile: () => true, size });
+    // The first attempt's stream closes more slowly than the retry's.
+    const slowSource = (closeMs: number) =>
+      new Readable({
+        read() {
+          this.push(Buffer.alloc(1024, 1));
+        },
+        destroy(error, callback) {
+          setTimeout(() => callback(error), closeMs);
+        },
+      });
+    const sources = [slowSource(60), slowSource(10)];
+    const opened: Readable[] = [];
+    createReadStreamMock.mockImplementation(() => {
+      const source = sources.shift()!;
+      opened.push(source);
+      return source;
+    });
+    // undici fails at the network layer → retry via Electron net, which the user cancels.
+    undiciFetchMock.mockRejectedValue(new TypeError('fetch failed'));
+    const abort = new AbortController();
+    netFetchMock.mockImplementation(
+      (_url: string, init: RequestInit) =>
+        new Promise((_, reject) => {
+          init.signal?.addEventListener('abort', () =>
+            reject(new DOMException('aborted', 'AbortError')),
+          );
+          abort.abort();
+        }),
+    );
+    const settled = await uploadLocalFile('/tmp/big.mp4', { signal: abort.signal }).then(
+      () => ({ error: '', closed: opened.map((source) => source.closed) }),
+      (error: Error) => ({ error: error.message, closed: opened.map((source) => source.closed) }),
+    );
+    expect(settled).toEqual({ error: 'UPLOAD_CANCELLED', closed: [true, true] });
+  });
+});
+
 describe('uploadLocalFile — 大文件流式 PUT', () => {
   it('超阈值 → body 为 ReadableStream + duplex half,不读进内存', async () => {
     const size = __testing.STREAM_THRESHOLD + 1;
