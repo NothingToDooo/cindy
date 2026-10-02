@@ -450,6 +450,41 @@ describe('authorized file peer source', () => {
     expect(await tryUploadPeerAttachment(peer, source, undefined, invoke)).toContain(ticket);
     expect(ops().at(-1)).toBe('finish');
   });
+  it('returns at once when cancelled while a block reply is still pending', async () => {
+    const peer = 'pending-reply-cancel-peer';
+    const source = path.join(directory, 'upload');
+    await writeFile(source, Buffer.alloc(3 * 1024 * 1024, 5));
+    const ticket = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee';
+    const invoke = vi.fn(async (_peer: string, _channel: string, args: unknown[]) => ({
+      ok: true,
+      result:
+        (args[0] as { action: string }).action === 'caps'
+          ? { version: 1, streaming: true, attachments: true, streamAttachments: true }
+          : { connection: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', sdp: 'v=0' },
+    }));
+    const abort = new AbortController();
+    const ops = () =>
+      mock.commands
+        .filter((c) => c.action === 'invoke')
+        .map((c) => JSON.parse(c.payload).args[0].request.op as string);
+    mock.commandReply.mockImplementation((action) => {
+      if (action !== 'invoke') return 'v=0';
+      const op = JSON.parse(mock.commands.at(-1)!.payload).args[0].request.op;
+      // From the first block on, replies stall like a slow link; then the user cancels.
+      if (op === 'write' && !mock.replyDelay) {
+        mock.replyDelay = 4_000;
+        setTimeout(() => abort.abort(), 10);
+      }
+      return JSON.stringify({ ok: true, result: op === 'begin' ? { ticket } : {} });
+    });
+    const startedAt = Date.now();
+    await expect(
+      tryUploadPeerAttachment(peer, source, undefined, invoke, undefined, abort.signal),
+    ).rejects.toThrow('FILE_PEER_CANCELLED');
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
+    // The connection stays up, so the target is still told to drop the partial staging.
+    expect(ops().at(-1)).toBe('cancel');
+  });
   it('drops a cancelled upload still queued behind another transfer on the same peer', async () => {
     const peer = 'queued-cancel-peer';
     const source = path.join(directory, 'upload');

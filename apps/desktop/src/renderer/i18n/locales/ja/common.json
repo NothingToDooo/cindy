@@ -75,7 +75,7 @@
     "keepOpen": "{{name}}にコピーしています。このウィンドウを閉じてもコピーは続行され、元のタスク上部で進捗を確認できます。",
     "runInBackground": "バックグラウンドで続行",
     "cancelCopy": "コピーをキャンセル",
-    "cancelling": "キャンセルしています。現在のファイルの送信が終わると停止します…",
+    "cancelling": "キャンセルしています…",
     "failureTitle": "コピー失敗",
     "failureDescription": "閉じた後、タスクメニューから新しくコピーできます。",
     "finishing": "{{name}}で受信・検証し、タスクを作成中…",

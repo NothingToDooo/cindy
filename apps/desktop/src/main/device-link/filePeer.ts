@@ -844,6 +844,17 @@ async function peerAttachmentCaps(
   };
 }
 
+/** Settles with `promise`, or rejects FILE_PEER_CANCELLED as soon as `signal` aborts. */
+function untilAborted<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(new Error('FILE_PEER_CANCELLED'));
+    if (signal.aborted) abort();
+    else signal.addEventListener('abort', abort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
+  });
+}
+
 const warming = new Set<string>();
 /**
  * Upload only bytes; the eventual message still uses its original WSS acceptance semantics.
@@ -896,7 +907,8 @@ export async function tryUploadPeerAttachment(
       for (let offset = 0; offset < size; offset += 1024 * 1024)
         hash.update(await read(offset, Math.min(1024 * 1024, size - offset)));
       const sha256 = hash.digest('hex');
-      await receivePeerFile(peer, null, invoke);
+      // Cancelling during connection setup stops that setup (without a failure cooldown).
+      await receivePeerFile(peer, null, invoke, signal);
       checkActive();
       const out = outgoing.get(peer);
       if (!out?.remote || !canSendPeerAttachment(out, size)) return null;
@@ -908,18 +920,19 @@ export async function tryUploadPeerAttachment(
         async (offset, length) => (await read(offset, length)).toString('base64'),
         async (request, timeoutMs, body) => {
           check();
-          const response = JSON.parse(
-            (await command({
-              action: 'invoke',
-              connection: out.id,
-              ...(timeoutMs ? { timeoutMs } : {}),
-              ...(body === undefined ? {} : { body }),
-              payload: JSON.stringify({
-                channel: FILE_PEER_CHANNEL,
-                args: [{ action: 'attachment', connection: out.remote, request }],
-              }),
-            }))!,
-          );
+          const sent = command({
+            action: 'invoke',
+            connection: out.id,
+            ...(timeoutMs ? { timeoutMs } : {}),
+            ...(body === undefined ? {} : { body }),
+            payload: JSON.stringify({
+              channel: FILE_PEER_CHANNEL,
+              args: [{ action: 'attachment', connection: out.remote, request }],
+            }),
+          });
+          // A cancelled upload stops waiting for in-flight blocks at once; their late replies are
+          // ignored and the connection stays up, so the `cancel` request still reaches the target.
+          const response = JSON.parse((await untilAborted(sent, signal))!);
           check();
           if (!response.ok) throw new Error('FILE_PEER_UPLOAD');
           return response.result;
