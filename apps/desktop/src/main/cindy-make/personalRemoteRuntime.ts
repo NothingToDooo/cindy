@@ -161,11 +161,9 @@ export function configurePersonalRemote(): void {
     // that lets the upload replace the fork's version without losing a change.
     const rewrite = next && adoptedRewrite(next);
     const lineage = rewrite ? `${next!.id}:${rewrite.to}` : '';
-    // A combine through the shared merge lifecycle adopts the fork tip; its content
-    // is unverified here until a generated version covers it. Recorded on every
-    // publish — long before any candidate is adopted and the source is reset — so
-    // an interrupted run cannot lose the provenance of what lands on disk.
-    if (next?.remote?.commit) controller?.recordUnverifiedRemote(next.remote.commit);
+    // Only an adopted result is recorded here (and by the pre-move journal): a
+    // candidate the user abandons must never evict a real, still-reachable
+    // source from the trust ledger.
     if (rewrite && lineage !== recorded) {
       recorded = lineage;
       try {

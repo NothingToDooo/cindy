@@ -904,6 +904,11 @@ describe('PersonalRemoteController', () => {
     // the tip list follows the content, however often history is rewritten.
     h.controller.recordRewrite([LOCAL], NEWER);
     expect(h.record().unverifiedRemote).toEqual([OTHER, NEWER]);
+    // Old entries are never evicted by new ones: a live source stays listed until
+    // a generated personal version covers it (see `remoteContentScriptsUnverified`).
+    for (let i = 0; i < 20; i += 1) h.controller.recordUnverifiedRemote(String(i).padStart(40, 'a'));
+    expect(h.record().unverifiedRemote).toContain(OTHER);
+    expect(h.record().unverifiedRemote).toHaveLength(22);
   });
 
   it('carries unverified provenance through rewrites even without a binding', () => {

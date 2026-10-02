@@ -47,7 +47,12 @@ export interface PersonalRewrite {
   to: string;
 }
 const MAX_REWRITES = 16;
-const MAX_UNVERIFIED_REMOTE = 16;
+/**
+ * Unverified sources are kept until a generated personal version covers them —
+ * never dropped for age, or a flood of candidates could evict a live one and
+ * make the trust check fail open. The bound only rejects a damaged local file.
+ */
+const MAX_UNVERIFIED_REMOTE = 512;
 
 export interface PersonalRemoteRecord {
   schema: 1;
@@ -1245,9 +1250,7 @@ export class PersonalRemoteController {
       // Unverified content this rewrite carried keeps its provenance under the new
       // commit: the tip list follows the content, so evicting old rewrite edges
       // (or dropping them on disconnect) can never orphan it.
-      ...(tips.length && !tips.includes(to)
-        ? { unverifiedRemote: [...tips, to].slice(-MAX_UNVERIFIED_REMOTE) }
-        : {}),
+      ...(tips.length && !tips.includes(to) ? { unverifiedRemote: [...tips, to] } : {}),
     });
   }
 
@@ -1261,7 +1264,7 @@ export class PersonalRemoteController {
     const record = this.deps.read();
     const known = record.unverifiedRemote ?? [];
     if (known.includes(commit)) return;
-    this.update({ unverifiedRemote: [...known, commit].slice(-MAX_UNVERIFIED_REMOTE) });
+    this.update({ unverifiedRemote: [...known, commit] });
   }
 
   /** Moving the checkout needs an idle, clean source on the personal branch. */
