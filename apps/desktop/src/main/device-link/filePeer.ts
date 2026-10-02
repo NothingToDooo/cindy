@@ -12,6 +12,7 @@ import {
   uploadPeerAttachment,
   FILE_PEER_CHUNK_BYTES,
   FILE_PEER_MAX_BYTES,
+  RPC_BODY_MAX_BYTES,
   canSendPeerAttachment,
   FILE_PEER_IDLE_MS,
   FILE_PEER_CHANNEL,
@@ -69,6 +70,8 @@ interface Outgoing {
   attachments?: boolean;
   /** 对端接收直连附件不设固定上限(只看磁盘空间);旧端仍按 OSS 上限拒收更大的附件。 */
   largeAttachments?: boolean;
+  /** 对端接受多块在途与二进制写入;旧端仍逐块等确认、按 base64 发送。 */
+  streamAttachments?: boolean;
 }
 const outgoing = new Map<string, Outgoing>();
 const cooldown = createPeerTransferCooldown();
@@ -391,6 +394,7 @@ async function handleFilePeerRequest(
       streaming: true,
       attachments: true,
       largeAttachments: true,
+      streamAttachments: true,
     };
   if (r.action === 'offer') {
     const id = randomUUID();
@@ -488,9 +492,15 @@ async function handleFilePeerRequest(
 }
 
 export function registerFilePeerIpc() {
-  ipcMain.handle(FILE_PEER_LOCAL.INVOKE, async (e, id: unknown, text: unknown) => {
+  ipcMain.handle(FILE_PEER_LOCAL.INVOKE, async (e, id: unknown, text: unknown, body: unknown) => {
     host.assertSender(e);
-    if (typeof id !== 'string' || typeof text !== 'string' || text.length > 4 * 1024 * 1024)
+    if (
+      typeof id !== 'string' ||
+      typeof text !== 'string' ||
+      text.length > 4 * 1024 * 1024 ||
+      (body !== undefined &&
+        (!(body instanceof Uint8Array) || !body.length || body.length > RPC_BODY_MAX_BYTES))
+    )
       throw new Error('FILE_PEER_DENIED');
     const c = touch(id);
     const payload = JSON.parse(text);
@@ -502,6 +512,20 @@ export function registerFilePeerIpc() {
       !canServePeerInvoke(payload.channel, payload.args)
     )
       throw new Error('FILE_PEER_DENIED');
+    if (body !== undefined) {
+      // Only an attachment block write carries a body; it replaces the base64 `data` field.
+      const request = (payload.args[0] as { action?: unknown; request?: unknown }).request as
+        Record<string, unknown> | undefined;
+      if (
+        payload.channel !== FILE_PEER_CHANNEL ||
+        !request ||
+        typeof request !== 'object' ||
+        request.op !== 'write' ||
+        request.data !== undefined
+      )
+        throw new Error('FILE_PEER_DENIED');
+      request.data = Buffer.from(body.buffer, body.byteOffset, body.byteLength);
+    }
     const stopKeepAlive = keepAlive(id);
     let result: unknown;
     try {
@@ -679,6 +703,8 @@ async function receivePeerFile(
       out.attachments = (caps.result as { attachments?: unknown }).attachments === true;
       out.largeAttachments =
         (caps.result as { largeAttachments?: unknown }).largeAttachments === true;
+      out.streamAttachments =
+        (caps.result as { streamAttachments?: unknown }).streamAttachments === true;
       track(id, peer, false);
       const [, servers] = await Promise.all([prepareHost(id), loadDesktopIceServers()]);
       const offer = await command({
@@ -868,13 +894,14 @@ export async function tryUploadPeerAttachment(
       const result = await uploadPeerAttachment(
         { size, sha256, mimeType },
         async (offset, length) => (await read(offset, length)).toString('base64'),
-        async (request, timeoutMs) => {
+        async (request, timeoutMs, body) => {
           check();
           const response = JSON.parse(
             (await command({
               action: 'invoke',
               connection: out.id,
               ...(timeoutMs ? { timeoutMs } : {}),
+              ...(body === undefined ? {} : { body }),
               payload: JSON.stringify({
                 channel: FILE_PEER_CHANNEL,
                 args: [{ action: 'attachment', connection: out.remote, request }],
@@ -887,6 +914,7 @@ export async function tryUploadPeerAttachment(
         },
         check,
         onProgress,
+        out.streamAttachments === true,
       );
       const ms = Date.now() - transferStartedAt;
       log.debug(

@@ -11,7 +11,8 @@ const mock = vi.hoisted(() => ({
   ready: vi.fn(async () => {}),
   replyDelay: 0,
   sent: [] as string[],
-  commandReply: vi.fn((_action: string) => 'v=0'),
+  commands: [] as Record<string, any>[],
+  commandReply: vi.fn((_action: string): string | undefined => 'v=0'),
   now: undefined as number | undefined,
   receiving: undefined as undefined | { sink: string; reply: () => void },
 }));
@@ -48,6 +49,7 @@ vi.mock('../../remote-desktop/captureWindow', () => ({
         send: (_channel: string, id: string, c: { action: string; sink?: string }) => {
           if (c.action !== 'close') {
             mock.sent.push(c.action);
+            mock.commands.push(c);
             const reply = () =>
               mock.handlers.get('file-peer:host:reply')!({}, id, true, mock.commandReply(c.action));
             if (c.action === 'receive') {
@@ -232,6 +234,7 @@ describe('authorized file peer source', () => {
     mock.receiving = undefined;
     mock.now = undefined;
     mock.sent.length = 0;
+    mock.commands.length = 0;
     mock.iceConfig.mockReset().mockResolvedValue([]);
     mock.ready.mockReset().mockResolvedValue();
     mock.replyDelay = 0;
@@ -329,6 +332,7 @@ describe('authorized file peer source', () => {
       streaming: true,
       attachments: true,
       largeAttachments: true,
+      streamAttachments: true,
     });
     const first = await connect();
     expect((await open(first.connection)).size).toBe(limit);
@@ -336,6 +340,80 @@ describe('authorized file peer source', () => {
     await truncate(file, limit + 1);
     const second = await connect();
     await expect(open(second.connection)).rejects.toThrow('SIZE');
+  });
+  it('hands a streamed block body to the attachment write as raw bytes, never to other requests', async () => {
+    const invoke = vi.fn(async (_channel: string, args: unknown[]) => ({ ok: true, args }));
+    const { connection } = (await requestFilePeer(
+      'device-a',
+      { action: 'offer', sdp: 'v=0' },
+      invoke as never,
+    )) as { connection: string };
+    const handle = mock.handlers.get('file-peer:host:invoke')!;
+    const payload = (request: Record<string, unknown>) =>
+      JSON.stringify({
+        channel: 'device-link:file-peer',
+        args: [{ action: 'attachment', connection, request }],
+      });
+    const body = new Uint8Array(Buffer.from('hi'));
+    await handle({}, connection, payload({ op: 'write', ticket: 't', offset: 0 }), body);
+    const data = (invoke.mock.calls[0][1][0] as { request: { data: unknown } }).request.data;
+    expect(Buffer.isBuffer(data) && data.toString()).toBe('hi');
+    for (const [text, bytes] of [
+      [payload({ op: 'finish', ticket: 't' }), body],
+      [payload({ op: 'write', ticket: 't', offset: 0, data: 'aGk=' }), body],
+      [payload({ op: 'write', ticket: 't', offset: 0 }), new Uint8Array(1024 * 1024 + 1)],
+      [payload({ op: 'write', ticket: 't', offset: 0 }), 'aGk='],
+      [JSON.stringify({ channel: 'file-browser:remote-op', args: [{ op: 'readFile' }] }), body],
+    ] as const)
+      await expect(handle({}, connection, text, bytes)).rejects.toThrow('DENIED');
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+  it.each([
+    ['stream-peer', true],
+    ['old-attachment-peer', false],
+  ])('uploads blocks to %s with the advertised write format', async (peer, stream) => {
+    const source = path.join(directory, 'upload');
+    await writeFile(source, Buffer.alloc(2.5 * 1024 * 1024, 7));
+    const ticket = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
+    const invoke = vi.fn(async (_peer: string, _channel: string, args: unknown[]) => ({
+      ok: true,
+      result:
+        (args[0] as { action: string }).action === 'caps'
+          ? { version: 1, streaming: true, attachments: true, streamAttachments: stream }
+          : { connection: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', sdp: 'v=0' },
+    }));
+    // Replies are synchronous, so the command being answered is the last one recorded.
+    mock.commandReply.mockImplementation((action) =>
+      action === 'invoke'
+        ? JSON.stringify({
+            ok: true,
+            result:
+              JSON.parse(mock.commands.at(-1)!.payload).args[0].request.op === 'begin'
+                ? { ticket }
+                : {},
+          })
+        : 'v=0',
+    );
+    const ref = await tryUploadPeerAttachment(peer, source, 'application/octet-stream', invoke);
+    expect(ref).toContain(ticket);
+    const writes = mock.commands
+      .filter((c) => c.action === 'invoke')
+      .map((c) => ({
+        body: c.body as string | undefined,
+        timeoutMs: c.timeoutMs as number | undefined,
+        request: JSON.parse(c.payload).args[0].request,
+      }))
+      .filter((c) => c.request.op === 'write');
+    expect(writes.map((c) => c.request.offset)).toEqual([0, 1024 * 1024, 2 * 1024 * 1024]);
+    for (const c of writes) {
+      // Old receivers only understand the base64 field; streaming ones get the raw-byte body.
+      expect(c.body !== undefined).toBe(stream);
+      expect(c.request.data !== undefined).toBe(!stream);
+      expect(c.timeoutMs).toBe(stream ? 45_000 : undefined);
+    }
+    expect(Buffer.from(writes[2].body ?? writes[2].request.data, 'base64')).toEqual(
+      Buffer.alloc(0.5 * 1024 * 1024, 7),
+    );
   });
   it('rejects another peer using a connection handle', async () => {
     const { connection } = await connect();
