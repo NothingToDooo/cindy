@@ -273,6 +273,35 @@ it('names a binary change whose same-identity replacement has different content'
   }
 }, 60_000);
 
+it('names a change whose deleted line a resolved rebase kept adapted', async () => {
+  const h = await repos();
+  try {
+    // One change deletes `5` and edits another line.
+    await h.write(h.source, 'feature.txt', replace(0, 'mine', ['1', '2', '3', '4', '6', '7', '8']));
+    const dropped = await h.commit(h.source, '', 4_000);
+    await h.write(h.official, 'feature.txt', replace(0, 'official'));
+    const target = await h.commit(h.official, 'official v2');
+    const state = await prepareUpstreamMerge(h.userData, update(h, target), h.git, async () => {});
+    expect(state.status).toBe('conflict');
+    const worktree = mergeWorktree(h.userData, state.id);
+    // The replayed commit keeps the text edit, but the deleted line survives in
+    // adapted form: the deletion did not happen and must not be vouched for.
+    await h.write(
+      worktree,
+      'feature.txt',
+      replace(0, 'official and mine', ['1', '2', '3', '4', '5 // upstream note', '6', '7', '8']),
+    );
+    await h.git(['add', '-A'], worktree);
+    await h.git([...h.identity(true), 'rebase', '--continue'], worktree);
+    await expect(applyUpstreamMerge(h.userData, state, h.git)).rejects.toMatchObject({
+      code: 'checksFailed',
+      missing: { count: 1, commits: [dropped] },
+    });
+  } finally {
+    await h.clean();
+  }
+}, 60_000);
+
 it('journals the adopted rewrite as unverified before the source moves', async () => {
   const h = await repos();
   try {

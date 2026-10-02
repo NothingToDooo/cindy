@@ -137,6 +137,38 @@ describe('prepareCindyMakeWorkspace', () => {
     );
   });
 
+  it('keeps inherited secrets out of an unverified install environment', async () => {
+    let seen: NodeJS.ProcessEnv | undefined;
+    const pnpm = vi.fn(async (env: NodeJS.ProcessEnv) => {
+      seen = env;
+    });
+    const worktreePath = await withManifest('run-12');
+    await installUnverified('run-12', worktreePath, {
+      processEnvironment: {
+        PATH: '/tools',
+        SystemRoot: 'C:\\Windows',
+        HOME: '/home/me',
+        npm_config_python: '/tools/python',
+        npm_config_manage_package_manager_versions: 'false',
+        // How Cindy was launched must not reach a content `.npmrc`: its `${VAR}`
+        // expansion would send these to a registry the content chooses.
+        NPM_TOKEN: 'gho_secret-token',
+        GITHUB_TOKEN: 'ghp_secret-token',
+        AWS_SECRET_ACCESS_KEY: 'aws_secret-key',
+        HTTP_PROXY: 'http://user:pass@proxy.invalid',
+      },
+      pnpm,
+    });
+    expect(seen).toEqual({
+      PATH: '/tools',
+      SystemRoot: 'C:\\Windows',
+      HOME: '/home/me',
+      npm_config_python: '/tools/python',
+      npm_config_manage_package_manager_versions: 'false',
+      npm_config_userconfig: os.devNull,
+    });
+  });
+
   it('refuses to install unverified content through a node_modules link', async () => {
     const pnpm = vi.fn(async () => undefined);
     const worktreePath = await withManifest('run-10');

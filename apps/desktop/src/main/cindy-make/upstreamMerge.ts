@@ -460,19 +460,24 @@ async function editsSurvive(
     const content = await git(['show', `${result}:${name}`], cwd).catch(() => '');
     const lines = content.split(/\r?\n/);
     const wordsOf = (line: string) => line.split(/\s+/).filter(Boolean);
-    // Ordered, multiplicity-preserving subsequence: an adapted line may fuse in
-    // words of the other side, but reordering or dropping words is not "kept"
-    // (`return a - b` is not `return b - a`).
-    const present = (content: string) => {
+    // One line carries another's content by an ordered, multiplicity-preserving
+    // subsequence: an adapted line may fuse in words of the other side, but
+    // reordering or dropping words is not "kept" (`return a - b` is not
+    // `return b - a`), and a comparison that cannot prove the words kept their
+    // order and count fails closed.
+    const within = (content: string, line: string) => {
       const needed = wordsOf(content);
-      return lines.some((line) => {
-        const words = wordsOf(line);
-        let at = 0;
-        for (const word of words) if (word === needed[at]) at += 1;
-        return at === needed.length;
-      });
+      if (!needed.length) return false;
+      const words = wordsOf(line);
+      let at = 0;
+      for (const word of words) if (word === needed[at]) at += 1;
+      return at === needed.length;
     };
-    const stillThere = (content: string) => lines.some((line) => line.trim() === content);
+    const present = (added: string) => lines.some((line) => within(added, line));
+    // A removed line is gone only when no line of the result carries its content:
+    // a resolution that kept it adapted (`deny()` as `deny() // upstream note`)
+    // did not apply the deletion and must not vouch for the change.
+    const stillThere = (removed: string) => lines.some((line) => within(removed, line));
     if (added.some((line) => !present(line)) || removed.some(stillThere)) return false;
   }
   return true;
