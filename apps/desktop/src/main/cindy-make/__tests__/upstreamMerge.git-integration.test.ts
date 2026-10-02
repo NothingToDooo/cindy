@@ -308,6 +308,47 @@ it('rebases locally committed personal changes onto the latest official main and
   }
 }, 30_000);
 
+it('records the new official baseline before moving the personal source so an interruption is clamped', async () => {
+  const h = await fixture(false);
+  try {
+    // The process dies right where the source would move: the baseline write
+    // has already happened and the tip has not.
+    const saved: CindyMakeMergeState[] = [];
+    const crashOnReset: typeof h.git = async (args, cwd, indexFile) => {
+      if (args[0] === 'reset')
+        throw Object.assign(new Error('simulated crash'), { code: 'gitFailed' });
+      return h.git(args, cwd, indexFile);
+    };
+    await expect(
+      prepareUpstreamMerge(h.userData, h.state, crashOnReset, async (state) => {
+        saved.push(state);
+      }),
+    ).rejects.toThrow('simulated crash');
+    // The new baseline is durably recorded first, while the personal tip is unchanged.
+    expect(await h.git(['rev-parse', PERSONAL_UPSTREAM_REF], h.source)).toBe(
+      h.state.upstreamCommit,
+    );
+    // Exactly the "old tip + new base" combination the base clamp detects: the
+    // recorded base is not the tip's ancestor, and clamping to the shared
+    // history recovers the base the tip really sits on.
+    await expect(
+      h.git(['merge-base', '--is-ancestor', h.state.upstreamCommit, 'cindy-personal'], h.source),
+    ).rejects.toMatchObject({ code: 'gitFailed' });
+    expect(
+      (await h.git(['merge-base', 'cindy-personal', PERSONAL_UPSTREAM_REF], h.source)).trim(),
+    ).toBe(h.baselineCommit);
+    // The retained operation completes the move the crash interrupted.
+    const result = await applyUpstreamMerge(h.userData, saved.at(-1)!, h.git);
+    expect(result.status).toBe('merged');
+    expect((await h.git(['rev-parse', 'HEAD'], h.source)).trim()).toBe(result.commit);
+    expect(await h.git(['rev-parse', PERSONAL_UPSTREAM_REF], h.source)).toBe(
+      h.state.upstreamCommit,
+    );
+  } finally {
+    await h.clean();
+  }
+}, 30_000);
+
 it('preserves unfinished or session-owned candidates, new files and commits added after adoption', async () => {
   const h = await fixture(false);
   try {

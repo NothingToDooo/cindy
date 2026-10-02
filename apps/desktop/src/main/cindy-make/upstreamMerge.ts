@@ -762,13 +762,17 @@ export async function applyUpstreamMerge(
     // be durable before the source moves to it, so a crash right after the move can
     // never leave still-unverified content looking trusted (over-marking is safe).
     options.journal?.(merged);
-    if (!alreadyApplied) await git(['reset', '--keep', result.commit], source);
-    if ((await snapshotContent(git, source)) !== result.tree) throw mergeError('baselineChanged');
     // Combining with the fork keeps the shared official base; an official update moves to it.
+    // The new baseline is recorded before the source moves — the same order the
+    // remote-tip adoption uses. An interruption in between leaves "old tip + new
+    // base", which the base clamp detects and recovers; the reverse ("new tip +
+    // old base") looks like ordinary ancestry and could be published elsewhere.
     await git(
       ['update-ref', PERSONAL_UPSTREAM_REF, state.remote?.base ?? state.upstreamCommit],
       source,
     );
+    if (!alreadyApplied) await git(['reset', '--keep', result.commit], source);
+    if ((await snapshotContent(git, source)) !== result.tree) throw mergeError('baselineChanged');
     return merged;
   }
   const commit = (await git(['rev-parse', 'HEAD'], worktree)).trim();
