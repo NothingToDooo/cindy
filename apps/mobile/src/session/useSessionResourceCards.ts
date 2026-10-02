@@ -16,6 +16,7 @@ import {
   getRemoteResource,
   invokeRemoteResourceAction,
 } from '@/device-link/remoteResources';
+import { humanizeRemoteError } from '@/device-link/remoteStatus';
 import { startFocusedTopicSubscription } from '@/device-link/focusedTopicSubscription';
 
 export function sessionResourceInputBlocked(
@@ -71,7 +72,6 @@ export function useSessionResourceCards(
   const refresh = useRef<() => void>(() => undefined);
   const [state, setState] = useState<Snapshot>();
   const [pending, setPending] = useState<{ binding: string; id: string }>();
-  const [actionError, setActionError] = useState<string>();
   const request = useRef<{ binding: string } | null>(null);
   useFocusEffect(
     useCallback(() => {
@@ -206,9 +206,10 @@ export function useSessionResourceCards(
               : previous,
           );
       });
-      // Poll only discovered cards in the foreground; a slow read is never superseded by a timer.
+      // Poll discovered cards, or a manifest read that failed, in the foreground;
+      // a slow read is never superseded by a timer.
       const poll = setInterval(() => {
-        if (collections?.length) schedule(false);
+        if (!collections || collections.length) schedule(false);
       }, 5000);
       return () => {
         disposed = true;
@@ -269,7 +270,6 @@ export function useSessionResourceCards(
     const token = { binding };
     request.current = token;
     setPending({ binding, id: actionId });
-    setActionError(undefined);
     try {
       if (action.confirmation) {
         const confirmation = action.confirmation;
@@ -332,8 +332,9 @@ export function useSessionResourceCards(
         },
         i18n.language,
       );
-    } catch {
-      if (current.current === scope) setActionError(binding);
+    } catch (error) {
+      if (current.current === scope)
+        Alert.alert(t('session.screen.operationFailed'), humanizeRemoteError(error));
     } finally {
       if (request.current === token) {
         request.current = null;
@@ -344,7 +345,7 @@ export function useSessionResourceCards(
   };
   return {
     resources: visible?.resources ?? [],
-    failed: visible?.failed === true || actionError === binding,
+    failed: visible?.failed === true,
     fresh: !!fresh,
     pending: pendingId,
     act,
@@ -361,10 +362,6 @@ export function useSessionResourceCards(
         pathname: '/sessions/[sessionId]',
         params: { deviceId, sessionId: link.target.sessionId },
       });
-    },
-    refresh: () => {
-      setActionError(undefined);
-      refresh.current();
     },
     blocked:
       sessionResourceInputBlocked(visible?.resources ?? []) ||
