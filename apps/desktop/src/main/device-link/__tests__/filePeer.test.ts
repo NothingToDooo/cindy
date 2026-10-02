@@ -442,9 +442,10 @@ describe('authorized file peer source', () => {
     await expect(
       tryUploadPeerAttachment(peer, source, undefined, invoke, undefined, abort.signal),
     ).rejects.toThrow('FILE_PEER_CANCELLED');
-    // No further blocks after the cancel; the receiver is told to drop what it staged.
+    // No further blocks after the cancel; the receiver is then told to drop what it staged
+    // (the abandoned upload sends that after the caller has already returned).
+    await vi.waitFor(() => expect(ops().at(-1)).toBe('cancel'));
     expect(ops().filter((o) => o === 'write').length).toBeLessThanOrEqual(4);
-    expect(ops().at(-1)).toBe('cancel');
     // A cancel is not a transport failure: the next upload still goes direct.
     mock.commands.length = 0;
     expect(await tryUploadPeerAttachment(peer, source, undefined, invoke)).toContain(ticket);
@@ -483,7 +484,35 @@ describe('authorized file peer source', () => {
     ).rejects.toThrow('FILE_PEER_CANCELLED');
     expect(Date.now() - startedAt).toBeLessThan(2_000);
     // The connection stays up, so the target is still told to drop the partial staging.
-    expect(ops().at(-1)).toBe('cancel');
+    await vi.waitFor(() => expect(ops().at(-1)).toBe('cancel'));
+  });
+  it('returns at once when cancelled while the capability probe is unanswered', async () => {
+    const source = path.join(directory, 'upload');
+    await writeFile(source, 'hello');
+    let answer!: (value: unknown) => void;
+    const invoke = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          answer = resolve;
+        }),
+    );
+    const abort = new AbortController();
+    const upload = tryUploadPeerAttachment(
+      'silent-peer',
+      source,
+      undefined,
+      invoke as never,
+      undefined,
+      abort.signal,
+    );
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalled());
+    abort.abort();
+    await expect(upload).rejects.toThrow('FILE_PEER_CANCELLED');
+    // The late probe result is ignored: nothing is hashed or sent afterwards.
+    answer({ ok: true, result: { version: 1, streaming: true, attachments: true } });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(mock.commands.filter((c) => c.action === 'invoke')).toEqual([]);
   });
   it('drops a cancelled upload still queued behind another transfer on the same peer', async () => {
     const peer = 'queued-cancel-peer';

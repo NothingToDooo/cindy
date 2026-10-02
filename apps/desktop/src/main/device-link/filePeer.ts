@@ -958,8 +958,9 @@ export async function tryUploadPeerAttachment(
       await handle?.close();
     }
   };
-  // The signal also drops an upload still waiting behind another transfer to this peer.
-  return queuePeerRead(peer, upload, signal);
+  // A cancelled upload returns at once from any step (queue, capability probe, hashing, setup,
+  // blocks); the abandoned work stops at its next checkpoint and late results are ignored.
+  return untilAborted(queuePeerRead(peer, upload, signal), signal);
 }
 /** Cold reads use WSS immediately; a single background setup prepares subsequent reads. */
 export async function tryPeerInvoke(
