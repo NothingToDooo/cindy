@@ -559,6 +559,12 @@ export function RemoteDesktopSession({
     >(),
   );
   const channelRequestId = useRef(0);
+  // Requests ride the media peer. Once it is gone their outcome is unknown, so
+  // settle them now instead of waiting out the timeout or replaying on the relay.
+  const abandonChannelRequests = useCallback(() => {
+    for (const pending of [...channelRequests.current.values()])
+      pending.settle({ kind: "error", code: "INVOKE_TIMEOUT" });
+  }, []);
   const sendOverChannel = useCallback(
     (message: RemoteDesktopRequest & { lease: string }, preSend?: () => void) =>
       new Promise<ChannelOutcome>((resolve) => {
@@ -799,9 +805,7 @@ export function RemoteDesktopSession({
       finishBackgroundTransition.current?.();
       finishBackgroundTransition.current = null;
       const previous = active.current;
-      // Their media peer is gone: the outcome of requests already sent is unknown.
-      for (const pending of [...channelRequests.current.values()])
-        pending.settle({ kind: "error", code: "INVOKE_TIMEOUT" });
+      abandonChannelRequests();
       setExitLockPending(Boolean(previous && exiting && exitLock.current));
       active.current = null;
       pendingVideoSettings.current = null;
@@ -2007,6 +2011,7 @@ export function RemoteDesktopSession({
         setCanPip(false);
         setSettingBusy(false);
         streaming.current = false;
+        abandonChannelRequests();
         receiveWindow.current = {
           since: Date.now(),
           bytes: 0,
@@ -2202,6 +2207,7 @@ export function RemoteDesktopSession({
       setVideoSettings(latest);
       pendingVideoSettings.current = null;
       streaming.current = false;
+      abandonChannelRequests();
       setCanPip(false);
       send({ type: "videoSettings", audio: settings.audio });
     } catch {
@@ -2546,6 +2552,7 @@ export function RemoteDesktopSession({
       );
       setLease({ ...next });
       streaming.current = false;
+      abandonChannelRequests();
       setCanPip(false);
       send({
         type: "videoSettings",

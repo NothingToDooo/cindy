@@ -1502,6 +1502,22 @@ describe("remote desktop controls", () => {
       expect(relayedControl()).toEqual([]);
     });
 
+    it("settles a sent request when the media falls back, without replaying it", async () => {
+      withChannel(true);
+      await live();
+      await act(async () => button("viewOnly").click());
+      const first = channelRequest().id;
+      await viewer({ type: "channelRequestState", id: first, sent: true });
+      await viewer({ type: "fallback", reason: "failed" });
+      // The switch is free again right away and the next one uses the relay;
+      // the request the channel took is never sent twice.
+      await act(async () => button("viewOnly").click());
+      expect(relayedControl().filter((r) => r.enabled === false)).toHaveLength(
+        1,
+      );
+      expect(channelRequest().id).toBe(first);
+    });
+
     it("keeps the relay for hosts without the capability or before video", async () => {
       withChannel(false);
       await live();

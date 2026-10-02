@@ -402,7 +402,7 @@ export function startDesktopCaptureHost(api: DesktopCaptureApi): () => void {
               void api.viewHeartbeat(lease).catch(() => {});
               return;
             }
-            if (typeof data !== 'string' || data.length > 32_768 || pending >= 8) {
+            if (typeof data !== 'string' || data.length > 32_768) {
               stop();
               void api.stop().catch(() => {});
               return;
@@ -460,7 +460,9 @@ export function startDesktopCaptureHost(api: DesktopCaptureApi): () => void {
                   });
                 return;
               }
+              // Only input batches count toward the input overflow bound.
               if (
+                pending >= 8 ||
                 !Number.isSafeInteger(message.sequence) ||
                 !Array.isArray(message.events) ||
                 message.events.length > 64 ||

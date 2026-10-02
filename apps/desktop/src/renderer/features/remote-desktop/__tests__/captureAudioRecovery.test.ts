@@ -91,6 +91,7 @@ function setup() {
       result: { ok: true },
     })),
     stop: vi.fn(async () => {}),
+    input: vi.fn(async (_lease: string, _sequence: number, _events: unknown[]) => {}),
     nativeAudio: vi.fn(async () => new Uint8Array(0)),
     onCommand: (callback: typeof command) => {
       command = callback;
@@ -506,4 +507,40 @@ it('answers control requests on the input channel without risking the session', 
   expect(h.api.stop).not.toHaveBeenCalled();
   expect(peer.close).not.toHaveBeenCalled();
   expect(channel.close).not.toHaveBeenCalled();
+});
+
+it('answers control requests while input batches fill their own bound', async () => {
+  const h = setup();
+  h.offer(false);
+  await flush();
+  const [peer] = h.peers as any[];
+  const channel: any = {
+    label: 'input-v1',
+    readyState: 'open',
+    bufferedAmount: 0,
+    send: vi.fn(),
+    close: vi.fn(),
+  };
+  peer.ondatachannel({ channel });
+  h.api.input.mockImplementation(() => new Promise(() => {}));
+  const batch = (sequence: number) =>
+    channel.onmessage({ data: JSON.stringify({ sequence, events: [] }) });
+  for (let sequence = 1; sequence <= 8; sequence++) batch(sequence);
+  channel.onmessage({
+    data: JSON.stringify({
+      type: 'request',
+      id: 'mute',
+      request: { op: 'hostMute', lease: 'lease', enabled: true },
+    }),
+  });
+  await flush();
+  expect(JSON.parse(channel.send.mock.calls.at(-1)[0])).toEqual({
+    type: 'reply',
+    id: 'mute',
+    ok: true,
+    result: { ok: true },
+  });
+  expect(h.api.stop).not.toHaveBeenCalled();
+  batch(9);
+  expect(h.api.stop).toHaveBeenCalled();
 });
