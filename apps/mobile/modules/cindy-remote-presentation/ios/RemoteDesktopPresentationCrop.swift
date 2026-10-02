@@ -73,9 +73,11 @@ final class RemoteDesktopPresentationCropper {
       CVPixelBufferPoolCreate(nil, nil, attributes as CFDictionary, &pool)
     }
     guard let pool else { return nil }
+    // No allocation threshold: AVKit may retain several projected frames, and a
+    // refused buffer would fall back to the whole desktop for that frame. The
+    // pool recycles buffers once AVKit releases them.
     var output: CVPixelBuffer?
-    let limits = [kCVPixelBufferPoolAllocationThresholdKey as String: 4] as CFDictionary
-    guard CVPixelBufferPoolCreatePixelBufferWithAuxAttributes(nil, pool, limits, &output) == kCVReturnSuccess,
+    guard CVPixelBufferPoolCreatePixelBuffer(nil, pool, &output) == kCVReturnSuccess,
           let output else { return nil }
     CVPixelBufferLockBaseAddress(source, .readOnly)
     defer { CVPixelBufferUnlockBaseAddress(source, .readOnly) }

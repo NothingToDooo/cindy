@@ -57,6 +57,10 @@ struct PresentationCropTests {
     assert(chroma[0] == UInt8((8 * 3 + 16 + 100) & 0xff))
     assert(chroma[3 * chromaStride + 31] == UInt8((11 * 3 + 47 + 100) & 0xff))
     CVPixelBufferUnlockBaseAddress(output, .readOnly)
+    // Frames still retained by AVKit must not make the next crop fall back.
+    var retained = [output]
+    for _ in 0..<6 { retained.append(cropper.crop(input, region: region)!) }
+    assert(Set(retained.map { ObjectIdentifier($0) }).count == retained.count)
     // A changed zoom reallocates; unsupported formats leave the frame uncropped.
     let wider = cropper.crop(input, region: CGRect(x: 0, y: 0, width: 0.5, height: 0.5))!
     assert(CVPixelBufferGetWidth(wider) == 32 && CVPixelBufferGetHeight(wider) == 16)
