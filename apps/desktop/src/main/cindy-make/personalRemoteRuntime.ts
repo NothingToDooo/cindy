@@ -167,7 +167,16 @@ export function configurePersonalRemote(): void {
     if (next?.remote?.commit) controller?.recordUnverifiedRemote(next.remote.commit);
     if (rewrite && lineage !== recorded) {
       recorded = lineage;
-      journalMergeProvenance(next!);
+      try {
+        journalMergeProvenance(next!);
+      } catch (error) {
+        // A late re-record of an already-adopted result may fail harmlessly: the
+        // pre-move journal has guarded the adoption itself (see
+        // `journalMergeProvenance`).
+        log.warn('cindy-make personal remote: lineage not recorded', {
+          error: error instanceof Error ? error.name : 'unknown',
+        });
+      }
     }
     if (
       next?.status === 'merged' &&
@@ -202,6 +211,8 @@ export async function hasUnbuiltPersonalChanges(commit: string, tree: string): P
  * before the personal source moves to the rewritten result: afterwards the old tip
  * is no longer an ancestor of the result, and a crash between the move and the
  * merged-state publish must never leave the carried content looking verified.
+ * A failure to write these facts must stop the adoption, so it is never swallowed
+ * here — only the subscriber's late re-record may tolerate one.
  */
 export function journalMergeProvenance(state: {
   status: string;
@@ -212,14 +223,9 @@ export function journalMergeProvenance(state: {
 }): void {
   const rewrite = adoptedRewrite(state);
   if (!rewrite) return;
-  try {
-    if (state.remote?.commit) controller?.recordUnverifiedRemote(state.remote.commit);
-    controller?.recordRewrite(rewrite.from, rewrite.to);
-  } catch (error) {
-    log.warn('cindy-make personal remote: merge provenance not journaled', {
-      error: error instanceof Error ? error.name : 'unknown',
-    });
-  }
+  if (!controller) throw new Error('personal remote not configured');
+  if (state.remote?.commit) controller.recordUnverifiedRemote(state.remote.commit);
+  controller.recordRewrite(rewrite.from, rewrite.to);
 }
 
 /** The GitHub steps of Sync; undefined when the personal version is not shared there. */

@@ -337,6 +337,41 @@ it('journals the adopted rewrite as unverified before the source moves', async (
   }
 }, 60_000);
 
+it('keeps the source in place when the provenance journal cannot be written', async () => {
+  const h = await repos();
+  try {
+    await h.write(h.source, 'feature.txt', replace(0, 'mine'));
+    await h.commit(h.source, '', 1_000);
+    await h.write(h.official, 'feature.txt', replace(0, 'official'));
+    const target = await h.commit(h.official, 'official v2');
+    const state = await prepareUpstreamMerge(h.userData, update(h, target), h.git, async () => {});
+    expect(state.status).toBe('conflict');
+    const worktree = mergeWorktree(h.userData, state.id);
+    await h.write(worktree, 'feature.txt', replace(0, 'official and mine'));
+    await h.git(['add', '-A'], worktree);
+    await h.git([...h.identity(true), 'rebase', '--continue'], worktree);
+    const timeline: string[] = [];
+    const git: MergeGit = (args, cwd, index) => {
+      if (args[0] === 'reset' && args[1] === '--keep') timeline.push('moved');
+      return h.git(args, cwd, index);
+    };
+    const before = (await h.git(['rev-parse', 'HEAD'], h.source)).trim();
+    await expect(
+      applyUpstreamMerge(h.userData, state, git, () => true, {
+        // A full disk cannot record the carried content's provenance: the adoption
+        // itself must stop, never land unrecorded content in the source.
+        journal: () => {
+          throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+        },
+      }),
+    ).rejects.toThrow('disk full');
+    expect(timeline).not.toContain('moved');
+    expect((await h.git(['rev-parse', 'HEAD'], h.source)).trim()).toBe(before);
+  } finally {
+    await h.clean();
+  }
+}, 60_000);
+
 it('keeps a merge commit’s own edits: missing until the resolver puts them back', async () => {
   const h = await repos();
   try {

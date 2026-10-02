@@ -214,6 +214,30 @@ describe('prepareCindyMakeWorkspace', () => {
     expect(pnpm).not.toHaveBeenCalled();
   });
 
+  it('refuses unverified content whose configDependencies name escapes the worktree', async () => {
+    const pnpm = vi.fn(async () => undefined);
+    const worktreePath = await withManifest('run-17');
+    // pnpm joins each config dependency's package name under
+    // `node_modules/.pnpm-config`: a path-like name writes outside the worktree,
+    // wherever the write roots point, so unverified content configures none at all.
+    await writeFile(
+      path.join(worktreePath, 'pnpm-workspace.yaml'),
+      'packages:\n  - "apps/*"\nconfigDependencies:\n  "../../../../../../autostart": "1.0.0"\n',
+    );
+    await expect(
+      installUnverified('run-17', worktreePath, { processEnvironment: { PATH: '' }, pnpm }),
+    ).rejects.toMatchObject({ code: 'gitFailed' });
+    await writeFile(path.join(worktreePath, 'pnpm-workspace.yaml'), 'packages:\n  - "apps/*"\n');
+    await writeFile(
+      path.join(worktreePath, 'package.json'),
+      '{"name":"app","version":"1.0.0","pnpm":{"configDependencies":{"../../../../autostart":"1.0.0"}}}',
+    );
+    await expect(
+      installUnverified('run-17', worktreePath, { processEnvironment: { PATH: '' }, pnpm }),
+    ).rejects.toMatchObject({ code: 'gitFailed' });
+    expect(pnpm).not.toHaveBeenCalled();
+  });
+
   it('refuses unverified workspace globs and manifest settings that leave the worktree', async () => {
     const pnpm = vi.fn(async () => undefined);
     const worktreePath = await withManifest('run-14');

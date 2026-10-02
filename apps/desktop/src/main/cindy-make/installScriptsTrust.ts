@@ -1,7 +1,7 @@
 import path from 'node:path';
 
 import { readAtomicFileSync } from '../utils/atomicWriteFile.js';
-import { parsePersonalRemoteRecord, type PersonalRewrite } from './personalRemote.js';
+import { parsePersonalRemoteTrust, type PersonalRewrite } from './personalRemote.js';
 import { runSourceGit } from './sourceGit.js';
 import { makeSourceCheckoutPath, makeSourceRoot } from './sourcePaths.js';
 import { publishedPersonalVersionCommits } from './versionStore.js';
@@ -88,7 +88,9 @@ export function installScriptsTrust(
   const source = makeSourceCheckoutPath(userData);
   const git = (args: string[]) => runSourceGit(env, args, source, signal);
   const record = () =>
-    parsePersonalRemoteRecord(
+    // Corrupt content or an unknown schema proves nothing about trust: it throws,
+    // and the caller keeps the guarded install path (see `parsePersonalRemoteTrust`).
+    parsePersonalRemoteTrust(
       readAtomicFileSync(path.join(makeSourceRoot(userData), 'personal-remote.json')),
     );
   return {

@@ -64,7 +64,13 @@ const REFUSED_SETTINGS = new Set([
 function refusedSetting(key: string): boolean {
   const name = key.trim();
   if (!name) return false;
-  if (REFUSED_SETTINGS.has(name.toLowerCase().replace(/[^a-z0-9]/g, ''))) return true;
+  const normalized = name.toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (REFUSED_SETTINGS.has(normalized)) return true;
+  // `configDependencies` (and any sub-key of it) selects the code that performs
+  // the writes: pnpm joins each entry's package name under `node_modules/.pnpm-config`,
+  // so a path-like name escapes the worktree no matter where the write roots point.
+  // Nothing unverified may configure dependencies at all.
+  if (normalized.startsWith('configdependencies')) return true;
   return (
     /(?:^|[-_])(?:dir|path|home|file|config)$/i.test(name) ||
     /[a-z](?:Dir|Path|Home|File|Config)$/.test(name)

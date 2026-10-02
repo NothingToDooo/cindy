@@ -139,6 +139,36 @@ export function parsePersonalRemoteRecord(raw: string | null): PersonalRemoteRec
   return record;
 }
 
+/**
+ * The content-trust facts of a record file, for the install decision. A missing
+ * file proves there is nothing to carry; corrupt content or an unknown schema
+ * proves nothing and must never read as "no unverified content" — it throws so
+ * the install keeps its guarded path (anything unclear counts as unverified).
+ */
+export function parsePersonalRemoteTrust(
+  raw: string | null,
+): Pick<PersonalRemoteRecord, 'unverifiedRemote' | 'rewrites'> {
+  if (raw === null) return {};
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    throw new Error('unprovable content trust');
+  }
+  if (
+    !value ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    (value as { schema?: unknown }).schema !== 1
+  )
+    throw new Error('unprovable content trust');
+  const record = parsePersonalRemoteRecord(raw);
+  return {
+    ...(record.unverifiedRemote ? { unverifiedRemote: record.unverifiedRemote } : {}),
+    ...(record.rewrites ? { rewrites: record.rewrites } : {}),
+  };
+}
+
 export class PersonalRemoteError extends Error {
   constructor(readonly code: CindyMakeRemoteError) {
     super(code);

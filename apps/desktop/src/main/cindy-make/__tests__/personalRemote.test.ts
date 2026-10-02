@@ -9,6 +9,7 @@ import {
   githubAuthEnv,
   inspectPersonalFork,
   parsePersonalRemoteRecord,
+  parsePersonalRemoteTrust,
   readGithubIdentity,
   type PersonalForkHealth,
   type PersonalRemoteDeps,
@@ -96,6 +97,35 @@ describe('parsePersonalRemoteRecord', () => {
       schema: 1,
     });
     expect(parsePersonalRemoteRecord(null)).toEqual({ schema: 1 });
+  });
+});
+
+describe('parsePersonalRemoteTrust', () => {
+  it('reads the trust facts of a well-formed record and the absence of one', () => {
+    expect(parsePersonalRemoteTrust(null)).toEqual({});
+    expect(
+      parsePersonalRemoteTrust(
+        JSON.stringify({
+          schema: 1,
+          choice: 'local',
+          unverifiedRemote: [OTHER],
+          rewrites: [{ from: [LOCAL], to: NEWER }],
+        }),
+      ),
+    ).toEqual({ unverifiedRemote: [OTHER], rewrites: [{ from: [LOCAL], to: NEWER }] });
+  });
+
+  it('refuses to prove trust from corrupt content or an unknown schema', () => {
+    // A tip taken over before the file was corrupted must never read as "no
+    // unverified content": the guarded install path has to stay in place.
+    for (const raw of [
+      '{truncated',
+      'null',
+      '[]',
+      JSON.stringify({ schema: 2, unverifiedRemote: [OTHER] }),
+    ]) {
+      expect(() => parsePersonalRemoteTrust(raw)).toThrow('unprovable content trust');
+    }
   });
 });
 
