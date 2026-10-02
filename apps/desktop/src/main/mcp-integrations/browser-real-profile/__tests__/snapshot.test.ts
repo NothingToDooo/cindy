@@ -324,6 +324,42 @@ describe('snapshotRealProfile', () => {
     expect(fs.readFileSync(path.join(destDir, 'Default', 'Preferences'), 'utf8')).toBe('not-json');
   });
 
+  it('keeps a valid dest Preferences when the source one is malformed', async () => {
+    const root = makeTempDir();
+    const source = seedSource(root);
+    const destDir = realProfileDestDir(path.join(root, 'runtime'));
+    await snapshotRealProfile({ source, destDir, platform: 'darwin' });
+    const destPrefs = path.join(destDir, 'Default', 'Preferences');
+    const agentPrefs = JSON.stringify({ extensions: { install_signature: 'agent' } });
+    fs.writeFileSync(destPrefs, agentPrefs);
+    fs.writeFileSync(path.join(source.userDataDir, 'Profile 6', 'Preferences'), '{"trunc');
+
+    await snapshotRealProfile({ source, destDir, platform: 'darwin' });
+    expect(fs.readFileSync(destPrefs, 'utf8')).toBe(agentPrefs);
+  });
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'fails the snapshot when leftover site IndexedDB cannot be enumerated',
+    async () => {
+      const root = makeTempDir();
+      const source = seedSource(root);
+      const destDir = realProfileDestDir(path.join(root, 'runtime'));
+      const indexedDb = path.join(destDir, 'Default', 'IndexedDB');
+      fs.mkdirSync(path.join(indexedDb, 'https_example.com_0.indexeddb.leveldb'), {
+        recursive: true,
+      });
+      fs.chmodSync(indexedDb, 0o000);
+      try {
+        await expect(
+          snapshotRealProfile({ source, destDir, platform: 'darwin' }),
+        ).rejects.toThrow();
+        expect(fs.existsSync(path.join(destDir, '.cindy-real-profile-complete'))).toBe(false);
+      } finally {
+        fs.chmodSync(indexedDb, 0o700);
+      }
+    },
+  );
+
   it('refuses to write anywhere except Cindy-real/user-data', async () => {
     const root = makeTempDir();
     const source = seedSource(root);

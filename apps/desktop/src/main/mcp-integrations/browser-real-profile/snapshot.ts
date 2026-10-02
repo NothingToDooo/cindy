@@ -162,14 +162,9 @@ const AGENT_EXTENSION_STATE_NAMES = new Set([
 /** Per-origin IndexedDB folder owned by an extension (e.g. 1Password's vault). */
 const EXTENSION_INDEXED_DB_ENTRY = /^chrome-extension_/;
 
+/** Throws on enumeration failure so leftover site data blocks the snapshot, like `rmSync` does. */
 function pruneSiteIndexedDb(indexedDbDir: string): void {
-  let entries: fs.Dirent[];
-  try {
-    entries = fs.readdirSync(indexedDbDir, { withFileTypes: true });
-  } catch {
-    return;
-  }
-  for (const entry of entries) {
+  for (const entry of fs.readdirSync(indexedDbDir, { withFileTypes: true })) {
     if (EXTENSION_INDEXED_DB_ENTRY.test(entry.name)) continue;
     fs.rmSync(path.join(indexedDbDir, entry.name), { recursive: true, force: true });
   }
@@ -188,13 +183,7 @@ export function pruneNonAuthProfileState(destProfileDir: string): void {
   for (const relative of SNAPSHOT_PROFILE_RELATIVE_PATHS) {
     keep.add(relative.split(/[/\\]/)[0] ?? relative);
   }
-  let entries: fs.Dirent[];
-  try {
-    entries = fs.readdirSync(destProfileDir, { withFileTypes: true });
-  } catch {
-    return;
-  }
-  for (const entry of entries) {
+  for (const entry of fs.readdirSync(destProfileDir, { withFileTypes: true })) {
     if (keep.has(entry.name)) continue;
     if (entry.name === 'IndexedDB' && entry.isDirectory()) {
       pruneSiteIndexedDb(path.join(destProfileDir, entry.name));
@@ -216,14 +205,16 @@ function parseJsonObject(raw: string | null): Record<string, unknown> | null {
 /**
  * Source `Preferences` refreshed onto dest, except the `extensions` subtree,
  * which belongs to the agent browser (install signature, commands, pins).
- * Returns null when the source is not a JSON object so the caller can copy it
- * verbatim.
+ * When the source is not a JSON object (e.g. caught mid-write), keep a valid
+ * dest unchanged rather than clobber its extension state; return null only
+ * when neither side is usable, so the caller copies the source verbatim.
  */
 export function mergeManagedPreferences(sourceRaw: string, destRaw: string | null): string | null {
+  const dest = parseJsonObject(destRaw);
   const source = parseJsonObject(sourceRaw);
-  if (!source) return null;
+  if (!source) return dest ? destRaw : null;
   const merged = { ...source };
-  const destExtensions = parseJsonObject(destRaw)?.extensions;
+  const destExtensions = dest?.extensions;
   if (destExtensions === undefined) {
     delete merged.extensions;
   } else {
