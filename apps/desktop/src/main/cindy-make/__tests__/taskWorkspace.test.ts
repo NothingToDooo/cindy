@@ -156,6 +156,11 @@ describe('prepareCindyMakeWorkspace', () => {
         GITHUB_TOKEN: 'ghp_secret-token',
         AWS_SECRET_ACCESS_KEY: 'aws_secret-key',
         HTTP_PROXY: 'http://user:pass@proxy.invalid',
+        // Even under an allowlisted prefix, a credential stays out; the harmless
+        // Corepack setting next to it is forwarded.
+        COREPACK_NPM_TOKEN: 'corepack_secret-token',
+        COREPACK_NPM_PASSWORD: 'corepack_secret-password',
+        COREPACK_ENABLE: '0',
       },
       pnpm,
     });
@@ -165,6 +170,7 @@ describe('prepareCindyMakeWorkspace', () => {
       HOME: '/home/me',
       npm_config_python: '/tools/python',
       npm_config_manage_package_manager_versions: 'false',
+      COREPACK_ENABLE: '0',
       npm_config_userconfig: os.devNull,
     });
   });

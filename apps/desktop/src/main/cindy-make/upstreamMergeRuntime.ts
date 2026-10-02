@@ -304,10 +304,14 @@ export function configureUpstreamMerge(isRunning: (id: string) => boolean): void
       },
       prepare: async (state, publish, isCurrent) =>
         recordOfficialRef(
-          await prepareUpstreamMerge(userData, state, await git(), publish, isCurrent),
+          await prepareUpstreamMerge(userData, state, await git(), publish, isCurrent, {
+            journal: journalMergeProvenance,
+          }),
         ),
       prepareCombine: async (state, publish, isCurrent) =>
-        preparePersonalCombine(userData, state, await git(), publish, isCurrent),
+        preparePersonalCombine(userData, state, await git(), publish, isCurrent, {
+          journal: journalMergeProvenance,
+        }),
       prepareFeature: async (state, plan, publish, isCurrent) => {
         if (!isCurrent() || isRunning(plan.taskSessionId)) throw mergeError('busy');
         return prepareFeatureMerge(userData, state, plan, await git(), publish, isCurrent);

@@ -337,6 +337,42 @@ it('journals the adopted rewrite as unverified before the source moves', async (
   }
 }, 60_000);
 
+it('journals a clean fast-path adopt before the source moves', async () => {
+  const h = await repos();
+  try {
+    // No conflict at all: `prepareUpstreamMerge`'s own fast path adopts the
+    // result — and must journal its provenance before moving, like the task path.
+    await h.write(h.source, 'feature.txt', replace(3, 'mine'));
+    await h.commit(h.source, '', 1_000);
+    await h.write(h.official, 'other.txt', ['other']);
+    const target = await h.commit(h.official, 'official v2');
+    const timeline: string[] = [];
+    const git: MergeGit = (args, cwd, index) => {
+      if (args[0] === 'reset' && args[1] === '--keep') timeline.push('moved');
+      return h.git(args, cwd, index);
+    };
+    const journaled: CindyMakeMergeState[] = [];
+    const merged = await prepareUpstreamMerge(
+      h.userData,
+      update(h, target),
+      git,
+      async () => {},
+      () => true,
+      {
+        journal: (record) => {
+          timeline.push('journaled');
+          journaled.push(record);
+        },
+      },
+    );
+    expect(merged).toMatchObject({ status: 'merged' });
+    expect(timeline).toEqual(['journaled', 'moved']);
+    expect(journaled[0]).toMatchObject({ status: 'merged', commit: merged.commit });
+  } finally {
+    await h.clean();
+  }
+}, 60_000);
+
 it('keeps the source in place when the provenance journal cannot be written', async () => {
   const h = await repos();
   try {

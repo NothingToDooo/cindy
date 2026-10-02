@@ -644,6 +644,9 @@ const missingError = (missing: string[], result: string) =>
     missing: { count: missing.length, commits: missing.slice(0, MAX_NAMED_MISSING), result },
   });
 
+/** Durably record the carried content's trust facts before the source moves. */
+export type MergeJournal = (merged: CindyMakeMergeState) => void;
+
 /** Rebase only in the retained candidate, then move the clean personal checkout to its result. */
 export async function applyUpstreamMerge(
   userData: string,
@@ -654,7 +657,7 @@ export async function applyUpstreamMerge(
   options: {
     acceptMissing?: boolean;
     /** Durably record the carried content's trust facts before the source moves (see `adoptedRewrite`). */
-    journal?: (merged: CindyMakeMergeState) => void;
+    journal?: MergeJournal;
   } = {},
 ): Promise<CindyMakeMergeState> {
   if (!isCurrent()) throw mergeError('busy');
@@ -973,6 +976,8 @@ export async function preparePersonalCombine(
   git: MergeGit,
   publish: (state: CindyMakeMergeState) => Promise<void>,
   isCurrent: () => boolean = () => true,
+  /** Passed through to the clean fast path: its adoption needs the same journal. */
+  options: { journal?: MergeJournal } = {},
 ): Promise<CindyMakeMergeState> {
   git = ownedGit(git, isCurrent);
   const remote = initial.remote?.commit ?? initial.upstreamCommit;
@@ -1035,6 +1040,7 @@ export async function preparePersonalCombine(
       baselineTree: personal.tree,
       rebaseBase: fork,
       replay,
+      journal: options.journal,
     },
   );
 }
@@ -1046,6 +1052,8 @@ export async function prepareUpstreamMerge(
   git: MergeGit,
   publish: (state: CindyMakeMergeState) => Promise<void>,
   isCurrent: () => boolean = () => true,
+  /** Passed through to the clean fast path: its adoption needs the same journal. */
+  options: { journal?: MergeJournal } = {},
 ): Promise<CindyMakeMergeState> {
   git = ownedGit(git, isCurrent);
   const worktree = mergeWorktree(userData, initial.id);
@@ -1100,6 +1108,7 @@ export async function prepareUpstreamMerge(
     baselineCommit,
     baselineTree,
     rebaseBase: previousUpstream,
+    journal: options.journal,
   });
 }
 
@@ -1122,6 +1131,8 @@ async function startRebaseCandidate(
     rebaseBase: string;
     /** The commits replayed onto `upstreamCommit` end here; defaults to the baseline. */
     replay?: string;
+    /** Durably record the carried content's trust facts before a clean adopt moves. */
+    journal?: MergeJournal;
   },
 ): Promise<CindyMakeMergeState> {
   const { source, baselineCommit, baselineTree } = start;
@@ -1181,7 +1192,8 @@ async function startRebaseCandidate(
   // Rebase does not replay edits introduced only in a merge commit. Never silently adopt their loss.
   if (state.rebaseReview) return { ...state, status: 'conflict' };
   try {
-    return await applyUpstreamMerge(userData, state, git, isCurrent);
+    // The clean fast path adopts the same way: its journal runs before the move too.
+    return await applyUpstreamMerge(userData, state, git, isCurrent, { journal: start.journal });
   } catch (error) {
     // A clean rebase that still lost a change (for example a merge's own edits): its task
     // puts the named changes back before anything is adopted.
