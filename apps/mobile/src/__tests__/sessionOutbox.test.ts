@@ -81,7 +81,7 @@ describe('hasActiveOutboxHandoff', () => {
   it('待发、enqueue 在途、被控端已收下未确认都算消息正在交接', () => {
     expect(hasActiveOutboxHandoff([record()], target, online, none)).toBe(true);
     expect(hasActiveOutboxHandoff([record({ state: 'sending' })], target, online, none)).toBe(true);
-    expect(hasActiveOutboxHandoff([record({ state: 'host-owned' })], target, online, none)).toBe(true);
+    expect(hasActiveOutboxHandoff([record({ state: 'host-owned', retrySafe: true })], target, online, none)).toBe(true);
     expect(hasActiveOutboxHandoff([], target, online, none)).toBe(false);
   });
 
@@ -112,8 +112,26 @@ describe('hasActiveOutboxHandoff', () => {
     expect(hasActiveOutboxHandoff([record({ suspended: true })], target, online, none)).toBe(false);
   });
 
+  it('未移交的记录只看会话 FIFO 队首:队首卡住时后面的消息不算交接', () => {
+    const later = record({ item: { sessionId: 'session-1', clientId: 'client-2' } as ReturnType<typeof record>['item'] });
+    expect(hasActiveOutboxHandoff([record({ state: 'failed' }), later], target, online, none)).toBe(false);
+    expect(hasActiveOutboxHandoff([record({ suspended: true }), later], target, online, none)).toBe(false);
+    expect(hasActiveOutboxHandoff([record({ cancelRequested: true }), later], target, online, none)).toBe(false);
+    expect(hasActiveOutboxHandoff([record({ state: 'confirming', error: '待确认' }), later], target, online, none)).toBe(false);
+    // 已移交被控端的记录不挡队首,下一条正常推进照样算。
+    expect(hasActiveOutboxHandoff([
+      record({ state: 'host-owned', retrySafe: true, cancelRequested: true }),
+      later,
+    ], target, online, none)).toBe(true);
+  });
+
+  it('已落定、撤销中的已移交记录不算交接', () => {
+    expect(hasActiveOutboxHandoff([record({ state: 'host-owned', retrySafe: true, cleanupOutcome: 'accepted' })], target, online, none)).toBe(false);
+    expect(hasActiveOutboxHandoff([record({ state: 'host-owned', retrySafe: true, cancelRequested: true })], target, online, none)).toBe(false);
+  });
+
   it('已进被控端队列的条目归队列管', () => {
-    expect(hasActiveOutboxHandoff([record({ state: 'host-owned' })], target, online, new Set(['client-1']))).toBe(false);
+    expect(hasActiveOutboxHandoff([record({ state: 'host-owned', retrySafe: true })], target, online, new Set(['client-1']))).toBe(false);
   });
 });
 

@@ -4218,14 +4218,16 @@ export default function SessionScreen() {
   // Sending/queueing drives the composer immediately, but cannot reopen the loaded previous
   // turn before the new user message arrives. Only remote activity drives message grouping.
   const isMessageListStreaming = remoteSessionRunning || currentTurnStreaming;
-  // 消息正在交给被控端(enqueue 在途 / 已进 outbox 未被确认)也算活动:sending 在本地写入
-  // outbox 后就落下,而被控端回报运行要一次远程往返,远超下面的去抖窗口,不补这段活动条
-  // 会「出现 → 熄灭 → 再出现」。只作用于活动条,不改 isSessionStreaming 的停止 / 横幅语义。
+  // 消息正在交给被控端(已进 outbox、被控端尚未确认)也算活动:sending 在本地写入 outbox
+  // 后就落下,而被控端回报运行要一次远程往返,远超下面的去抖窗口,不补这段活动条会
+  // 「出现 → 熄灭 → 再出现」。只作用于活动条,不改 isSessionStreaming 的停止 / 横幅语义。
+  // 只读本会话的 durable 记录(enqueue 在途即 state=sending):页面级的
+  // sendingQueueClientIds 不带会话身份、也不看连接,不能拿来驱动活动条。
   const remoteQueuedClientIds = useMemo(
     () => new Set(inputProjection.pendingQueue.map((item) => item.clientId)),
     [inputProjection.pendingQueue],
   );
-  const messageHandoffActive = sendingQueueClientIds.size > 0 || hasActiveOutboxHandoff(
+  const messageHandoffActive = hasActiveOutboxHandoff(
     durableOutboxRecords,
     { deviceId, sessionId },
     outboxConnectionState,
