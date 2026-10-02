@@ -48,6 +48,7 @@ describe("existing remote quota compatibility", () => {
     const selected = { ...session, providerId: provider.id };
     await readSessionMenuAccountUsage(selected, r, provider);
     expect(r.getCodexRateLimits).toHaveBeenCalledWith(provider.id);
+    r.getAccountUsage.mockClear();
     r.getCodexRateLimits.mockRejectedValue(new Error('legacy host'));
     await expect(readSessionMenuAccountUsage(selected, r, provider)).rejects.toThrow('legacy host');
     expect(r.getAccountUsage).not.toHaveBeenCalled();
@@ -62,7 +63,9 @@ describe("existing remote quota compatibility", () => {
       windows: [{ remainingPercent: 75, minutes: 300 }],
     });
     expect(r.getCodexRateLimits).toHaveBeenCalledOnce();
-    expect(r.getAccountUsage).not.toHaveBeenCalled();
+    // Only the account snapshot's credits are read alongside the control read.
+    expect(r.getAccountUsage).toHaveBeenCalledWith("codex");
+    expect(result.credits).toBeUndefined();
     expect(JSON.stringify(result)).not.toContain("private");
   });
 
@@ -470,12 +473,12 @@ describe("subscription quota for every subscription family", () => {
     });
   });
 
-  it("does not present a stale SuperGrok percentage as current quota", async () => {
+  it("does not present a stale SuperGrok percentage or balance as current", async () => {
     const r = reader();
     r.getSubscriptionUsage.mockResolvedValue({
       planLabel: "SuperGrok",
       creditUsagePercent: 25,
-      prepaidBalance: 0,
+      prepaidBalance: 4.5,
       updatedAt: Date.now() - 2 * 60 * 60_000,
     });
     const result = await readSessionMenuAccountUsage(
@@ -583,11 +586,12 @@ describe("new subscription families cannot be skipped", () => {
 
 describe("ChatGPT credits", () => {
   it.each([
-    [{ hasCredits: true, unlimited: false, balance: "1,234.5" }, { kind: "balance", amount: 1234.5 }],
-    [{ hasCredits: true, unlimited: true, balance: null }, { kind: "unlimited" }],
-    [{ hasCredits: false, unlimited: false, balance: "0" }, { kind: "depleted" }],
-    [{ hasCredits: true, unlimited: false }, { kind: "available" }],
-    [{ hasCredits: true, unlimited: false, balance: "n/a" }, { kind: "available" }],
+    [{ hasCredits: true, unlimited: false, balance: "1,234.5" }, { balance: 1234.5, status: null }],
+    [{ hasCredits: true, unlimited: true, balance: null }, { balance: null, status: "unlimited" }],
+    [{ hasCredits: false, unlimited: false, balance: "0" }, { balance: 0, status: "depleted" }],
+    [{ hasCredits: false, unlimited: false, balance: "12.5" }, { balance: 12.5, status: "depleted" }],
+    [{ hasCredits: true, unlimited: false }, { balance: null, status: "available" }],
+    [{ hasCredits: true, unlimited: false, balance: "n/a" }, { balance: null, status: "available" }],
   ])("projects the account credit state %o", async (credits, expected) => {
     const r = reader();
     r.getCodexRateLimits.mockResolvedValue({
@@ -597,6 +601,35 @@ describe("ChatGPT credits", () => {
     const result = await readSessionMenuAccountUsage(session, r);
     expect(result.credits).toEqual(expected);
     expect(result.windows).toHaveLength(1);
+  });
+
+  it("reads credits from the account snapshot when the control read omits them", async () => {
+    const r = reader();
+    r.getAccountUsage.mockResolvedValue({
+      appServerBuckets: {
+        codex: { credits: { hasCredits: true, unlimited: false, balance: "42" } },
+      },
+    });
+    const result = await readSessionMenuAccountUsage(session, r);
+    expect(result).toMatchObject({
+      windows: [{ remainingPercent: 75 }],
+      credits: { balance: 42, status: null },
+    });
+  });
+
+  it("keeps quota when the credits read fails", async () => {
+    const r = reader();
+    r.getAccountUsage.mockRejectedValue(new Error("offline"));
+    const result = await readSessionMenuAccountUsage(session, r);
+    expect(result.windows).toHaveLength(1);
+    expect(result).not.toHaveProperty("credits");
+  });
+
+  it("reads credits of the selected independent account only", async () => {
+    const r = reader();
+    const provider = { id: "openai-second", auth: { method: "oauth" as const, native: "codex" as const } };
+    await readSessionMenuAccountUsage({ ...session, providerId: provider.id }, r, provider);
+    expect(r.getAccountUsage).toHaveBeenCalledWith("codex", "openai-second");
   });
 
   it("reads credits from the ChatGPT bridge web slot", async () => {
@@ -612,11 +645,13 @@ describe("ChatGPT credits", () => {
       { ...session, agentKind: "pi", model: "chatgpt/gpt-5" },
       r,
     );
-    expect(result.credits).toEqual({ kind: "balance", amount: 8 });
+    expect(result.credits).toEqual({ balance: 8, status: null });
   });
 
   it("omits credits when the account reports none", async () => {
-    const result = await readSessionMenuAccountUsage(session, reader());
+    const r = reader();
+    r.getAccountUsage.mockResolvedValue({ primary: { usedPercent: 10 } });
+    const result = await readSessionMenuAccountUsage(session, r);
     expect(result).not.toHaveProperty("credits");
   });
 });

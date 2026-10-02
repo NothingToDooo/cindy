@@ -44,10 +44,11 @@ export interface SessionMenuAccountUsage {
   }>;
   /** The account read cannot prove this task's frozen auth route. */
   accountOnly?: boolean;
-  /** ChatGPT's own credits (not money): a remaining balance or the account's credit state. */
-  credits?:
-    | { kind: "balance"; amount: number }
-    | { kind: "unlimited" | "depleted" | "available" };
+  /** ChatGPT's own credits (not money): the reported balance and/or the account's credit state. */
+  credits?: {
+    balance: number | null;
+    status: "unlimited" | "depleted" | "available" | null;
+  };
 }
 /** Display source of each subscription family; keyed so a new family cannot be skipped. */
 export const SUBSCRIPTION_USAGE_SOURCES = {
@@ -294,10 +295,11 @@ async function readXaiAccount(
       ? snapshot.planLabel.trim()
       : null;
   result.updatedAt = finite(snapshot.updatedAt) ? snapshot.updatedAt : null;
-  if (
-    isXaiWeeklyUsageCurrent(snapshot as XaiSubscriptionUsageSnapshot, Date.now()) &&
-    finite(snapshot.creditUsagePercent)
-  ) {
+  const current = isXaiWeeklyUsageCurrent(
+    snapshot as XaiSubscriptionUsageSnapshot,
+    Date.now(),
+  );
+  if (current && finite(snapshot.creditUsagePercent)) {
     result.windows.push({
       id: "week",
       minutes: 10080,
@@ -305,8 +307,9 @@ async function readXaiAccount(
       resetsAt: finite(snapshot.resetsAt) ? snapshot.resetsAt : null,
     });
   }
-  // A zero balance is not a free allowance; only show purchased credits.
-  if (finite(snapshot.prepaidBalance) && snapshot.prepaidBalance > 0)
+  // A zero balance is not a free allowance; only show purchased credits, and only
+  // while the snapshot is current (the desktop card hides both together).
+  if (current && finite(snapshot.prepaidBalance) && snapshot.prepaidBalance > 0)
     result.amounts.push({
       id: "balance",
       amount: snapshot.prepaidBalance,
@@ -323,15 +326,24 @@ async function readCodexAccount(
   let byLimitId: unknown;
   let observedAt: number | null = null;
   let plan: string | null = null;
+  let creditSources: unknown[] = [];
+  const readAccountUsage = () =>
+    session.providerId && session.providerId !== 'openai'
+      ? reader.getAccountUsage("codex", session.providerId)
+      : reader.getAccountUsage("codex");
   try {
     const result = await (session.providerId && session.providerId !== 'openai' ? reader.getCodexRateLimits(session.providerId) : reader.getCodexRateLimits());
     raw = result.rateLimits;
     byLimitId = result.rateLimitsByLimitId;
     plan = result.account.planType;
     observedAt = Date.now();
+    // The control read omits credits; the desktop card reads them from the account
+    // snapshot this read just recorded. A failed credits read only hides that row.
+    const usage = record(await readAccountUsage().catch(() => null));
+    creditSources = [usage, ...Object.values(record(usage.appServerBuckets))];
   } catch (error) {
     if ((session.providerId && session.providerId !== 'openai') || !shouldFallbackToLegacyCodexUsage(error)) throw error;
-    raw = await (session.providerId && session.providerId !== 'openai' ? reader.getAccountUsage("codex", session.providerId) : reader.getAccountUsage("codex"));
+    raw = await readAccountUsage();
   }
   return projectCodexAccount(
     raw,
@@ -340,6 +352,7 @@ async function readCodexAccount(
     observedAt,
     plan,
     true,
+    creditSources,
   );
 }
 
@@ -350,6 +363,7 @@ function projectCodexAccount(
   observedAt: number | null,
   plan: string | null,
   accountOnly: boolean,
+  creditSources: unknown[] = [],
 ): SessionMenuAccountUsage {
   const payload = record(raw);
   const now = Date.now();
@@ -400,7 +414,11 @@ function projectCodexAccount(
       });
     }
   }
-  const credits = projectCodexCredits([...snapshots, payload]);
+  const credits = projectCodexCredits([
+    ...snapshots,
+    payload,
+    ...creditSources.map(record),
+  ]);
   return {
     source: "chatgpt",
     accountOnly,
@@ -412,7 +430,7 @@ function projectCodexAccount(
   };
 }
 
-/** Credits are account-wide; same precedence as the desktop ChatGPT card. */
+/** Credits are account-wide; same facts and precedence as the desktop ChatGPT card. */
 function projectCodexCredits(
   snapshots: Array<Record<string, unknown>>,
 ): SessionMenuAccountUsage["credits"] | null {
@@ -424,15 +442,19 @@ function projectCodexCredits(
         typeof value.unlimited === "boolean",
     );
   if (!credits) return null;
-  if (credits.unlimited === true) return { kind: "unlimited" };
-  if (credits.hasCredits === false) return { kind: "depleted" };
-  const balance =
+  const raw =
     typeof credits.balance === "string"
-      ? Number(credits.balance.trim().replace(/,/g, ""))
-      : NaN;
-  return credits.balance !== "" && Number.isFinite(balance)
-    ? { kind: "balance", amount: balance }
-    : credits.hasCredits === true
-      ? { kind: "available" }
-      : null;
+      ? credits.balance.trim().replace(/,/g, "")
+      : "";
+  const balance = raw && Number.isFinite(Number(raw)) ? Number(raw) : null;
+  // A reported balance and an exhausted state are both facts; keep both.
+  const status =
+    credits.unlimited === true
+      ? "unlimited"
+      : credits.hasCredits === false
+        ? "depleted"
+        : credits.hasCredits === true && balance === null
+          ? "available"
+          : null;
+  return balance === null && status === null ? null : { balance, status };
 }

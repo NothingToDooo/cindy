@@ -68,12 +68,23 @@ export interface ClaudeSubscriptionUsageSnapshot {
 // ── 方案 B:当前模型 → scoped 窗口匹配 ───────────────────────────────────────
 
 /**
+ * 去掉末尾的 `[...]` 后缀(如 `[1m]`),等价于 `/\[[^\]]*\]\s*$/`。不用正则:
+ * model id 来自远端数据,该正则在大量 `[` 的输入上是多项式回溯(CodeQL)。
+ */
+function stripTrailingBracketSuffix(value: string): string {
+  const close = value.trimEnd().length - 1;
+  if (close < 0 || value[close] !== ']') return value;
+  const open = value.indexOf('[', value.lastIndexOf(']', close - 1) + 1);
+  return open >= 0 && open < close ? value.slice(0, open) : value;
+}
+
+/**
  * 从 model id 提取模型家族名(与端点 scope.model.display_name 对齐的小写词)。
  *   'claude-fable-5[1m]' → 'fable';'claude-opus-4-8' → 'opus';'sonnet' → 'sonnet'
  * 未识别 → null(调用方回退总周限)。
  */
 export function claudeModelFamily(modelId: string | null | undefined): string | null {
-  const normalized = (modelId ?? '').trim().toLowerCase().replace(/\[[^\]]*\]\s*$/, '');
+  const normalized = stripTrailingBracketSuffix((modelId ?? '').trim().toLowerCase());
   if (!normalized) return null;
   // 顺序无关 —— 家族名互斥地出现在 Anthropic model id 里。
   for (const family of ['fable', 'mythos', 'opus', 'sonnet', 'haiku']) {

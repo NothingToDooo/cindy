@@ -85,10 +85,10 @@ describe("task menu usage presentation", () => {
     expect(rows[1]).toMatchObject({ value: "等待刷新", warning: false });
   });
   it.each([
-    [{ kind: "balance", amount: 1234.5 }, "剩余 1,234.50", false],
-    [{ kind: "unlimited" }, "不限", false],
-    [{ kind: "depleted" }, "已耗尽", true],
-    [{ kind: "available" }, "可用", false],
+    [{ balance: 1234.5, status: null }, "剩余 1,234.50", false],
+    [{ balance: null, status: "unlimited" }, "不限", false],
+    [{ balance: 0, status: "depleted" }, "剩余 0.00 · 已耗尽", true],
+    [{ balance: null, status: "available" }, "可用", false],
   ] as const)("shows ChatGPT credits %o after the quota windows", (credits, value, warning) => {
     const account: SessionMenuAccountUsage = {
       source: "chatgpt",
