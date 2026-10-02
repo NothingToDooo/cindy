@@ -459,3 +459,71 @@ it.each(['edit','parameters','favorite','failure'])('ignores late %s UI completi
   expect(test.view.busy).toBe(false);
   if(operation==='edit') expect(test.prefs.favorites[0].effort).toBe('high');
 });
+
+it.each(['success', 'cancel', 'save-failure'])('applies ordinary edits of the running favorite while another model is pending: %s', async outcome => {
+  const saved = {uid:'running',providerId:'account',modelId:'codex/model',agent:'codex',effort:'high',fast:true};
+  test.prefs.favorites = [saved];
+  const onSelect = vi.fn(async () => outcome !== 'cancel');
+  const memory = {getEffort:()=>undefined,getFast:()=>undefined,setEffort:vi.fn(),setFast:vi.fn()};
+  await mount(onSelect, {
+    agentKind:'claude-code',activeModelId:'pending-model',modelMemory:memory,
+    unified:{scope:'user-device',agents:['codex','claude-code'],loadCapabilities:async()=>({hasFastMode:true}),onSelect,
+      currentSelection:{agentKind:'codex',activeModelId:'codex/model',selectedProviderId:'account',selectedEffort:'high',selectedFastMode:true}},
+  });
+  await act(async()=>test.view.onOptions(test.view.groups[0].rows[0]));
+  expect(test.view.options.row.selected).toBe(false);
+  if(outcome === 'save-failure') test.save.mockRejectedValueOnce(new Error('offline'));
+  await act(async()=>test.view.options.onChange({...test.view.options.row.config,effort:'medium'}));
+  expect(onSelect).toHaveBeenNthCalledWith(1,{providerId:'account',modelId:'codex/model',agent:'codex',effort:'medium',fast:true});
+  expect(test.prefs.favorites).toEqual([saved]);
+  if(outcome === 'cancel') {
+    expect(test.save).not.toHaveBeenCalled();
+    expect(memory.setEffort).not.toHaveBeenCalled();
+  } else if(outcome === 'save-failure') {
+    expect(onSelect).toHaveBeenNthCalledWith(2,{providerId:'account',modelId:'codex/model',agent:'codex',effort:'high',fast:true});
+    expect(memory.setEffort).not.toHaveBeenCalled();
+    expect(test.view.error).toBe('models.unified.saveFailed');
+  } else {
+    expect(onSelect).toHaveBeenCalledOnce();
+    expect(memory.setEffort).toHaveBeenCalledWith('codex','account','codex/model','medium');
+  }
+});
+
+it.each(['closed', 'reopened', 'rebound'])('does not roll back a newer selection after the original panel is %s', async lifecycle => {
+  let rejectSave!: (error: Error) => void;
+  const pending = new Promise<void>((_resolve,reject)=>{rejectSave=reject;});
+  test.save.mockImplementationOnce(()=>pending);
+  const onSelect = vi.fn(async()=>true);
+  await mount(onSelect);
+  await act(async()=>test.view.onOptions(test.view.groups[0].rows[0]));
+  await act(async()=>test.view.options.onChange({...test.view.options.row.config,effort:'high'}));
+  expect(onSelect).toHaveBeenCalledOnce();
+  expect(test.save).toHaveBeenCalledOnce();
+  if(lifecycle === 'rebound') {
+    await mount(onSelect,{activeModelId:'new-model',unified:{scope:'other-device',agents:['codex','claude-code'],loadCapabilities:async()=>({hasFastMode:true}),onSelect}});
+  } else {
+    await mount(onSelect,{visible:false,activeModelId:'new-model'});
+    if(lifecycle === 'reopened') await mount(onSelect,{activeModelId:'new-model'});
+  }
+  await act(async()=>{rejectSave(new Error('stale favorite binding'));});
+  expect(onSelect).toHaveBeenCalledOnce();
+  expect(test.view.error).toBeNull();
+  expect(test.view.busy).toBe(false);
+});
+
+it('does not start preference writes after selection completes for a closed panel', async()=>{
+  let finish!: (applied: boolean)=>void;
+  const onSelect = vi.fn(()=>new Promise<boolean>(resolve=>{finish=resolve;}));
+  const memory = {getEffort:()=>undefined,getFast:()=>undefined,setEffort:vi.fn(),setFast:vi.fn()};
+  await mount(onSelect,{modelMemory:memory});
+  await act(async()=>test.view.onOptions(test.view.groups[0].rows[0]));
+  await act(async()=>test.view.options.onChange({...test.view.options.row.config,effort:'high'}));
+  await mount(onSelect,{visible:false,modelMemory:memory});
+  await mount(onSelect,{modelMemory:memory});
+  await act(async()=>{finish(true);});
+  expect(test.save).not.toHaveBeenCalled();
+  expect(memory.setEffort).not.toHaveBeenCalled();
+  expect(onSelect).toHaveBeenCalledOnce();
+  expect(test.view.options).toBeUndefined();
+  expect(test.view.error).toBeNull();
+});

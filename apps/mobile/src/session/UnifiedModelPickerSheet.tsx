@@ -221,6 +221,26 @@ export function UnifiedModelPickerSheet(
     effort: p.selectedEffort,
     fast: p.selectedFastMode,
   };
+  // The visible selection may belong to a pending next-message engine switch.
+  // Resolve the running configuration separately when editing its favorite.
+  const current = p.unified.currentSelection;
+  const live: MobileModelConfiguration = current
+    ? {
+        providerId:
+          buildMobileModelSections({
+            providers: p.providers,
+            agentKind: current.agentKind,
+            selectedModelId: current.activeModelId,
+            selectedProviderId: current.selectedProviderId,
+            existingSessionRoute: p.existingSessionRoute,
+            visibilityOverrides: p.modelVisibilityOverrides,
+          }).activeSourceId ?? "",
+        modelId: current.activeModelId,
+        agent: current.agentKind,
+        effort: current.selectedEffort,
+        fast: current.selectedFastMode,
+      }
+    : selection;
   const fastCapable = (agent: AgentKind) => caps[agent]?.hasFastMode === true;
   const describe = (
     entry: UnifiedModelEntry,
@@ -464,8 +484,16 @@ export function UnifiedModelPickerSheet(
       return;
     }
     void transact(async (isCurrent) => {
-      const appliesLive = row.selected;
-      if (appliesLive && !(await p.unified.onSelect(config))) return;
+      const previousConfig =
+        row.favorite && sameConfiguration(row.config, live)
+          ? live
+          : row.selected
+            ? selection
+            : undefined;
+      if (previousConfig && !(await p.unified.onSelect(config))) return;
+      // Selection can await remote work or a confirmation. Do not begin another
+      // write for a panel that closed or changed its binding while waiting.
+      if (!isCurrent()) return;
       try {
         const engines = { ...prefs.value.engines };
         const key = modelKey(row.entry.providerId, row.entry.modelId);
@@ -522,7 +550,8 @@ export function UnifiedModelPickerSheet(
           ),
         );
       } catch (error) {
-        if (appliesLive) await p.unified.onSelect(selection);
+        if (previousConfig && isCurrent())
+          await p.unified.onSelect(previousConfig);
         throw error;
       }
     });
