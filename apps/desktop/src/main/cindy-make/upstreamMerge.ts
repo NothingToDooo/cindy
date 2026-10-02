@@ -428,13 +428,16 @@ async function editsSurvive(
   for (const line of diff.split(/\r?\n/)) {
     if (line.startsWith('--- ')) {
       const source = line.slice(4).trim();
-      previous = source.startsWith('b/') ? source.slice(2) : undefined;
+      previous = source.startsWith('a/') || source.startsWith('b/') ? source.slice(2) : undefined;
       continue;
     }
     if (line.startsWith('+++ ')) {
       const target = line.slice(4).trim();
-      file = target.startsWith('b/') ? target.slice(2) : previous;
-      if (file) edits.set(file, { added: [], removed: [] });
+      const name = target.startsWith('a/') || target.startsWith('b/') ? target.slice(2) : undefined;
+      file = name ?? previous;
+      // A hunk that cannot be attributed to a file is never counted as kept.
+      if (!file) return false;
+      edits.set(file, { added: [], removed: [] });
       continue;
     }
     const bucket = file ? edits.get(file) : undefined;

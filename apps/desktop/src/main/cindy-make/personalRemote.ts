@@ -260,14 +260,16 @@ export async function ensureOfficialFork(
       throw remoteError('failed');
     }
   };
-  /** A read that only proves a credential works: a missing repository is just absent. */
+  /** A read that only proves a credential works: a missing or redirected address is absent. */
   const read = async (url: string): Promise<unknown> => {
     let response: Response;
     try {
       response = await fetchFn(url, {
         method: 'GET',
         headers: githubHeaders(identity.token),
-        redirect: 'error',
+        // A renamed fork answers the saved name with a redirect; it is never
+        // followed with the credential. The listing below finds the new name.
+        redirect: 'manual',
         signal: AbortSignal.timeout(30_000),
       });
     } catch {
@@ -1434,9 +1436,12 @@ export class PersonalRemoteController {
             if (!remoteBase || !(await this.isAncestor(remoteBase, remote)))
               throw remoteError('failed');
             if (!(await this.movable())) throw remoteError('source');
+            // Recorded before the move: an interrupted run must never lose the
+            // provenance of content that is already on disk; over-marking after a
+            // failed move is safe.
+            this.recordUnverifiedRemote(remote);
             await this.git(['reset', '--keep', remote]);
             if ((await this.readLocalTip()) !== remote) throw remoteError('source');
-            this.recordUnverifiedRemote(remote);
             await this.git(['update-ref', PERSONAL_UPSTREAM_REF, remoteBase]);
             this.update({
               sync: this.deps.isBuilt(remote) ? 'synced' : 'retrieved',
@@ -1499,9 +1504,11 @@ export class PersonalRemoteController {
         `refs/cindy-make/backups/personal-remote-local/${decided.local}`,
         decided.local,
       ]);
+      // Recorded before the move: an interrupted run must never lose the provenance
+      // of content that is already on disk (over-marking is safe).
+      this.recordUnverifiedRemote(remote);
       await this.git(['reset', '--keep', remote]);
       if ((await this.readLocalTip()) !== remote) throw remoteError('source');
-      this.recordUnverifiedRemote(remote);
       await this.git(['update-ref', PERSONAL_UPSTREAM_REF, decided.base]);
       return decided;
     });
@@ -1562,9 +1569,10 @@ export class PersonalRemoteController {
             `refs/cindy-make/backups/personal-remote-local/${previous}`,
             previous,
           ]);
+          // Recorded before the move (over-marking after a failed move is safe).
+          if (remote) this.recordUnverifiedRemote(remote);
           await this.git(['reset', '--keep', decision.local]);
           if ((await this.readLocalTip()) !== decision.local) throw remoteError('source');
-          if (remote) this.recordUnverifiedRemote(remote);
           await this.git(['update-ref', PERSONAL_UPSTREAM_REF, base]);
           return true;
         });
