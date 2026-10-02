@@ -165,6 +165,10 @@ describe('prepareCindyMakeWorkspace', () => {
         COREPACK_NPM_TOKEN: 'corepack_secret-token',
         COREPACK_NPM_PASSWORD: 'corepack_secret-password',
         COREPACK_ENABLE: '0',
+        // Product secrets under real app prefixes are not generalized in either:
+        // `XDT_ELEVENLABS_API_KEY` is a working credential of the app's own.
+        XDT_ELEVENLABS_API_KEY: 'eleven_secret-key',
+        CINDY_CODEX_API_KEY: 'codex_secret-key',
       },
       pnpm,
     });

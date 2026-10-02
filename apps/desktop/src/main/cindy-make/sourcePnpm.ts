@@ -21,9 +21,9 @@ export function unverifiedPnpmEnv(environment: NodeJS.ProcessEnv): NodeJS.Proces
     ...Object.fromEntries(
       Object.entries(environment).filter(
         ([key]) =>
-          /^(?:path|systemroot|windir|comspec|tmp|temp|home|userprofile|lang|lc_.*|tz|corepack_.*|pnpm_manage_package_manager_versions|pythondontwritebytecode|pythonutf8|python|npm_config_(?:manage_package_manager_versions|managepackagemanagerversions|python)|cindy_[a-z_]*|xdt_[a-z_]*)$/i.test(
+          /^(?:path|systemroot|windir|comspec|tmp|temp|home|userprofile|lang|lc_.*|tz|corepack_.*|pnpm_manage_package_manager_versions|pythondontwritebytecode|pythonutf8|python|npm_config_(?:manage_package_manager_versions|managepackagemanagerversions|python))$/i.test(
             key,
-          ) && !/(?:token|password|auth|secret|credential)/i.test(key),
+          ) && !/(?:token|password|auth|secret|credential|key)/i.test(key),
       ),
     ),
     npm_config_userconfig: os.devNull,
