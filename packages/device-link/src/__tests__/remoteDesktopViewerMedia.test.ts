@@ -134,7 +134,9 @@ it("sends the tier with a legacy bitrate only to hosts that accept video setting
     sdp: "offer",
   });
   expect(request).toHaveBeenLastCalledWith(
-    expect.objectContaining({ settings: { ...settings, bitrate: 2_000_000 } }),
+    expect.objectContaining({
+      settings: { ...settings, fps: 30, bitrate: 2_000_000 },
+    }),
     expect.any(Function),
   );
 });

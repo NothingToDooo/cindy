@@ -88,7 +88,9 @@ describe("remote desktop wire boundary", () => {
       for (const quality of ["auto", "saver", "hd"] as const)
         expect(
           offer(remoteDesktopVideoSettingsWire({ fps: 60, quality, audio: true })),
-        ).toMatchObject({ settings: { fps: 60, quality, audio: true } });
+        ).toMatchObject({
+          settings: { fps: quality === "saver" ? 30 : 60, quality, audio: true },
+        });
       expect(
         offer({ fps: 30, quality: "hd", bitrate: 20_000_000, audio: false }),
       ).toEqual({
@@ -123,6 +125,13 @@ describe("remote desktop wire boundary", () => {
       expect(
         offer({ fps: 30, quality: "ultra", bitrate: 20_000_000, audio: false }),
       ).toMatchObject({ settings: { quality: "hd" } });
+      // Older hosts ignore `quality`, so Saver's 30 fps cap travels in `fps`.
+      expect(
+        remoteDesktopVideoSettingsWire({ fps: 60, quality: "saver", audio: false }),
+      ).toEqual({ fps: 30, quality: "saver", audio: false, bitrate: 2_000_000 });
+      expect(
+        remoteDesktopVideoSettingsWire({ fps: 60, quality: "auto", audio: false }).fps,
+      ).toBe(60);
     });
     it.each([
       { fps: 30, audio: false },
