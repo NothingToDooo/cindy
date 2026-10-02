@@ -909,8 +909,10 @@ export async function tryUploadPeerAttachment(
       for (let offset = 0; offset < size; offset += 1024 * 1024)
         hash.update(await read(offset, Math.min(1024 * 1024, size - offset)));
       const sha256 = hash.digest('hex');
-      // Cancelling during connection setup stops that setup (without a failure cooldown).
-      await receivePeerFile(peer, null, invoke, signal);
+      // Cancelling during connection setup stops that setup (without a failure cooldown) and does
+      // not wait for its signalling RPC; that late answer is ignored. Only this peer's connection
+      // being set up is torn down — other peers and their transfers are untouched.
+      await untilAborted(receivePeerFile(peer, null, invoke, signal), signal);
       checkActive();
       const out = outgoing.get(peer);
       if (!out?.remote || !canSendPeerAttachment(out, size)) return null;

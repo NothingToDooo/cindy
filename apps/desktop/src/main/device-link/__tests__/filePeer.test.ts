@@ -565,6 +565,60 @@ describe('authorized file peer source', () => {
     await vi.waitFor(() => expect(requests().at(-1)).toEqual({ op: 'cancel', ticket }));
     expect(requests().filter((r) => r.op === 'write')).toEqual([]);
   });
+  it('cancelling an upload during connection setup leaves another peer and its transfer untouched', async () => {
+    const source = path.join(directory, 'upload');
+    await writeFile(source, 'hello');
+    // Peer B: an established connection with a download in flight.
+    const invokeB = vi.fn(async (_peer: string, _channel: string, args: unknown[]) => {
+      const action = (args[0] as { action: string }).action;
+      return {
+        ok: true,
+        result:
+          action === 'caps'
+            ? { version: 1, streaming: true }
+            : action === 'open'
+              ? { ticket: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', size: 5, mimeType: 'text/plain' }
+              : { connection: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', sdp: 'v=0' },
+      };
+    });
+    const download = tryPeerFile('fault-radius-peer-b', 'xdt-file://test', invokeB);
+    await vi.waitFor(() => expect(mock.receiving).toBeDefined());
+    const inFlightB = mock.receiving!;
+    // Peer A: the upload is cancelled while its connection is still being set up (no answer).
+    const invokeA = vi.fn(async (_peer: string, _channel: string, args: unknown[]) =>
+      (args[0] as { action: string }).action === 'caps'
+        ? {
+            ok: true,
+            result: { version: 1, streaming: true, attachments: true, streamAttachments: true },
+          }
+        : new Promise<never>(() => {}),
+    );
+    const abort = new AbortController();
+    const upload = tryUploadPeerAttachment(
+      'fault-radius-peer-a',
+      source,
+      undefined,
+      invokeA as never,
+      undefined,
+      abort.signal,
+    );
+    await vi.waitFor(() =>
+      expect(invokeA.mock.calls.map((call) => (call[2][0] as { action: string }).action)).toContain(
+        'offer',
+      ),
+    );
+    abort.abort();
+    await expect(upload).rejects.toThrow('FILE_PEER_CANCELLED');
+    // B never notices: its in-flight transfer completes on the same connection.
+    await mock.handlers.get('file-peer:host:write')!({}, inFlightB.sink, 0, 'aGVsbG8=');
+    inFlightB.reply();
+    const result = await download;
+    expect(result?.size).toBe(5);
+    await result?.dispose();
+    expect(invokeB.mock.calls.map((call) => (call[2][0] as { action: string }).action)).not.toContain(
+      'close',
+    );
+  });
   it('drops a cancelled upload still queued behind another transfer on the same peer', async () => {
     const peer = 'queued-cancel-peer';
     const source = path.join(directory, 'upload');
