@@ -420,6 +420,7 @@ async function editsSurvive(
   if (hunks.some((line) => line.startsWith('Binary files ') || line.startsWith('GIT binary patch')))
     return false;
   const edits = new Map<string, { added: string[]; removed: string[]; lines: number }>();
+  const deleted: string[] = [];
   let file: string | undefined;
   let previous: string | undefined;
   for (const line of hunks) {
@@ -434,6 +435,7 @@ async function editsSurvive(
       file = name ?? previous;
       // A hunk that cannot be attributed to a file is never counted as kept.
       if (!file) return false;
+      if (target === '/dev/null') deleted.push(file);
       edits.set(file, { added: [], removed: [], lines: 0 });
       continue;
     }
@@ -489,6 +491,11 @@ async function editsSurvive(
     // did not apply the deletion and must not vouch for the change.
     if (removed.some((content) => lines.some((line) => within(content, line)))) return false;
   }
+  // A deleted path must remain absent: a resolution that restored the file with
+  // other content did not apply the deletion, whatever became of its lines.
+  for (const name of deleted)
+    if ((await git(['ls-tree', '--name-only', result, '--', name], cwd).catch(() => name)).trim())
+      return false;
   return true;
 }
 

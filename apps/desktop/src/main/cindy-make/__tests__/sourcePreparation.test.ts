@@ -176,6 +176,7 @@ describe('Source and dependency preparation', () => {
           CINDY_TEST_PNPM: path.join(root, source === 'system' ? 'system' : 'tools', 'pnpm'),
           CINDY_TEST_PYTHON: undefined,
           npm_config_userconfig: os.devNull,
+      npm_config_globalconfig: os.devNull,
         },
         [
           'fetch',

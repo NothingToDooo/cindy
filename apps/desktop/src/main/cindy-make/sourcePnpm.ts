@@ -27,6 +27,8 @@ export function unverifiedPnpmEnv(environment: NodeJS.ProcessEnv): NodeJS.Proces
       ),
     ),
     npm_config_userconfig: os.devNull,
+    // The global config may hold registry credentials of its own.
+    npm_config_globalconfig: os.devNull,
   };
 }
 

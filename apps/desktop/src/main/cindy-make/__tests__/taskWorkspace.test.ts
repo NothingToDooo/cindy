@@ -119,7 +119,11 @@ describe('prepareCindyMakeWorkspace', () => {
       // No `npm_config_*` setting of the content's own can turn the guards back on;
       // pnpm's write roots stay inside the worktree whatever `.npmrc` says; and the
       // user's npm credentials are never loaded for this install.
-      { PATH: '', npm_config_userconfig: os.devNull },
+      {
+        PATH: '',
+        npm_config_userconfig: os.devNull,
+        npm_config_globalconfig: os.devNull,
+      },
       [
         'install',
         '--frozen-lockfile',
@@ -172,6 +176,7 @@ describe('prepareCindyMakeWorkspace', () => {
       npm_config_manage_package_manager_versions: 'false',
       COREPACK_ENABLE: '0',
       npm_config_userconfig: os.devNull,
+      npm_config_globalconfig: os.devNull,
     });
   });
 

@@ -168,6 +168,34 @@ export function parsePersonalRemoteTrust(
   )
     throw new Error('unprovable content trust');
   const record = parsePersonalRemoteRecord(raw);
+  // A malformed trust field proves nothing either: the entries a lenient parse
+  // drops could be the very sources still on disk, so silence must never read as
+  // "no unverified content".
+  const input = value as Record<string, unknown>;
+  const rawTips = input.unverifiedRemote;
+  if (
+    rawTips !== undefined &&
+    (!Array.isArray(rawTips) ||
+      rawTips.length > MAX_UNVERIFIED_REMOTE ||
+      rawTips.some((tip) => typeof tip !== 'string' || !COMMIT.test(tip)))
+  )
+    throw new Error('unprovable content trust');
+  const rawRewrites = input.rewrites;
+  const wellFormedRewrite = (entry: unknown): boolean => {
+    const rewrite = entry as { from?: unknown; to?: unknown } | null;
+    return (
+      !!rewrite &&
+      typeof rewrite === 'object' &&
+      Array.isArray(rewrite.from) &&
+      rewrite.from.length > 0 &&
+      rewrite.from.length <= 2 &&
+      rewrite.from.every((commit) => typeof commit === 'string' && COMMIT.test(commit)) &&
+      typeof rewrite.to === 'string' &&
+      COMMIT.test(rewrite.to)
+    );
+  };
+  if (rawRewrites !== undefined && (!Array.isArray(rawRewrites) || !rawRewrites.every(wellFormedRewrite)))
+    throw new Error('unprovable content trust');
   return {
     ...(record.unverifiedRemote ? { unverifiedRemote: record.unverifiedRemote } : {}),
     ...(record.rewrites ? { rewrites: record.rewrites } : {}),
