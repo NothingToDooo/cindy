@@ -1452,9 +1452,11 @@ export class PersonalRemoteController {
             // provenance of content that is already on disk; over-marking after a
             // failed move is safe.
             this.recordUnverifiedRemote(remote);
+            // The base ref moves first: interrupted between the two writes, the
+            // conservative fact is the new base — never a new tip under a stale one.
+            await this.git(['update-ref', PERSONAL_UPSTREAM_REF, remoteBase]);
             await this.git(['reset', '--keep', remote]);
             if ((await this.readLocalTip()) !== remote) throw remoteError('source');
-            await this.git(['update-ref', PERSONAL_UPSTREAM_REF, remoteBase]);
             this.update({
               sync: this.deps.isBuilt(remote) ? 'synced' : 'retrieved',
               syncedAt: this.deps.now(),
@@ -1519,9 +1521,10 @@ export class PersonalRemoteController {
       // Recorded before the move: an interrupted run must never lose the provenance
       // of content that is already on disk (over-marking is safe).
       this.recordUnverifiedRemote(remote);
+      // The base ref moves first for the same reason (see `keepSide`).
+      await this.git(['update-ref', PERSONAL_UPSTREAM_REF, decided.base]);
       await this.git(['reset', '--keep', remote]);
       if ((await this.readLocalTip()) !== remote) throw remoteError('source');
-      await this.git(['update-ref', PERSONAL_UPSTREAM_REF, decided.base]);
       return decided;
     });
 
@@ -1583,9 +1586,9 @@ export class PersonalRemoteController {
           ]);
           // Recorded before the move (over-marking after a failed move is safe).
           if (remote) this.recordUnverifiedRemote(remote);
+          await this.git(['update-ref', PERSONAL_UPSTREAM_REF, base]);
           await this.git(['reset', '--keep', decision.local]);
           if ((await this.readLocalTip()) !== decision.local) throw remoteError('source');
-          await this.git(['update-ref', PERSONAL_UPSTREAM_REF, base]);
           return true;
         });
         if (moved) {

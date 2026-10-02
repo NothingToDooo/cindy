@@ -160,12 +160,14 @@ export function configurePersonalRemote(): void {
     // that lets the upload replace the fork's version without losing a change.
     const rewrite = next && adoptedRewrite(next);
     const lineage = rewrite ? `${next!.id}:${rewrite.to}` : '';
+    // A combine through the shared merge lifecycle adopts the fork tip; its content
+    // is unverified here until a generated version covers it. Recorded on every
+    // publish — long before any candidate is adopted and the source is reset — so
+    // an interrupted run cannot lose the provenance of what lands on disk.
+    if (next?.remote?.commit) controller?.recordUnverifiedRemote(next.remote.commit);
     if (rewrite && lineage !== recorded) {
       recorded = lineage;
       try {
-        // A combine through the shared merge lifecycle adopts the fork tip too;
-        // its content is not verified on this computer until a version covers it.
-        if (next!.remote?.commit) controller?.recordUnverifiedRemote(next!.remote.commit);
         controller?.recordRewrite(rewrite.from, rewrite.to);
       } catch (error) {
         log.warn('cindy-make personal remote: lineage not recorded', {

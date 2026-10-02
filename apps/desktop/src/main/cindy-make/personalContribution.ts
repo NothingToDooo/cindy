@@ -494,6 +494,7 @@ export class PersonalContribution {
           );
         };
         let branch = '';
+        let reconciled: ContributionRecord | undefined;
         this.assertScope(scope);
         if (updating) {
           branch = updating.branch;
@@ -536,6 +537,31 @@ export class PersonalContribution {
               // name is retried under a new one.
               if (attempt === 3 || classifyRemoteGitError(error) !== 'failed')
                 throw pushFailed(error);
+              // For the canonical name that can be this client's own earlier push
+              // whose pull request response was lost: reconcile that pull request
+              // instead of publishing a second one.
+              if (attempt === 0) {
+                const found = await this.openPullFor(base, identity);
+                if (found) {
+                  const tip = (
+                    await this.git(
+                      ['ls-remote', '--refs', PERSONAL_REMOTE_NAME, `refs/heads/${base}`],
+                      { auth },
+                    ).catch((lookup: unknown) => {
+                      throw pushFailed(lookup);
+                    })
+                  )
+                    .split(/\s/)[0]
+                    ?.trim();
+                  if (!tip || !HASH.test(tip)) throw pushFailed(error);
+                  await push(base, tip).catch((retry: unknown) => {
+                    throw pushFailed(retry);
+                  });
+                  branch = base;
+                  reconciled = found;
+                  break;
+                }
+              }
             }
           }
           if (!branch) throw fail('failed');
@@ -548,7 +574,7 @@ export class PersonalContribution {
           branch,
           title,
           body: input.body,
-          existing: updating,
+          existing: reconciled ?? updating,
         });
         this.assertScope(scope);
         const record: ContributionRecord = {
@@ -566,6 +592,51 @@ export class PersonalContribution {
         await rm(temporary, { recursive: true, force: true });
       }
     });
+  }
+
+  /** The open pull request an earlier attempt already opened for this branch. */
+  private async openPullFor(
+    branch: string,
+    identity: GithubIdentity,
+  ): Promise<ContributionRecord | undefined> {
+    try {
+      const response = await this.deps.fetch(
+        `${API}/repos/${OFFICIAL_GITHUB_REPOSITORY}/pulls?state=open&head=${encodeURIComponent(
+          `${identity.login}:${branch}`,
+        )}`,
+        {
+          method: 'GET',
+          headers: githubHeaders(identity.token),
+          redirect: 'error',
+          signal: AbortSignal.timeout(15_000),
+        },
+      );
+      if (!response.ok) {
+        await response.body?.cancel();
+        return undefined;
+      }
+      const listed = (await response.json().catch(() => [])) as Array<{
+        number?: unknown;
+        html_url?: unknown;
+      }>;
+      const first = listed[0];
+      if (
+        !Number.isSafeInteger(first?.number) ||
+        typeof first?.html_url !== 'string' ||
+        !first.html_url.startsWith(`https://github.com/${OFFICIAL_GITHUB_REPOSITORY}/pull/`)
+      )
+        return undefined;
+      return {
+        runId: '',
+        number: first.number as number,
+        url: first.html_url,
+        branch,
+        commit: '',
+        submittedAt: this.deps.now(),
+      };
+    } catch {
+      return undefined;
+    }
   }
 
   private async openPull(input: {

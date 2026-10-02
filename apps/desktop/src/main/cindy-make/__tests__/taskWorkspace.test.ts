@@ -84,7 +84,8 @@ describe('prepareCindyMakeWorkspace', () => {
       { ignoreScripts: true },
     );
     expect(pnpm).toHaveBeenCalledWith(
-      // No `npm_config_*` setting of the content's own can turn the guards back on.
+      // No `npm_config_*` setting of the content's own can turn the guards back on,
+      // and pnpm's write roots stay inside the worktree whatever `.npmrc` says.
       { PATH: '' },
       [
         'install',
@@ -93,6 +94,9 @@ describe('prepareCindyMakeWorkspace', () => {
         '--prod=false',
         '--ignore-scripts',
         '--ignore-pnpmfile',
+        '--config.modules-dir=node_modules',
+        '--config.virtual-store-dir=node_modules/.pnpm',
+        '--config.store-dir=node_modules/.cindy-make-store',
       ],
       worktreePath,
       expect.anything(),

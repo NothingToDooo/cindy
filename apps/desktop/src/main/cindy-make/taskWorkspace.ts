@@ -185,13 +185,18 @@ export async function installCindyMakeWorktree(
   }
   await pnpm(
     options.ignoreScripts
-      ? // Unverified synced content runs no install-time code: no lifecycle scripts
-        // and no `.pnpmfile.cjs` hooks (which `--ignore-scripts` alone would still
-        // execute), with `npm_config_*` out of the environment so no setting of
-        // theirs can turn either back on.
+      ? // Unverified synced content runs no install-time code and pnpm writes only
+        // inside the worktree: no lifecycle scripts, no `.pnpmfile.cjs` hooks (which
+        // `--ignore-scripts` alone would still execute), the write roots pinned over
+        // any `.npmrc` of the content's own, and `npm_config_*` out of the environment
+        // except the toolchain's own settings.
         Object.fromEntries(
           Object.entries(deps.processEnvironment).filter(
-            ([key]) => !/^npm_config_/i.test(key),
+            ([key]) =>
+              !/^npm_config_/i.test(key) ||
+              /^npm_config_(manage_package_manager_versions|managePackageManagerVersions|python)$/i.test(
+                key,
+              ),
           ),
         )
       : deps.processEnvironment,
@@ -200,7 +205,15 @@ export async function installCindyMakeWorktree(
       '--frozen-lockfile',
       '--prefer-offline',
       '--prod=false',
-      ...(options.ignoreScripts ? ['--ignore-scripts', '--ignore-pnpmfile'] : []),
+      ...(options.ignoreScripts
+        ? [
+            '--ignore-scripts',
+            '--ignore-pnpmfile',
+            '--config.modules-dir=node_modules',
+            '--config.virtual-store-dir=node_modules/.pnpm',
+            '--config.store-dir=node_modules/.cindy-make-store',
+          ]
+        : []),
     ],
     workspace.path,
     signal,

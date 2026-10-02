@@ -494,12 +494,21 @@ async function rebaseKeptChange(
 }
 
 /** The edits of a commit without context or line numbers: unchanged when only nearby lines moved. */
-async function bareEdits(git: MergeGit, cwd: string, commit: string): Promise<string | undefined> {  const diff = await git(
+async function bareEdits(git: MergeGit, cwd: string, commit: string): Promise<string | undefined> {
+  const diff = await git(
     ['show', '-U0', '--no-color', '--no-ext-diff', '--no-renames', '--format=', commit],
     cwd,
   );
-  // Output at the capture limit may be cut: never compare it.
-  if (diff.length >= 60 * 1024) return undefined;
+  // Output at the capture limit may be cut: never compare it. Two binary diffs also
+  // look identical ("Binary files … differ" after the `index` lines are dropped), so
+  // they are never comparable here: only the strict checks may vouch for them.
+  if (
+    diff.length >= 60 * 1024 ||
+    diff
+      .split(/\r?\n/)
+      .some((line) => line.startsWith('Binary files ') || line.startsWith('GIT binary patch'))
+  )
+    return undefined;
   return diff
     .split(/\r?\n/)
     .filter((line) => !line.startsWith('index '))
