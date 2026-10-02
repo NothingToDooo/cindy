@@ -2,6 +2,7 @@ import { lstat, readFile, readdir, readlink, realpath } from 'node:fs/promises';
 import path from 'node:path';
 
 import yaml from 'js-yaml';
+import { list as tarList, type ReadEntry } from 'tar';
 
 /**
  * Containment for dependency installation of content nobody has verified yet
@@ -27,7 +28,9 @@ import yaml from 'js-yaml';
  * - every dependency name and every setting that generates dependency specs
  *   (`pnpm.overrides` and friends, even honored by a frozen lockfile) keeps
  *   inside the worktree: pnpm joins each installed name under its write roots,
- *   so a traversal name escapes no matter where the write roots point;
+ *   so a traversal name escapes no matter where the write roots point. That
+ *   includes the transitive names of the frozen lockfile and of the archives a
+ *   `file:` dependency installs from — no manifest check sees into those.
  * - after the install, no link pnpm created may resolve outside the worktree
  *   (`assertPnpmInstallLinksContained`) — the pre-install scan cannot see into
  *   the write roots the install is about to populate.
@@ -40,6 +43,8 @@ import yaml from 'js-yaml';
 const MAX_SCANNED_ENTRIES = 200_000;
 const MAX_CONFIG_BYTES = 8 * 1024 * 1024;
 const MAX_DEPTH = 128;
+const MAX_ARCHIVES = 512;
+const MAX_ARCHIVE_ENTRIES = 2048;
 
 function refuse(message: string): Error {
   return Object.assign(new Error(message), { code: 'gitFailed' });
@@ -183,6 +188,7 @@ function checkSettings(
   settings: Record<string, unknown>,
   file: string,
   base: string,
+  opts: SpecOptions = {},
 ): void {
   for (const [key, value] of Object.entries(settings)) {
     if (refusedSetting(key)) throw refuse(`pnpm config redirects writes: ${key} in ${where}`);
@@ -196,9 +202,113 @@ function checkSettings(
     // lockfile honors `overrides` values verbatim, so `link:../private` links
     // the outside directory in even with every direct dependency checked.
     if (key === 'overrides' || key === 'resolutions' || key === 'patchedDependencies')
-      checkSpecMap(file, base, `${where}#${key}`, value, 'pattern');
+      checkSpecMap(file, base, `${where}#${key}`, value, 'pattern', 0, opts);
     else if (key === 'catalog' || key === 'catalogs' || key === 'packageExtensions')
-      checkSpecMap(file, base, `${where}#${key}`, value, 'name');
+      checkSpecMap(file, base, `${where}#${key}`, value, 'name', 0, opts);
+  }
+}
+
+/** The lockfile fields whose keys pnpm joins into write-root paths. */
+const LOCKFILE_DEPENDENCY_FIELDS = new Map<string, 'name' | 'pattern'>([
+  ['dependencies', 'name'],
+  ['devDependencies', 'name'],
+  ['optionalDependencies', 'name'],
+  ['peerDependencies', 'name'],
+  ['specifiers', 'name'],
+  ['overrides', 'pattern'],
+  ['resolutions', 'pattern'],
+  ['patchedDependencies', 'pattern'],
+  ['catalog', 'name'],
+  ['catalogs', 'name'],
+  ['packageExtensions', 'name'],
+]);
+
+/** Lockfile sections keyed by resolved package identifiers. */
+const LOCKFILE_ID_SECTIONS = new Set(['packages', 'snapshots']);
+
+/** A package identifier whose `..` segments could name the store directory. */
+function refusedLockfileId(id: string): boolean {
+  if (!id || id.includes('\0')) return true;
+  // `link+` identifiers name a workspace path pnpm symlinks to (checked through
+  // the spec); every other identifier materializes a store directory of its own.
+  return !id.startsWith('link+') && /(^|[\\/:])\.\.([\\/:]|$)/.test(id);
+}
+
+/**
+ * The frozen lockfile carries the whole transitive graph pnpm installs: its
+ * dependency names — including those of package metadata no manifest check
+ * ever saw — are joined under the write roots exactly like manifest names.
+ * Values may legitimately resolve against any importer's directory or the
+ * store, so a path spec only escapes when it leaves the worktree from all of
+ * them; `file:` values name the archives checked next.
+ */
+function checkLockfile(file: string, base: string, text: string, archives: Set<string>): void {
+  let lockfile: unknown;
+  try {
+    lockfile = yaml.load(text);
+  } catch {
+    throw refuse(`unparseable ${path.basename(file)}`);
+  }
+  if (lockfile === null || lockfile === undefined) return;
+  if (typeof lockfile !== 'object' || Array.isArray(lockfile))
+    throw refuse(`unrecognized ${path.basename(file)}`);
+  const root = path.dirname(file);
+  const dirs = [root, path.join(base, 'node_modules', '.pnpm')];
+  const importers = (lockfile as Record<string, unknown>).importers;
+  if (importers && typeof importers === 'object' && !Array.isArray(importers)) {
+    for (const name of Object.keys(importers)) {
+      if (refusedWorkspacePattern(name))
+        throw refuse(`pnpm lockfile importer leaves the worktree: ${name}`);
+      dirs.push(path.resolve(root, name));
+    }
+  }
+  checkLockfileNode(file, base, dirs, path.basename(file), lockfile, 0, archives);
+}
+
+function checkLockfileNode(
+  file: string,
+  base: string,
+  dirs: string[],
+  where: string,
+  node: unknown,
+  depth: number,
+  archives: Set<string>,
+): void {
+  if (depth > 16) throw refuse(`pnpm lockfile nests too deeply: ${where}`);
+  if (Array.isArray(node)) {
+    for (const nested of node)
+      checkLockfileNode(file, base, dirs, where, nested, depth + 1, archives);
+    return;
+  }
+  if (typeof node !== 'object' || node === null) return;
+  for (const [key, nested] of Object.entries(node as Record<string, unknown>)) {
+    const fields = LOCKFILE_DEPENDENCY_FIELDS.get(key);
+    if (fields) {
+      if (typeof nested !== 'object' || nested === null || Array.isArray(nested)) continue;
+      for (const [name, spec] of Object.entries(nested as Record<string, unknown>)) {
+        if (fields === 'name' ? refusedDependencyName(name) : refusedPathLikeName(name))
+          throw refuse(`pnpm dependency name leaves the worktree: ${name} in ${where}`);
+        if (typeof spec !== 'string') {
+          checkSpecMap(file, base, `${where}#${key}#${name}`, spec, fields, depth + 2, {
+            archives,
+            dirs,
+          });
+          continue;
+        }
+        // The spec resolves against the dependent's own directory; it escapes
+        // only when no directory pnpm may join it against stays in the tree.
+        checkDependencySpec(file, base, name, spec, { archives, dirs });
+      }
+      continue;
+    }
+    if (LOCKFILE_ID_SECTIONS.has(key) && typeof nested === 'object' && nested !== null) {
+      // Identifiers name the directories the store materializes packages into.
+      if (Array.isArray(nested)) throw refuse(`unrecognized ${where}`);
+      for (const id of Object.keys(nested as Record<string, unknown>))
+        if (refusedLockfileId(id))
+          throw refuse(`pnpm package identifier leaves the worktree: ${id}`);
+    }
+    checkLockfileNode(file, base, dirs, `${where}#${key}`, nested, depth + 1, archives);
   }
 }
 
@@ -216,28 +326,24 @@ function checkSpecMap(
   value: unknown,
   keys: 'name' | 'pattern',
   depth = 0,
+  opts: SpecOptions = {},
 ): void {
   if (depth > 16) throw refuse(`pnpm dependency config nests too deeply: ${where}`);
-  if (typeof value === 'string') return checkDependencySpec(file, base, where, value);
+  if (typeof value === 'string') return checkDependencySpec(file, base, where, value, opts);
   if (Array.isArray(value)) {
-    for (const nested of value) checkSpecMap(file, base, where, nested, keys, depth + 1);
+    for (const nested of value) checkSpecMap(file, base, where, nested, keys, depth + 1, opts);
     return;
   }
   if (typeof value !== 'object' || value === null) return;
   for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
     if (keys === 'name' ? refusedDependencyName(key) : refusedPathLikeName(key))
       throw refuse(`pnpm dependency name leaves the worktree: ${key} in ${where}`);
-    checkSpecMap(file, base, `${where}#${key}`, nested, keys, depth + 1);
+    checkSpecMap(file, base, `${where}#${key}`, nested, keys, depth + 1, opts);
   }
 }
 
-/**
- * A path dependency (`link:`, `file:`, a relative or absolute path) makes pnpm
- * symlink or copy whatever it names — including outside the worktree, where a
- * collaborator can point at credentials or user data. Unverified content may
- * depend on registry packages or on paths that stay inside the tree only.
- */
-function checkDependencySpec(file: string, base: string, name: string, spec: string): void {
+/** The path a dependency spec names, or undefined for registry specs. */
+function specPathTarget(spec: string): string | undefined {
   const value = spec.trim();
   const linked = /^(?:link|file):/i.exec(value);
   const target = linked ? value.slice(linked[0].length) : value;
@@ -250,17 +356,49 @@ function checkDependencySpec(file: string, base: string, name: string, spec: str
     target.startsWith('~') ||
     target.includes('\\') ||
     /(^|\/)\.\.(\/|$)/.test(target);
-  if (!namedPath) return;
-  const resolved = path.resolve(path.dirname(file), target);
-  const relative = path.relative(base, resolved);
-  if (relative.startsWith('..') || path.isAbsolute(relative))
-    throw refuse(`pnpm dependency leaves the worktree: ${name}`);
+  return namedPath ? target : undefined;
+}
+
+/**
+ * A path dependency (`link:`, `file:`, a relative or absolute path) makes pnpm
+ * symlink or copy whatever it names — including outside the worktree, where a
+ * collaborator can point at credentials or user data. Unverified content may
+ * depend on registry packages or on paths that stay inside the tree only.
+ * `file:` targets are collected for the archive check below: pnpm reads the
+ * package metadata out of them, never out of a manifest we see.
+ */
+/** Where a spec may resolve against: lockfile specs vary by the dependent's directory. */
+interface SpecOptions {
+  archives?: Set<string>;
+  dirs?: string[];
+}
+
+function checkDependencySpec(
+  file: string,
+  base: string,
+  name: string,
+  spec: string,
+  opts: SpecOptions = {},
+): void {
+  const target = specPathTarget(spec);
+  if (target === undefined) return;
+  const dirs = opts.dirs?.length ? opts.dirs : [path.dirname(file)];
+  const inside = dirs
+    .map((dir) => path.resolve(dir, target))
+    .filter((resolved) => {
+      const relative = path.relative(base, resolved);
+      return !relative.startsWith('..') && !path.isAbsolute(relative);
+    });
+  if (!inside.length) throw refuse(`pnpm dependency leaves the worktree: ${name}`);
+  if (opts.archives && /^file:/i.test(spec.trim()))
+    for (const resolved of inside) opts.archives.add(resolved);
 }
 
 function checkDependencySpecs(
   file: string,
   base: string,
   manifest: Record<string, unknown>,
+  opts: SpecOptions = {},
 ): void {
   for (const field of ['dependencies', 'devDependencies', 'optionalDependencies']) {
     const specs = manifest[field];
@@ -271,12 +409,95 @@ function checkDependencySpecs(
       // the worktree), so names are checked before any spec.
       if (refusedDependencyName(name))
         throw refuse(`pnpm dependency name leaves the worktree: ${name}`);
-      if (typeof spec === 'string') checkDependencySpec(file, base, name, spec);
+      if (typeof spec === 'string') checkDependencySpec(file, base, name, spec, opts);
     }
   }
 }
 
-function checkWorkspaceYaml(file: string, base: string, text: string): void {
+/**
+ * The manifest of a package pnpm installs out of an archive: no manifest check
+ * sees into `file:` tarballs, yet pnpm joins the names inside under the write
+ * roots. Names must be package names, and specs may not name paths at all — a
+ * path resolves against the store location pnpm extracts to, not the tree.
+ */
+function checkArchiveManifest(where: string, text: string): void {
+  let manifest: unknown;
+  try {
+    manifest = JSON.parse(text.replace(/^\uFEFF/, ''));
+  } catch {
+    throw refuse(`unparseable ${where}`);
+  }
+  if (typeof manifest !== 'object' || manifest === null || Array.isArray(manifest))
+    throw refuse(`unrecognized ${where}`);
+  const record = manifest as Record<string, unknown>;
+  const checkMap = (specs: unknown, keys: 'name' | 'pattern', depth = 0): void => {
+    if (depth > 16) throw refuse(`archive manifest nests too deeply: ${where}`);
+    if (Array.isArray(specs)) {
+      for (const nested of specs) checkMap(nested, keys, depth + 1);
+      return;
+    }
+    if (typeof specs !== 'object' || specs === null) return;
+    for (const [name, spec] of Object.entries(specs as Record<string, unknown>)) {
+      if (keys === 'name' ? refusedDependencyName(name) : refusedPathLikeName(name))
+        throw refuse(`pnpm dependency name leaves the worktree: ${name} in ${where}`);
+      if (typeof spec === 'string') {
+        if (specPathTarget(spec) !== undefined)
+          throw refuse(`pnpm dependency leaves the worktree: ${name} in ${where}`);
+      } else checkMap(spec, keys, depth + 1);
+    }
+  };
+  for (const field of ['dependencies', 'devDependencies', 'optionalDependencies'])
+    checkMap(record[field], 'name');
+  for (const key of ['overrides', 'resolutions'])
+    if (key in record) checkMap(record[key], 'pattern');
+  const pnpm = record.pnpm;
+  if (typeof pnpm === 'object' && pnpm !== null && !Array.isArray(pnpm)) {
+    for (const [key, value] of Object.entries(pnpm as Record<string, unknown>)) {
+      if (key === 'overrides' || key === 'resolutions' || key === 'patchedDependencies')
+        checkMap(value, 'pattern');
+      else if (key === 'catalog' || key === 'catalogs' || key === 'packageExtensions')
+        checkMap(value, 'name');
+    }
+  }
+}
+
+/** `package.json` out of an archive pnpm installs from, without extracting it. */
+async function readArchiveManifest(file: string): Promise<string | undefined> {
+  let manifest: string | undefined;
+  let entries = 0;
+  let overflow = false;
+  await tarList({
+    file,
+    filter: (entryPath: string, entry?: { size?: number }) => {
+      if (++entries > MAX_ARCHIVE_ENTRIES) throw refuse('archive holds too many entries');
+      if (entryPath !== 'package/package.json') return false;
+      if ((entry?.size ?? 0) > MAX_CONFIG_BYTES) throw refuse('archive manifest too large');
+      return true;
+    },
+    onentry: (entry: ReadEntry) => {
+      const chunks: Buffer[] = [];
+      let size = 0;
+      entry.on('data', (chunk: Buffer | string) => {
+        const buffer = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+        size += buffer.length;
+        if (size > MAX_CONFIG_BYTES) overflow = true;
+        else chunks.push(buffer);
+      });
+      entry.on('end', () => {
+        if (manifest === undefined && !overflow) manifest = Buffer.concat(chunks).toString('utf8');
+      });
+    },
+  });
+  if (overflow) throw refuse('archive manifest too large');
+  return manifest;
+}
+
+function checkWorkspaceYaml(
+  file: string,
+  base: string,
+  text: string,
+  opts: SpecOptions = {},
+): void {
   let settings: unknown;
   try {
     settings = yaml.load(text);
@@ -287,10 +508,10 @@ function checkWorkspaceYaml(file: string, base: string, text: string): void {
   if (settings === null || settings === undefined) return;
   if (typeof settings !== 'object' || Array.isArray(settings))
     throw refuse(`unrecognized ${path.basename(file)}`);
-  checkSettings(path.basename(file), settings as Record<string, unknown>, file, base);
+  checkSettings(path.basename(file), settings as Record<string, unknown>, file, base, opts);
 }
 
-function checkPackageJson(file: string, base: string, text: string): void {
+function checkPackageJson(file: string, base: string, text: string, opts: SpecOptions = {}): void {
   let manifest: unknown;
   try {
     // JSON.parse is exactly what pnpm reads, modulo a byte-order mark.
@@ -303,13 +524,13 @@ function checkPackageJson(file: string, base: string, text: string): void {
   const record = manifest as Record<string, unknown>;
   const pnpm = record.pnpm;
   if (typeof pnpm === 'object' && pnpm !== null && !Array.isArray(pnpm))
-    checkSettings(`${path.basename(file)}#pnpm`, pnpm as Record<string, unknown>, file, base);
-  checkDependencySpecs(file, base, record);
+    checkSettings(`${path.basename(file)}#pnpm`, pnpm as Record<string, unknown>, file, base, opts);
+  checkDependencySpecs(file, base, record, opts);
   // npm-style top-level `overrides` and yarn-style `resolutions` generate
   // dependency specs just like `pnpm.overrides` does.
   for (const key of ['overrides', 'resolutions'])
     if (key in record)
-      checkSpecMap(file, base, `${path.basename(file)}#${key}`, record[key], 'pattern');
+      checkSpecMap(file, base, `${path.basename(file)}#${key}`, record[key], 'pattern', 0, opts);
   if ('workspaces' in record) {
     const value = record.workspaces;
     const patterns =
@@ -398,6 +619,7 @@ export async function assertPnpmInstallContained(root: string): Promise<void> {
     throw refuse('unreadable worktree');
   }
   const packageDirectories: string[] = [base];
+  const archives = new Set<string>();
   let scanned = 0;
   const walk = async (directory: string, depth: number): Promise<void> => {
     if (depth > MAX_DEPTH) throw refuse('worktree nests too deeply');
@@ -428,16 +650,40 @@ export async function assertPnpmInstallContained(root: string): Promise<void> {
       }
       if (entry.name === '.npmrc') checkIni(full, await readConfig(full));
       else if (entry.name === 'pnpm-workspace.yaml' || entry.name === 'pnpm-workspace.yml')
-        checkWorkspaceYaml(full, base, await readConfig(full));
+        checkWorkspaceYaml(full, base, await readConfig(full), { archives });
+      else if (entry.name === 'pnpm-lock.yaml' || entry.name === 'pnpm-lock.yml')
+        checkLockfile(full, base, await readConfig(full), archives);
       else if (entry.name === 'package.json') {
         packageDirectories.push(directory);
-        checkPackageJson(full, base, await readConfig(full));
+        checkPackageJson(full, base, await readConfig(full), { archives });
       }
     }
   };
   await walk(base, 0);
   for (const directory of packageDirectories)
     await assertWriteRootDescends(base, rootReal, directory);
+  // A `file:` dependency installs as a package out of an archive: the names pnpm
+  // joins under the write roots come from the manifest inside it, which no walk
+  // of the tree can see. Every referenced archive is checked too.
+  let scannedArchives = 0;
+  for (const archive of archives) {
+    if (++scannedArchives > MAX_ARCHIVES) throw refuse('worktree holds too many archives');
+    const entry = await lstat(archive).catch((error) => {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+      throw refuse('unreadable archive');
+    });
+    // A missing archive fails the install on its own; a directory dependency's
+    // manifest was already walked above.
+    if (!entry || entry.isDirectory()) continue;
+    if (entry.isSymbolicLink() || !entry.isFile())
+      throw refuse(`unrecognized archive: ${path.relative(base, archive)}`);
+    const manifest = await readArchiveManifest(archive).catch((error) => {
+      if ((error as { code?: string }).code === 'gitFailed') throw error;
+      throw refuse(`unreadable archive: ${path.relative(base, archive)}`);
+    });
+    if (manifest !== undefined)
+      checkArchiveManifest(`${path.relative(base, archive)}#package.json`, manifest);
+  }
 }
 
 /**

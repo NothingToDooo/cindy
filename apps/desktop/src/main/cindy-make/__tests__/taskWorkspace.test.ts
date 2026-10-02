@@ -1,6 +1,8 @@
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { create as tarCreate } from 'tar';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -334,6 +336,113 @@ describe('prepareCindyMakeWorkspace', () => {
       installUnverified('run-20', worktreePath, { processEnvironment: {}, pnpm }),
     ).rejects.toMatchObject({ code: 'gitFailed' });
     expect(pnpm).toHaveBeenCalledOnce();
+  });
+
+  it('refuses unverified content whose lockfile dependency names traverse out', async () => {
+    const pnpm = vi.fn(async () => undefined);
+    const worktreePath = await withManifest('run-22');
+    // The frozen lockfile resolves the whole transitive graph pnpm installs:
+    // every dependency name in it is joined under the write roots, whatever
+    // manifest check saw the package metadata it came from.
+    await writeFile(
+      path.join(worktreePath, 'pnpm-lock.yaml'),
+      [
+        "lockfileVersion: '9.0'",
+        'importers:',
+        '  .:',
+        '    dependencies:',
+        '      evil:',
+        '        specifier: file:./evil.tgz',
+        '        version: file:evil.tgz',
+        'snapshots:',
+        "  'file:evil.tgz':",
+        '    dependencies:',
+        "      '../../../../../../autostart': 1.0.0",
+        '',
+      ].join('\n'),
+    );
+    await expect(
+      installUnverified('run-22', worktreePath, { processEnvironment: {}, pnpm }),
+    ).rejects.toMatchObject({ code: 'gitFailed' });
+    expect(pnpm).not.toHaveBeenCalled();
+  });
+
+  it('refuses unverified content whose file dependency archive names traverse out', async () => {
+    const pnpm = vi.fn(async () => undefined);
+    const worktreePath = await withManifest('run-23');
+    // pnpm installs a `file:` dependency as a package out of the archive: the
+    // names inside its manifest are joined under the write roots like any other,
+    // and no walk of the tree sees into the archive.
+    const stage = await mkdtemp(path.join(os.tmpdir(), 'cindy-make-archive-'));
+    try {
+      await mkdir(path.join(stage, 'package'), { recursive: true });
+      await writeFile(
+        path.join(stage, 'package', 'package.json'),
+        JSON.stringify({
+          name: 'evil',
+          version: '1.0.0',
+          dependencies: { '../../../../../autostart': 'link:./payload' },
+        }),
+      );
+      await tarCreate(
+        { gzip: true, file: path.join(worktreePath, 'evil.tgz'), cwd: stage },
+        ['package'],
+      );
+      await writeFile(
+        path.join(worktreePath, 'package.json'),
+        JSON.stringify({
+          name: 'app',
+          version: '1.0.0',
+          dependencies: { evil: 'file:./evil.tgz' },
+        }),
+      );
+      await expect(
+        installUnverified('run-23', worktreePath, { processEnvironment: {}, pnpm }),
+      ).rejects.toMatchObject({ code: 'gitFailed' });
+      expect(pnpm).not.toHaveBeenCalled();
+    } finally {
+      await rm(stage, { recursive: true, force: true });
+    }
+  });
+
+  it('installs unverified content whose lockfile and archive metadata are benign', async () => {
+    const pnpm = vi.fn(async () => undefined);
+    const worktreePath = await withManifest('run-25');
+    // The monorepo's own frozen lockfile keeps installing: every real importer
+    // key, workspace link, override pattern and patched dependency must pass.
+    const lockfile = await readFile(
+      fileURLToPath(new URL('../../../../../../pnpm-lock.yaml', import.meta.url)),
+      'utf8',
+    ).catch(() => undefined);
+    if (lockfile) await writeFile(path.join(worktreePath, 'pnpm-lock.yaml'), lockfile);
+    const stage = await mkdtemp(path.join(os.tmpdir(), 'cindy-make-archive-'));
+    try {
+      await mkdir(path.join(stage, 'package'), { recursive: true });
+      await writeFile(
+        path.join(stage, 'package', 'package.json'),
+        JSON.stringify({
+          name: 'good',
+          version: '1.0.0',
+          dependencies: { innocuous: '1.0.0' },
+        }),
+      );
+      await tarCreate(
+        { gzip: true, file: path.join(worktreePath, 'good.tgz'), cwd: stage },
+        ['package'],
+      );
+      await writeFile(
+        path.join(worktreePath, 'package.json'),
+        JSON.stringify({
+          name: 'app',
+          version: '1.0.0',
+          dependencies: { good: 'file:./good.tgz' },
+        }),
+      );
+      await installUnverified('run-25', worktreePath, { processEnvironment: {}, pnpm });
+      expect(pnpm).toHaveBeenCalledOnce();
+    } finally {
+      await rm(stage, { recursive: true, force: true });
+    }
   });
 
   it('installs unverified content whose overrides and links stay in the worktree', async () => {
