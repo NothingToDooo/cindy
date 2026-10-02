@@ -373,7 +373,8 @@ final class RemoteDesktopVideoView: ExpoView, AVPictureInPictureControllerDelega
       presentationDisplay.enqueue(presentationSample(buffer, inline: sample))
       if liveFrame { playbackReady = true; renderedFrames += 1 }
     }
-    // The second renderer shares the sample buffer; no second decode or copy.
+    // The inline renderer shares the decoded sample buffer; no second decode or
+    // copy. Only a zoomed system projection copies its visible region.
     // Only the system projection consumes frames while inline is not visible.
     let needsInline = inlineVisible && UIApplication.shared.applicationState == .active
     var renderedInline = false
