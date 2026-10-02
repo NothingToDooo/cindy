@@ -176,10 +176,13 @@ function pruneSiteIndexedDb(indexedDbDir: string): void {
  * agent browser's own extension state.
  */
 export function pruneNonAuthProfileState(destProfileDir: string): void {
-  const keep = new Set<string>([
-    ...DISCARDABLE_PROFILE_CACHE_NAMES,
-    ...AGENT_EXTENSION_STATE_NAMES,
-  ]);
+  const keep = new Set<string>(DISCARDABLE_PROFILE_CACHE_NAMES);
+  // SQLite stores (e.g. `Extension Cookies`) stay together with their WAL /
+  // hot journal; dropping a sidecar can lose committed rows or corrupt the db.
+  for (const name of AGENT_EXTENSION_STATE_NAMES) {
+    keep.add(name);
+    for (const suffix of SQLITE_SIDECARS) keep.add(name + suffix);
+  }
   for (const relative of SNAPSHOT_PROFILE_RELATIVE_PATHS) {
     keep.add(relative.split(/[/\\]/)[0] ?? relative);
   }

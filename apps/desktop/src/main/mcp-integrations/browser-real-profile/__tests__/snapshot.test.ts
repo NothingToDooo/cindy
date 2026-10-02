@@ -266,8 +266,20 @@ describe('snapshotRealProfile', () => {
     fs.mkdirSync(path.join(destDefault, 'IndexedDB', 'https_example.com_0.indexeddb.leveldb'), {
       recursive: true,
     });
+    const extensionCookieFiles = [
+      'Extension Cookies',
+      'Extension Cookies-wal',
+      'Extension Cookies-journal',
+    ];
+    for (const name of extensionCookieFiles) {
+      fs.writeFileSync(path.join(destDefault, name), name);
+    }
 
     await snapshotRealProfile({ source, destDir, platform: 'darwin' });
+
+    for (const name of extensionCookieFiles) {
+      expect(fs.readFileSync(path.join(destDefault, name), 'utf8'), name).toBe(name);
+    }
 
     expect(
       fs.existsSync(path.join(destDefault, 'Extensions', extensionId, '8.0.0_0', 'manifest.json')),
