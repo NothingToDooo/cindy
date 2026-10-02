@@ -68,6 +68,26 @@ describe("remote desktop resolution memory", () => {
     expect(await readRememberedResolution("computer", "display")).toBeNull();
   });
 
+  it("keeps the app window of a fit and drops an invalid one", async () => {
+    const fit = {
+      kind: "fit" as const,
+      width: 658,
+      height: 1280,
+      viewport: { width: 390, height: 760 },
+    };
+    const window = { width: 390, height: 844 };
+    await rememberResolution("computer", "display", { ...fit, window });
+    expect(await readRememberedResolution("computer", "display")).toEqual({
+      ...fit,
+      window,
+    });
+    await AsyncStorage.setItem(
+      key,
+      JSON.stringify({ ...fit, window: { width: "390", height: 844 } }),
+    );
+    expect(await readRememberedResolution("computer", "display")).toEqual(fit);
+  });
+
   it("ignores malformed stored values", async () => {
     await AsyncStorage.setItem(
       key,

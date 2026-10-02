@@ -2360,6 +2360,49 @@ describe("remote desktop controls", () => {
     expect(measured()).toEqual([]);
   });
 
+  it.each([
+    ["a different window in the same orientation", { width: 600, height: 844 }],
+    ["no recorded window", undefined],
+  ])(
+    "measures after the first frame instead of reusing a fit for %s",
+    async (_name, window) => {
+      await AsyncStorage.setItem(
+        "cindy.mobile.remote-desktop.resolution.v1.computer.display",
+        JSON.stringify({
+          kind: "fit",
+          width: 658,
+          height: 1280,
+          viewport: { width: 390, height: 760 },
+          ...(window ? { window } : {}),
+        }),
+      );
+      const original = fixture.invoke.getMockImplementation()!;
+      fixture.invoke.mockImplementation(async (...args) => {
+        const request = args[2][0];
+        if (request.op === "capabilities")
+          return {
+            ...(await original(...args)),
+            viewerDisplay: true,
+            viewerDisplayRestore: true,
+            videoSettings: true,
+          };
+        return original(...args);
+      });
+      await connect();
+      await act(async () => vi.advanceTimersByTimeAsync(0));
+      expect(
+        requests().filter((request) => request.op === "viewerDisplay"),
+      ).toEqual([]);
+      expect(sent().find((message) => message.type === "init")).toMatchObject({
+        width: display.width,
+        height: display.height,
+      });
+      expect(
+        sent().filter((message) => message.type === "measureViewport"),
+      ).toHaveLength(1);
+    },
+  );
+
   it("falls back to the after-frame path when the early display change fails", async () => {
     await AsyncStorage.setItem(
       "cindy.mobile.remote-desktop.resolution.v1.computer.display",
@@ -2368,6 +2411,7 @@ describe("remote desktop controls", () => {
         width: 658,
         height: 1280,
         viewport: { width: 390, height: 760 },
+        window: { width: 390, height: 844 },
       }),
     );
     let refuse = true;

@@ -3,12 +3,13 @@ import type { RemoteDesktopDisplayMode } from "@cindy/device-link";
 
 // Non-secret, phone-local: the last display choice this phone made for one
 // monitor of one computer. The host still restores its own display on
-// disconnect. "fit" keeps the virtual display size and the phone viewport it
-// was fitted to, so the next connection can create it before any video.
+// disconnect. "fit" keeps the virtual display size, the phone viewport it was
+// fitted to and the app window at that time, so the next connection in the
+// same window can create it before any video.
 type Size = { width: number; height: number };
 export type RememberedResolution =
   | ({ kind: "mode"; modeId: string } & Size)
-  | ({ kind: "fit"; viewport: Size } & Size);
+  | ({ kind: "fit"; viewport: Size; window?: Size } & Size);
 
 let writes: Promise<void> = Promise.resolve();
 const storageKey = (deviceId: string, displayId: string) =>
@@ -54,8 +55,9 @@ export async function readRememberedResolution(
     if (value?.kind === "mode" && typeof value.modeId === "string")
       return { kind: "mode", modeId: value.modeId, ...display };
     const viewport = size(value?.viewport);
+    const window = size(value?.window);
     return value?.kind === "fit" && viewport
-      ? { kind: "fit", viewport, ...display }
+      ? { kind: "fit", viewport, ...display, ...(window ? { window } : {}) }
       : null;
   } catch {
     return null;

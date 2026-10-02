@@ -383,6 +383,8 @@ export function RemoteDesktopSession({
   const [viewerViewport, setViewerViewport] = useState({ width: 0, height: 0 });
   const viewerViewportRef = useRef(viewerViewport);
   viewerViewportRef.current = viewerViewport;
+  const windowSizeRef = useRef(windowSize);
+  windowSizeRef.current = windowSize;
   const viewportGeneration = useRef(0);
   const matchesViewer = (
     display: { width: number; height: number },
@@ -2642,6 +2644,10 @@ export function RemoteDesktopSession({
                   width: next.display.width,
                   height: next.display.height,
                   viewport: { ...fittedTo },
+                  window: {
+                    width: Math.round(windowSizeRef.current.width),
+                    height: Math.round(windowSizeRef.current.height),
+                  },
                 }
               : null,
       );
@@ -2713,10 +2719,13 @@ export function RemoteDesktopSession({
     const fit = remembered.kind === "fit";
     if (fit ? !hostCaps.viewerDisplay : !hostCaps.resolutionRestore)
       return false;
-    // A rotated phone needs a fresh measurement; the after-frame path does it.
+    // The viewer cannot measure its picture area before video, so reuse the
+    // fitted size only in the same app window. Rotation, folding, split view
+    // or a resize changes it; the after-frame path then measures this view.
     if (
       fit &&
-      remembered.viewport.width > remembered.viewport.height !== landscape
+      (remembered.window?.width !== Math.round(windowSize.width) ||
+        remembered.window?.height !== Math.round(windowSize.height))
     )
       return false;
     try {
