@@ -1,6 +1,7 @@
 import { TaskTagLabels, TaskTagsPanel } from './TaskTags';
 import { TaskTagsSheet, useTaskTagsSheet } from './TaskTagsSheet';
 import type { OpenAiAccountProvider } from './sessionControls';
+import { formatQuotaResetCountdown } from './sessionUsagePresentation';
 /**
  * SessionMenuSheet —— 会话右上角「…」菜单浮窗(取代旧三 tab 的会话设置面板)。
  *
@@ -510,9 +511,11 @@ export function SessionMenuSheet({
       modelId: session.model,
       nowMs: now,
     });
-    return summarizeAccountRateLimits(scoped, now, mobilePresentationLocalizer);
+    return summarizeAccountRateLimits(scoped, now, mobilePresentationLocalizer, (resetsAt) =>
+      formatQuotaResetCountdown(resetsAt, now, t),
+    );
     // visible / quotaStaleTick 进依赖: 重开与到点失效都要按当前时间重选。
-  }, [accountUsage, i18nInstance.language, quotaBucketTables, session.model, visible, quotaStaleTick]);
+  }, [accountUsage, i18nInstance.language, quotaBucketTables, session.model, visible, quotaStaleTick, t]);
   const resetSummary = useMemo(
     () => summarizeCodexRateLimitReset(codexRateLimits, Date.now(), mobilePresentationLocalizer),
     [codexRateLimits, i18nInstance.language],
