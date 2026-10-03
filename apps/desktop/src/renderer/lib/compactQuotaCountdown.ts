@@ -38,6 +38,6 @@ export function formatCompactTimeUntilReset(
   return `${Math.max(1, Math.ceil(remainMs / 1000))}${t('todaySpend.unit.second')}`;
 }
 
-/** 不下发 windowMinutes 的订阅窗口(Claude 5h / 周限、xAI 周限)的固定长度。 */
+/** 不下发 windowMinutes 的 Claude 5h / 周限窗口的固定长度。 */
 export const FIVE_HOUR_WINDOW_MINUTES = 5 * 60;
 export const WEEKLY_WINDOW_MINUTES = 7 * 24 * 60;

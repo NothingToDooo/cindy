@@ -137,17 +137,12 @@ function modelSourceQuota(
     };
   }
   const data = usage.xai;
+  // xAI resetsAt may fall back to a non-weekly period end, so it is not capped.
   return {
     plan: data?.planLabel ?? null,
     windows:
       data && isXaiWeeklyUsageCurrent(data, nowMs) && typeof data.creditUsagePercent === 'number'
-        ? [
-            {
-              usedPercent: data.creditUsagePercent,
-              resetsAt: data.resetsAt,
-              windowMinutes: WEEKLY_WINDOW_MINUTES,
-            },
-          ]
+        ? [{ usedPercent: data.creditUsagePercent, resetsAt: data.resetsAt }]
         : [],
   };
 }

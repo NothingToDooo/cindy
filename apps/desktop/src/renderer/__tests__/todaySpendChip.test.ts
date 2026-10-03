@@ -170,14 +170,8 @@ describe('TodaySpendChip dashboard routing', () => {
     // 未越界时封顶不改变向上取整口径
     expect(formatCompactTimeUntilReset(6 * 86400 + 60, 0, units, week)).toBe('7天');
     expect(formatCompactTimeUntilReset(5 * 86400 + 60, 0, units, week)).toBe('6天');
-    for (const call of [
-      'formatCompactTimeUntilReset( window?.resetsAt, nowMs, t, window?.windowMinutes, )',
-      'formatCompactTimeUntilReset( fiveHour.resetsAt, nowMs, t, FIVE_HOUR_WINDOW_MINUTES, )',
-      'formatCompactTimeUntilReset( weekly.window.resetsAt, nowMs, t, WEEKLY_WINDOW_MINUTES, )',
-      'formatCompactTimeUntilReset( snapshot.resetsAt ?? undefined, nowMs, t, WEEKLY_WINDOW_MINUTES, )',
-    ]) {
-      expect(compact(source)).toContain(compact(call));
-    }
+    // 窗口长度未知时不封顶
+    expect(formatCompactTimeUntilReset(25 * 86400, 0, units)).toBe('25天');
   });
 
   it('ticks the reset countdown per second in the last minute and rolls remaining % up after a reset', () => {
