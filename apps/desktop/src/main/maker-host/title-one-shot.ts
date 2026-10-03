@@ -46,6 +46,7 @@ import {
   providerCatalogId,
 } from '@cindy/model-providers';
 import { toSdkModelString } from '@cindy/maker-core';
+import { AUTO_TITLE_MAX_CHARS } from '@cindy/maker-shared/session-title';
 
 import { createLogger } from '../logger.js';
 import { getAppCapabilities } from '../appCapabilities.js';
@@ -62,7 +63,7 @@ const log = createLogger('maker-host:title-one-shot');
 
 /** 标题 oneShot 单次请求超时(对齐 renderer scheduleAutoName 的等待窗口语义,留余量)。 */
 const TITLE_TIMEOUT_MS = 12_000;
-/** 标题 ≤ 20 字,32 token 足够;codex Responses 协议层不暴露 max_tokens,仅对 messages/chat 生效。 */
+/** 保留短标题的 32 token 预算；字符上限另行校验，codex Responses 协议层不暴露 max_tokens。 */
 const TITLE_MAX_TOKENS = 32;
 /**
  * XD 网关思考模型(Hy3 / DeepSeek 等)默认会先写 reasoning_content。
@@ -640,7 +641,7 @@ log.debug('title oneShot skipped: no title target', {
   const maxTokens = opts?.maxTokens ?? TITLE_MAX_TOKENS;
   const codexInstructions = opts?.codexInstructions ?? CODEX_TITLE_INSTRUCTIONS;
   const maxOutputChars = opts?.maxOutputChars ?? TITLE_OUTPUT_MAX_CHARS;
-  const maxVisualChars = opts?.maxVisualChars ?? 40;
+  const maxVisualChars = opts?.maxVisualChars ?? AUTO_TITLE_MAX_CHARS;
   try {
     let text = '';
     switch (target.wire) {

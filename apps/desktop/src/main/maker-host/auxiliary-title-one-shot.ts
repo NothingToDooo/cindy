@@ -7,6 +7,7 @@
  */
 
 import type { AgentKind } from '@cindy/maker-core';
+import { AUTO_TITLE_MAX_CHARS } from '@cindy/maker-shared/session-title';
 
 import { activeOwnerScopeKey, isAppSessionBoundaryPending } from '../appSessionState.js';
 import { createLogger } from '../logger.js';
@@ -29,7 +30,6 @@ const log = createLogger('maker-host/auxiliary-title-one-shot');
 const AUXILIARY_TITLE_TIMEOUT_MS = 12_000;
 const AUXILIARY_TITLE_MAX_TOKENS = 32;
 const AUXILIARY_TITLE_OUTPUT_MAX_CHARS = 256;
-const AUXILIARY_TITLE_VISUAL_MAX_CHARS = 40;
 const AUXILIARY_TITLE_RESPONSE_INSTRUCTIONS =
   'Output only the short conversation title requested by the user message, without quotation marks or ending punctuation.';
 
@@ -128,7 +128,7 @@ function normalizeAuxiliaryTitle(text: string): string | null {
   // truncation, matching title-one-shot's persisted-content boundary.
   const normalized = validateTitleOutput(text, AUXILIARY_TITLE_OUTPUT_MAX_CHARS);
   return normalized
-    ? Array.from(normalized).slice(0, AUXILIARY_TITLE_VISUAL_MAX_CHARS).join('')
+    ? Array.from(normalized).slice(0, AUTO_TITLE_MAX_CHARS).join('')
     : null;
 }
 
