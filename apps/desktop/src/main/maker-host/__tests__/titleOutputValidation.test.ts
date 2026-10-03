@@ -87,6 +87,12 @@ describe('validateTitleOutput', () => {
     expect(validateTitleOutput(value, 256)).toBeNull();
   });
 
+  it('接受讨论其他字符限制的正常标题', () => {
+    expect(validateTitleOutput('Use at most 100 characters', 40)).toBe(
+      'Use at most 100 characters',
+    );
+  });
+
   it('keeps titles that merely mention titles', () => {
     expect(validateTitleOutput('修复标题生成 bug', 40)).toBe('修复标题生成 bug');
     expect(validateTitleOutput('优化会话标题样式', 40)).toBe('优化会话标题样式');

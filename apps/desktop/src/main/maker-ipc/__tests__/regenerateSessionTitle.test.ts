@@ -349,7 +349,7 @@ describe('regenerateMakerSessionTitle', () => {
     },
   );
 
-  it.each(['字'.repeat(41), '😀'.repeat(41)])('拒绝超过 40 个字符的结果: %s', async (generated) => {
+  it.each(['字'.repeat(41), '😀'.repeat(41)])('防御性拒绝生成器违约返回超过 40 个字符的结果: %s', async (generated) => {
     await expect(
       regenerateMakerSessionTitle(
         's1',

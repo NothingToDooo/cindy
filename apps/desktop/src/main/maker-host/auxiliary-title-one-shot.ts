@@ -28,7 +28,8 @@ import { validateTitleOutput } from './title-output-validation.js';
 const log = createLogger('maker-host/auxiliary-title-one-shot');
 
 const AUXILIARY_TITLE_TIMEOUT_MS = 12_000;
-const AUXILIARY_TITLE_MAX_TOKENS = 32;
+// Allow multi-byte Chinese / emoji titles within the shared character limit.
+const AUXILIARY_TITLE_MAX_TOKENS = AUTO_TITLE_MAX_CHARS * 4;
 const AUXILIARY_TITLE_OUTPUT_MAX_CHARS = 256;
 const AUXILIARY_TITLE_RESPONSE_INSTRUCTIONS =
   'Output only the short conversation title requested by the user message, without quotation marks or ending punctuation.';

@@ -31,10 +31,15 @@ export const AUTO_TITLE_MAX_CHARS = 40;
  * 落库出口、占位覆写方与 renderer 的乐观预览都用它算出同一个串。
  */
 export function normalizeAutoTitle(text: string): string {
-  return Array.from(text.replace(/\s+/g, ' ').trim())
-    .slice(0, AUTO_TITLE_MAX_CHARS)
-    .join('')
-    .trimEnd();
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  let title = '';
+  let count = 0;
+  // User messages can be very large; collect only the title's code points.
+  for (const char of normalized) {
+    title += char;
+    if (++count === AUTO_TITLE_MAX_CHARS) break;
+  }
+  return title.trimEnd();
 }
 
 /**
