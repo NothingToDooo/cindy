@@ -6970,7 +6970,7 @@ export class ClaudeCodeAgent extends BaseAgent {
         return expected !== liveEnv?.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
       },
 
-      async setModel(newModel: string, setModelOpts?: { providerId?: string | null }) {
+      async setModel(newModel: string, setModelOpts?: { providerId?: string | null; effort?: Effort }) {
         if (reviewMode) return;
         const targetProviderId = setModelOpts?.providerId !== undefined
           ? setModelOpts.providerId
@@ -7088,7 +7088,23 @@ export class ClaudeCodeAgent extends BaseAgent {
             availableModels: currentAvailableSdkModels(newModel),
           });
           await q.setModel(sdkModel);
+          // effortLevel 是 sticky flag:热切不重下发时,上一个模型的 xhigh 会原样打给
+          // 只认 low/high/max 的目标模型(GLM-5.3 回 400/1210,#5402)。按目标模型重新收窄。
+          const previousSdkEffort = getSdkEffortForModel(mutableModel, mutableEffort);
+          const nextSdkEffort = getSdkEffortForModel(newModel, setModelOpts?.effort ?? mutableEffort);
+          if (nextSdkEffort && nextSdkEffort !== previousSdkEffort) {
+            // 切模已生效:档位重下发失败只 warn,不把整个 setModel 报成失败(同下方 auto 审查重配)。
+            await applyClaudeEffortFlagSettings(q, nextSdkEffort, getSdkMaxEffortFallbackForModel(newModel))
+              .catch((e) => {
+                log.warn('setModel: effort reapply for target model failed; model switch kept', {
+                  model: newModel,
+                  effort: nextSdkEffort,
+                  error: String(e),
+                });
+              });
+          }
         }
+        if (setModelOpts?.effort) mutableEffort = setModelOpts.effort;
         const usedNativeAutoReview = usesNativeClaudeAutoReview();
         mutableProviderId = targetProviderId ?? null;
         mutableAutoReviewCredentialMode = resolveEffectiveCredentialModeFromAuthSource(

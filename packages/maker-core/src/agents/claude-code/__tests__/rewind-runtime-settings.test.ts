@@ -706,6 +706,43 @@ describe('ClaudeCodeAgent runtime settings during rewind window', () => {
     await handle.close();
   });
 
+  it('re-applies the clamped effort on a hot model switch without a separate setEffort (#5402)', async () => {
+    const glm: ModelDescriptor = {
+      id: 'z-ai/glm-5.3',
+      displayName: 'GLM-5.3',
+      contextWindow: 1_000_000,
+      efforts: ['low', 'medium', 'high', 'max'],
+      defaultEffort: 'high',
+    };
+    const { handle, firstQuery } = await startRewindableSession({
+      model: 'claude-sonnet-5',
+      effort: 'xhigh',
+      availableModels: [...TEST_MODELS, glm],
+    });
+
+    // The live Query keeps the sticky xhigh; the switch itself must narrow it.
+    await handle.setModel?.(glm.id);
+    expect(firstQuery.applyFlagSettings).toHaveBeenLastCalledWith({ effortLevel: 'high' });
+
+    // Switching back restores the selected xhigh for the model that supports it.
+    await handle.setModel?.('claude-sonnet-5');
+    expect(firstQuery.applyFlagSettings).toHaveBeenLastCalledWith({ effortLevel: 'xhigh' });
+
+    // An effort passed with the switch wins over the previous one.
+    await handle.setModel?.(glm.id, { effort: 'max' });
+    expect(firstQuery.applyFlagSettings).toHaveBeenLastCalledWith({ effortLevel: 'max' });
+    expect(handle.getEffort?.()).toBe('max');
+
+    // Same SDK level after narrowing: no redundant effort write.
+    firstQuery.applyFlagSettings.mockClear();
+    await handle.setModel?.('claude-opus-4-6', { effort: 'max' });
+    expect(firstQuery.applyFlagSettings.mock.calls).toEqual([
+      [{ availableModels: expect.any(Array) }],
+    ]);
+
+    await handle.close();
+  });
+
   it('falls back to the model-supported xhigh when an older runtime rejects max', async () => {
     const { handle, firstQuery } = await startRewindableSession();
 
