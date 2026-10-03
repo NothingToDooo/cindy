@@ -210,6 +210,7 @@ async function startRewindableSession(
     effort?: Effort;
     availableModels?: ModelDescriptor[];
     resolveModelContextLimit?: AgentDeps['resolveModelContextLimit'];
+    resolveModelEfforts?: AgentDeps['resolveModelEfforts'];
     shouldHandoffAfterContextAssessment?: (tokens: number, window: number) => boolean;
   } = {},
 ) {
@@ -242,6 +243,7 @@ async function startRewindableSession(
     ),
     capabilityAdditions: { availableModels: options.availableModels ?? TEST_MODELS },
     resolveModelContextLimit: options.resolveModelContextLimit,
+    ...(options.resolveModelEfforts ? { resolveModelEfforts: options.resolveModelEfforts } : {}),
     ...(remoteCcQueryFactory ? { remoteCcQueryFactory } : {}),
   });
   const handle = await agent.startSession({
@@ -739,6 +741,34 @@ describe('ClaudeCodeAgent runtime settings during rewind window', () => {
     expect(firstQuery.applyFlagSettings.mock.calls).toEqual([
       [{ availableModels: expect.any(Array) }],
     ]);
+
+    await handle.close();
+  });
+
+  it('narrows with the efforts of the session route, not the first same-ID descriptor (#5402)', async () => {
+    const glm: ModelDescriptor = {
+      id: 'glm-5.3',
+      displayName: 'GLM-5.3',
+      contextWindow: 1_000_000,
+      efforts: ['low', 'medium', 'high', 'max'],
+      defaultEffort: 'high',
+    };
+    const resolveModelEfforts = vi.fn((providerId: string | null | undefined) =>
+      providerId === 'custom-glm' ? (['low', 'max'] as const) : null);
+    const { handle, firstQuery } = await startRewindableSession({
+      model: 'claude-sonnet-5',
+      effort: 'xhigh',
+      availableModels: [...TEST_MODELS, glm],
+      resolveModelEfforts,
+    });
+
+    await handle.setModel?.(glm.id, { providerId: 'custom-glm' });
+    expect(resolveModelEfforts).toHaveBeenCalledWith('custom-glm', glm.id);
+    expect(firstQuery.applyFlagSettings).toHaveBeenLastCalledWith({ effortLevel: 'low' });
+
+    // An unknown or ambiguous route keeps the selected effort instead of borrowing a descriptor.
+    await handle.setModel?.(glm.id, { providerId: 'other' });
+    expect(firstQuery.applyFlagSettings).toHaveBeenLastCalledWith({ effortLevel: 'xhigh' });
 
     await handle.close();
   });

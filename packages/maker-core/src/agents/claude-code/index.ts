@@ -950,12 +950,21 @@ export class ClaudeCodeAgent extends BaseAgent {
     this.capabilities = this.buildCapabilities(CAPABILITIES);
   }
 
-  private sdkEffortForModel(model: string, effort: Effort): ClaudeSdkEffort | undefined {
+  private sdkEffortForModel(
+    model: string,
+    effort: Effort,
+    providerId?: string | null,
+  ): ClaudeSdkEffort | undefined {
     const descriptor = this.capabilities.availableModels.find((m) => m.id === model);
-    if (descriptor && descriptor.efforts.length === 0) return undefined;
+    // availableModels 按 ID 跨来源去重,同名模型的档位可能来自别的来源;有 host 解析器时
+    // 按实际来源取档位,来源不明(null)则不收窄,只保留原有的「无档位模型不下发」判断。
+    const routeEfforts = this.deps.resolveModelEfforts
+      ? this.deps.resolveModelEfforts(providerId, model)
+      : descriptor?.efforts;
+    if ((routeEfforts ?? descriptor?.efforts)?.length === 0) return undefined;
     // 会话档位可能来自上一个模型(如 Claude 的 xhigh),原样下发会被只认目录档位的
-    // 上游拒绝(GLM-5.3 收到 xhigh 回 400/1210,#5402)。按目标模型声明的档位收窄。
-    return clampEffortForClaude((clampEffortToSupported(effort, descriptor?.efforts) as Effort | undefined) ?? effort);
+    // 上游拒绝(GLM-5.3 收到 xhigh 回 400/1210,#5402)。按目标来源声明的档位收窄。
+    return clampEffortForClaude((clampEffortToSupported(effort, routeEfforts ?? undefined) as Effort | undefined) ?? effort);
   }
 
   private sdkMaxEffortFallbackForModel(model: string): Exclude<ClaudeSdkEffort, 'max'> {
@@ -1397,7 +1406,7 @@ export class ClaudeCodeAgent extends BaseAgent {
     const resolveRemoteClaudeRoute = this.deps.resolveRemoteClaudeRoute?.bind(this.deps);
     const getAuthEnv = this.deps.auth.getAuthEnv.bind(this.deps.auth);
     const sdkModel = sdkModelFor(opts.model);
-    const initialSdkEffort = this.sdkEffortForModel(opts.model, opts.effort ?? 'high');
+    const initialSdkEffort = this.sdkEffortForModel(opts.model, opts.effort ?? 'high', opts.providerId);
     const binaryPath = this.deps.binaryPath;
     const providerRoutedModels = this.capabilities.availableModels.filter((model) =>
       isProviderRoutedModel(model.id),
@@ -2666,8 +2675,8 @@ export class ClaudeCodeAgent extends BaseAgent {
     // file checkpointing 与 capability 强绑定 —— 声明 rewind 能力时必须开此开关,
     // 否则 SDK rewindFiles() 报 "no checkpoint"。
     const enableFileCheckpointing = this.capabilities.rewind.supported;
-    const getSdkEffortForModel = (model: string, effort: Effort) =>
-      this.sdkEffortForModel(model, effort);
+    const getSdkEffortForModel = (model: string, effort: Effort, providerId: string | null) =>
+      this.sdkEffortForModel(model, effort, providerId);
     const getSdkMaxEffortFallbackForModel = (model: string) =>
       this.sdkMaxEffortFallbackForModel(model);
 
@@ -3344,7 +3353,7 @@ export class ClaudeCodeAgent extends BaseAgent {
       appliedContextWindow = workingWindow;
       applyClaudeContextWindow(env, workingWindow, this.deps.runtimeConfig.autoCompactThresholdPct);
       if (remoteEnv) applyClaudeContextWindow(remoteEnv, workingWindow, this.deps.runtimeConfig.autoCompactThresholdPct);
-      const currentSdkEffort = getSdkEffortForModel(mutableModel, mutableEffort);
+      const currentSdkEffort = getSdkEffortForModel(mutableModel, mutableEffort, mutableProviderId);
       const baseResumeAt = vo.resumeSessionAt as string | undefined;
       const baseFork = vo.forkSession as boolean | undefined;
       const finalResumeAt = extra?.fresh ? undefined : (extra?.resumeSessionAt ?? baseResumeAt);
@@ -5844,7 +5853,7 @@ export class ClaudeCodeAgent extends BaseAgent {
         if (mutableEffort !== snapshot.effort) {
           replayed = true;
           const targetEffort = mutableEffort;
-          const sdkEffort = getSdkEffortForModel(mutableModel, targetEffort);
+          const sdkEffort = getSdkEffortForModel(mutableModel, targetEffort, mutableProviderId);
           if (sdkEffort) {
             try {
               const appliedEffort = await applyClaudeEffortFlagSettings(
@@ -7090,8 +7099,10 @@ export class ClaudeCodeAgent extends BaseAgent {
           await q.setModel(sdkModel);
           // effortLevel 是 sticky flag:热切不重下发时,上一个模型的 xhigh 会原样打给
           // 只认 low/high/max 的目标模型(GLM-5.3 回 400/1210,#5402)。按目标模型重新收窄。
-          const previousSdkEffort = getSdkEffortForModel(mutableModel, mutableEffort);
-          const nextSdkEffort = getSdkEffortForModel(newModel, setModelOpts?.effort ?? mutableEffort);
+          const previousSdkEffort = getSdkEffortForModel(mutableModel, mutableEffort, mutableProviderId);
+          const nextSdkEffort = getSdkEffortForModel(
+            newModel, setModelOpts?.effort ?? mutableEffort, targetProviderId ?? null,
+          );
           if (nextSdkEffort && nextSdkEffort !== previousSdkEffort) {
             // 切模已生效:档位重下发失败只 warn,不把整个 setModel 报成失败(同下方 auto 审查重配)。
             await applyClaudeEffortFlagSettings(q, nextSdkEffort, getSdkMaxEffortFallbackForModel(newModel))
@@ -7177,7 +7188,7 @@ export class ClaudeCodeAgent extends BaseAgent {
         if (reviewMode) return;
         // maker 的 minimal / ultra 先归一成 Claude 的 low / max；2.1.219 起
         // applyFlagSettings 可原样接收 max，不能再静默降成 xhigh。
-        const sdkEffort = getSdkEffortForModel(mutableModel, newEffort);
+        const sdkEffort = getSdkEffortForModel(mutableModel, newEffort, mutableProviderId);
         const isControlBlocked = controlRequestsBlocked();
         log.debug('setEffort', { from: mutableEffort, to: newEffort, sdk: sdkEffort, controlRequestsBlocked: isControlBlocked });
         if (!sdkEffort) {
