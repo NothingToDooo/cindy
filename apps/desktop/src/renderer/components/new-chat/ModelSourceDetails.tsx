@@ -168,11 +168,12 @@ export function ModelSourceDetails({
           : [countdown, t('quotaCard.remainingPercent', { percent: remaining })]
               .filter(Boolean)
               .join(' · '),
-        used: expired ? 0 : window.usedPercent,
+        // Expired windows rank below every live one, even a live window at 0% used.
+        used: expired ? -1 : window.usedPercent,
       };
     });
-  // The row only has room for one window: show the tightest one (later window wins ties);
-  // the title keeps every window.
+  // The row only has room for one window: show the tightest live one (later window wins
+  // ties); the title keeps every window.
   const tightest = parts.reduce<(typeof parts)[number] | undefined>(
     (best, part) => (!best || part.used >= best.used ? part : best),
     undefined,

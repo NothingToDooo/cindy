@@ -361,4 +361,16 @@ describe('model source second line', () => {
     expect(screen.getByText('—')).toBeTruthy();
     expect(screen.queryByText('78%')).toBeNull();
   });
+
+  it('keeps a live window at 0% used over a later window awaiting reset', () => {
+    reads.accounts['account-a'] = snapshot(0);
+    reads.accounts['account-a'].rateLimits.secondary!.resetsAt = now / 1000;
+    render(
+      <ModelSourceUsageProvider providers={[provider('account-a')]} scope={local}>
+        {details()}
+      </ModelSourceUsageProvider>,
+    );
+    expect(screen.getByText(quotaText('2小时 100%'))).toBeTruthy();
+    expect(screen.queryByText(reads.pendingLabel)).toBeNull();
+  });
 });
