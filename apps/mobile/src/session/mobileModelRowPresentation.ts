@@ -94,11 +94,17 @@ export function mobileWeeklyQuota(
     resetsAt,
   };
 }
-/** Match Desktop compactQuotaCountdown: one unit, rounded up; expired stays unknown. */
+/**
+ * Match Desktop compactQuotaCountdown: one unit, rounded up; expired stays unknown.
+ * Mobile only shows weekly quotas, so cap at the 7-day window: right after a reset,
+ * server rounding or clock skew can put resetsAt slightly past now + 7d, and rounding
+ * up would read "8d".
+ */
 export type QuotaTimeUnit = 'day' | 'hour' | 'minute' | 'second';
+const WEEKLY_WINDOW_MS = 7 * 86400000;
 export function quotaCountdown(reset: number, now: number, unitLabel: (unit: QuotaTimeUnit) => string = unit => ({day:'d',hour:'h',minute:'m',second:'s'})[unit]): string | null {
   if (!Number.isFinite(reset) || reset <= 0) return null;
-  const remaining = reset * 1000 - now;
+  const remaining = Math.min(reset * 1000 - now, WEEKLY_WINDOW_MS);
   if (remaining <= 0) return null;
   if (remaining >= 86400000) return `${Math.ceil(remaining / 86400000)}${unitLabel("day")}`;
   if (remaining >= 3600000) return `${Math.ceil(remaining / 3600000)}${unitLabel("hour")}`;

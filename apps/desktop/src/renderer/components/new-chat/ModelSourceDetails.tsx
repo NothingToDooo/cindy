@@ -2,7 +2,11 @@ import { createContext, useContext, useEffect, useMemo, useState, type ReactNode
 import { useTranslation } from 'react-i18next';
 import type { ProviderView } from '@cindy/model-providers';
 import { matchCodexBucketForModel } from '@cindy/maker-shared/codex-usage-buckets';
-import { formatCompactTimeUntilReset } from '@/lib/compactQuotaCountdown';
+import {
+  FIVE_HOUR_WINDOW_MINUTES,
+  formatCompactTimeUntilReset,
+  WEEKLY_WINDOW_MINUTES,
+} from '@/lib/compactQuotaCountdown';
 import {
   formatClaudeSubscriptionPlanLabel,
   formatCodexPlanLabel,
@@ -88,6 +92,7 @@ export function ModelSourceUsageProvider({
 interface QuotaWindow {
   usedPercent: number;
   resetsAt?: number | null;
+  windowMinutes?: number | null;
 }
 
 function modelSourceQuota(
@@ -119,9 +124,16 @@ function modelSourceQuota(
     const weekly = data && (matchScopedWindowForModel(data.scoped, modelId) ?? data.sevenDay);
     return {
       plan: formatClaudeSubscriptionPlanLabel(data?.subscriptionType),
-      windows: [data?.fiveHour, weekly]
+      windows: [
+        data?.fiveHour && { window: data.fiveHour, windowMinutes: FIVE_HOUR_WINDOW_MINUTES },
+        weekly && { window: weekly, windowMinutes: WEEKLY_WINDOW_MINUTES },
+      ]
         .filter((w): w is NonNullable<typeof w> => !!w)
-        .map((w) => ({ usedPercent: w.utilization, resetsAt: w.resetsAt })),
+        .map(({ window, windowMinutes }) => ({
+          usedPercent: window.utilization,
+          resetsAt: window.resetsAt,
+          windowMinutes,
+        })),
     };
   }
   const data = usage.xai;
@@ -129,7 +141,13 @@ function modelSourceQuota(
     plan: data?.planLabel ?? null,
     windows:
       data && isXaiWeeklyUsageCurrent(data, nowMs) && typeof data.creditUsagePercent === 'number'
-        ? [{ usedPercent: data.creditUsagePercent, resetsAt: data.resetsAt }]
+        ? [
+            {
+              usedPercent: data.creditUsagePercent,
+              resetsAt: data.resetsAt,
+              windowMinutes: WEEKLY_WINDOW_MINUTES,
+            },
+          ]
         : [],
   };
 }
@@ -150,7 +168,12 @@ export function ModelSourceDetails({
   const parts = windows
     .filter((window) => Number.isFinite(window.usedPercent))
     .map((window) => {
-      const countdown = formatCompactTimeUntilReset(window.resetsAt, nowMs, t);
+      const countdown = formatCompactTimeUntilReset(
+        window.resetsAt,
+        nowMs,
+        t,
+        window.windowMinutes,
+      );
       // Do not present the previous period's percentage as a fresh quota.
       const expired =
         typeof window.resetsAt === 'number' &&

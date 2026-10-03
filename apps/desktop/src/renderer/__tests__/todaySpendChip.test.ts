@@ -159,6 +159,27 @@ describe('TodaySpendChip dashboard routing', () => {
     expect(compact(source)).toContain(compact('todaySpend.codex.unavailableDetail'));
   });
 
+  it('caps the reset countdown at the window length right after a reset', () => {
+    const units = ((key: string) =>
+      key === 'todaySpend.unit.day' ? '天' : key === 'todaySpend.unit.hour' ? '小时' : key) as TFunction;
+    const week = 7 * 24 * 60;
+    // resetsAt 比 now + 7 天晚 30 秒 (服务端取整 / 时钟偏差): 不得向上取整成「8天」
+    const resetsAt = week * 60 + 30;
+    expect(formatCompactTimeUntilReset(resetsAt, 0, units, week)).toBe('7天');
+    expect(formatCompactTimeUntilReset(5 * 3600 + 30, 0, units, 5 * 60)).toBe('5小时');
+    // 未越界时封顶不改变向上取整口径
+    expect(formatCompactTimeUntilReset(6 * 86400 + 60, 0, units, week)).toBe('7天');
+    expect(formatCompactTimeUntilReset(5 * 86400 + 60, 0, units, week)).toBe('6天');
+    for (const call of [
+      'formatCompactTimeUntilReset( window?.resetsAt, nowMs, t, window?.windowMinutes, )',
+      'formatCompactTimeUntilReset( fiveHour.resetsAt, nowMs, t, FIVE_HOUR_WINDOW_MINUTES, )',
+      'formatCompactTimeUntilReset( weekly.window.resetsAt, nowMs, t, WEEKLY_WINDOW_MINUTES, )',
+      'formatCompactTimeUntilReset( snapshot.resetsAt ?? undefined, nowMs, t, WEEKLY_WINDOW_MINUTES, )',
+    ]) {
+      expect(compact(source)).toContain(compact(call));
+    }
+  });
+
   it('ticks the reset countdown per second in the last minute and rolls remaining % up after a reset', () => {
     // 最后一分钟秒级倒计时: formatCompactTimeUntilReset 落到秒单位, tick 节奏由
     // computeCountdownTickDelayMs 决定 (setTimeout 链, 非固定 interval)

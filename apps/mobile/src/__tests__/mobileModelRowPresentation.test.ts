@@ -38,6 +38,12 @@ it.each([[86400,'1d'],[86399,'24h'],[3600,'1h'],[3599,'60m'],[60,'1m'],[59,'59s'
   expect(quotaCountdown(reset as number,0)).toBe(expected);
 });
 
+it('caps the countdown at the 7-day weekly window right after a reset',()=>{
+  expect(quotaCountdown(7*86400+30,0)).toBe('7d');
+  expect(quotaCountdown(6*86400+60,0)).toBe('7d');
+  expect(quotaCountdown(5*86400+60,0)).toBe('6d');
+});
+
 it('localizes all countdown units using the supplied language',()=>{
   const unit=(name:string)=>({day:'天',hour:'小时',minute:'分钟',second:'秒'})[name]!;
   expect(quotaCountdown(273600,0,unit)).toBe('4天');
