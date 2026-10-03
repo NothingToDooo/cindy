@@ -950,27 +950,37 @@ export class ClaudeCodeAgent extends BaseAgent {
     this.capabilities = this.buildCapabilities(CAPABILITIES);
   }
 
+  /**
+   * 目标路由声明的档位。availableModels 按 ID 跨来源去重,同名模型的档位可能来自别的来源;
+   * 有 host 解析器时按实际来源取,来源未知或不唯一返回 null(调用方不得借用首见 descriptor)。
+   * 主档位收窄与 max 兼容回退共用这一判据。
+   */
+  private routeEffortsForModel(model: string, providerId?: string | null): readonly Effort[] | null {
+    if (this.deps.resolveModelEfforts) return this.deps.resolveModelEfforts(providerId, model);
+    return this.capabilities.availableModels.find((m) => m.id === model)?.efforts ?? null;
+  }
+
   private sdkEffortForModel(
     model: string,
     effort: Effort,
     providerId?: string | null,
   ): ClaudeSdkEffort | undefined {
     const descriptor = this.capabilities.availableModels.find((m) => m.id === model);
-    // availableModels 按 ID 跨来源去重,同名模型的档位可能来自别的来源;有 host 解析器时
-    // 按实际来源取档位,来源不明(null)则不收窄,只保留原有的「无档位模型不下发」判断。
-    const routeEfforts = this.deps.resolveModelEfforts
-      ? this.deps.resolveModelEfforts(providerId, model)
-      : descriptor?.efforts;
+    // 来源不明(null)时不收窄,只保留原有的「无档位模型不下发」判断。
+    const routeEfforts = this.routeEffortsForModel(model, providerId);
     if ((routeEfforts ?? descriptor?.efforts)?.length === 0) return undefined;
     // 会话档位可能来自上一个模型(如 Claude 的 xhigh),原样下发会被只认目录档位的
     // 上游拒绝(GLM-5.3 收到 xhigh 回 400/1210,#5402)。按目标来源声明的档位收窄。
     return clampEffortForClaude((clampEffortToSupported(effort, routeEfforts ?? undefined) as Effort | undefined) ?? effort);
   }
 
-  private sdkMaxEffortFallbackForModel(model: string): Exclude<ClaudeSdkEffort, 'max'> {
-    const descriptor = this.capabilities.availableModels.find((m) => m.id === model);
-    if (!descriptor) return 'xhigh';
-    const supported = new Set(descriptor.efforts.map(clampEffortForClaude));
+  private sdkMaxEffortFallbackForModel(
+    model: string,
+    providerId?: string | null,
+  ): Exclude<ClaudeSdkEffort, 'max'> {
+    const efforts = this.routeEffortsForModel(model, providerId);
+    if (!efforts) return 'xhigh';
+    const supported = new Set(efforts.map(clampEffortForClaude));
     for (const candidate of ['xhigh', 'high', 'medium', 'low'] as const) {
       if (supported.has(candidate)) return candidate;
     }
@@ -2677,8 +2687,8 @@ export class ClaudeCodeAgent extends BaseAgent {
     const enableFileCheckpointing = this.capabilities.rewind.supported;
     const getSdkEffortForModel = (model: string, effort: Effort, providerId: string | null) =>
       this.sdkEffortForModel(model, effort, providerId);
-    const getSdkMaxEffortFallbackForModel = (model: string) =>
-      this.sdkMaxEffortFallbackForModel(model);
+    const getSdkMaxEffortFallbackForModel = (model: string, providerId: string | null) =>
+      this.sdkMaxEffortFallbackForModel(model, providerId);
 
     // memoryOverride 闭包以前抽过 getter, buildSettings 接管后直接读 this.memoryOverride。
 
@@ -5719,6 +5729,7 @@ export class ClaudeCodeAgent extends BaseAgent {
       // 避免新 query 带旧 model/flags 起跑而 handle getter 报新值。
       const runtimeSnapshot: QueryRuntimeSnapshot = {
         model: mutableModel,
+        providerId: mutableProviderId,
         effort: mutableEffort,
         fastMode: mutableFastMode,
         sdkPermissionMode: currentTurnSdkPermissionMode(),
@@ -5827,6 +5838,7 @@ export class ClaudeCodeAgent extends BaseAgent {
       canceledBridgeQueries.has(q);
     type QueryRuntimeSnapshot = {
       model: string;
+      providerId: string | null;
       effort: Effort;
       fastMode: boolean;
       sdkPermissionMode: SdkPermissionMode;
@@ -5839,7 +5851,9 @@ export class ClaudeCodeAgent extends BaseAgent {
     async function applyRouteEffort(model: string, effort: Effort, providerId: string | null): Promise<void> {
       const sdkEffort = getSdkEffortForModel(model, effort, providerId);
       if (!sdkEffort) return;
-      const appliedEffort = await applyClaudeEffortFlagSettings(q, sdkEffort, getSdkMaxEffortFallbackForModel(model));
+      const appliedEffort = await applyClaudeEffortFlagSettings(
+        q, sdkEffort, getSdkMaxEffortFallbackForModel(model, providerId),
+      );
       log.debug('applied route effort', { model, effort, sdk: appliedEffort, downgraded: appliedEffort !== sdkEffort });
     }
     async function replayRuntimeDrift(snapshot: QueryRuntimeSnapshot, label: string): Promise<void> {
@@ -5859,22 +5873,27 @@ export class ClaudeCodeAgent extends BaseAgent {
             log.debug(`${label}: replayed setModel`, { model: targetModel });
             // 新 Query 的档位按旧模型构建;切模漂移时同 live setModel 一样按目标路由重下发。
             const targetEffort = mutableEffort;
-            await applyRouteEffort(targetModel, targetEffort, mutableProviderId);
+            const targetProviderId = mutableProviderId;
+            await applyRouteEffort(targetModel, targetEffort, targetProviderId);
             snapshot.effort = targetEffort;
+            snapshot.providerId = targetProviderId;
           } catch (e) {
             log.warn(`${label}: replay setModel failed`, { error: String(e) });
           }
         }
-        if (mutableEffort !== snapshot.effort) {
+        // 同一 model ID 换来源(受阻 setModel 只改 mutableProviderId)时档位能力也可能不同。
+        if (mutableEffort !== snapshot.effort || mutableProviderId !== snapshot.providerId) {
           replayed = true;
           const targetEffort = mutableEffort;
+          const targetProviderId = mutableProviderId;
           try {
-            await applyRouteEffort(mutableModel, targetEffort, mutableProviderId);
+            await applyRouteEffort(mutableModel, targetEffort, targetProviderId);
             log.debug(`${label}: replayed setEffort`, { effort: targetEffort });
           } catch (e) {
             log.warn(`${label}: replay setEffort failed`, { error: String(e) });
           }
           snapshot.effort = targetEffort;
+          snapshot.providerId = targetProviderId;
         }
         if (mutableFastMode !== snapshot.fastMode) {
           replayed = true;
@@ -5921,6 +5940,7 @@ export class ClaudeCodeAgent extends BaseAgent {
         const staleQuery = q;
         const runtimeSnapshot: QueryRuntimeSnapshot = {
           model: mutableModel,
+          providerId: mutableProviderId,
           effort: mutableEffort,
           fastMode: mutableFastMode,
           sdkPermissionMode: currentTurnSdkPermissionMode(),
@@ -6243,6 +6263,7 @@ export class ClaudeCodeAgent extends BaseAgent {
           // 闭包值; await 期间若有切换到达(被 controlRequestsBlocked() 短路成"只更新闭包"),
           // 下方 diff 重放据此识别漂移项。
           const snapModel = mutableModel;
+          const snapProviderId = mutableProviderId;
           const snapEffort = mutableEffort;
           const snapFastMode = mutableFastMode;
           // 用 turn-scoped 档快照 (planTurnActive + mutablePermissionMode), 不含 mutablePlanMode
@@ -6304,6 +6325,7 @@ export class ClaudeCodeAgent extends BaseAgent {
           clearBridgeState();
           runtimeReplaySnapshot = {
             model: snapModel,
+            providerId: snapProviderId,
             effort: snapEffort,
             fastMode: snapFastMode,
             sdkPermissionMode: snapSdkPermissionMode,
@@ -7194,7 +7216,7 @@ export class ClaudeCodeAgent extends BaseAgent {
           const appliedEffort = await applyClaudeEffortFlagSettings(
             q,
             sdkEffort,
-            getSdkMaxEffortFallbackForModel(mutableModel),
+            getSdkMaxEffortFallbackForModel(mutableModel, mutableProviderId),
           );
           if (appliedEffort !== sdkEffort) {
             log.warn('setEffort: runtime rejected max; applied model-compatible fallback', {

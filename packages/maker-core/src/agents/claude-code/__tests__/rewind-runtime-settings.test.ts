@@ -821,6 +821,55 @@ describe('ClaudeCodeAgent runtime settings during rewind window', () => {
     await handle.close();
   });
 
+  it('uses the target route for the max fallback and replays a provider-only drift (#5402)', async () => {
+    const glm: ModelDescriptor = {
+      id: 'glm-5.3',
+      displayName: 'GLM-5.3',
+      contextWindow: 1_000_000,
+      efforts: ['low', 'medium', 'high', 'max'],
+      defaultEffort: 'high',
+    };
+    const routes: Record<string, readonly Effort[]> = {
+      preset: ['low', 'medium', 'high', 'max'],
+      custom: ['low', 'max'],
+    };
+    const resolveModelEfforts = (providerId: string | null | undefined) =>
+      (providerId ? routes[providerId] : undefined) ?? null;
+
+    // An older runtime rejects max: the retry must come from the custom route, not the first descriptor.
+    const live = await startRewindableSession({
+      model: glm.id,
+      effort: 'high',
+      availableModels: [...TEST_MODELS, glm],
+      resolveModelEfforts,
+    });
+    live.firstQuery.applyFlagSettings.mockImplementation(async (settings: Record<string, unknown>) => {
+      if (settings.effortLevel === 'max') throw new Error('invalid effortLevel: max');
+    });
+    await live.handle.setModel?.(glm.id, { providerId: 'custom', effort: 'max' });
+    expect(live.firstQuery.applyFlagSettings).toHaveBeenLastCalledWith({ effortLevel: 'low' });
+    await live.handle.close();
+
+    // Same model ID switched to another provider while the Query is rebuilding.
+    sdkMock.query.mockReset();
+    const { handle } = await startRewindableSession({
+      model: glm.id,
+      effort: 'high',
+      availableModels: [...TEST_MODELS, glm],
+      resolveModelEfforts,
+    });
+    await handle.commitRewindFiles?.('user-uuid-1', 'assistant-uuid-1');
+    const secondQuery = createFakeQuery();
+    sdkMock.query.mockImplementationOnce(() => {
+      void handle.setModel?.(glm.id, { providerId: 'custom' });
+      return secondQuery;
+    });
+    await handle.send({ type: 'user', content: 'switch provider during rebuild' });
+    expect(secondQuery.applyFlagSettings).toHaveBeenLastCalledWith({ effortLevel: 'low' });
+
+    await handle.close();
+  });
+
   it('falls back to the model-supported xhigh when an older runtime rejects max', async () => {
     const { handle, firstQuery } = await startRewindableSession();
 
