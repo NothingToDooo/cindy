@@ -171,6 +171,12 @@ export function clearCachedSessionMessages(): Promise<void> {
   return activeGlobalClear;
 }
 
+// 文件缓存之前的版本把消息缓存写在 AsyncStorage,按需迁移只覆盖打开过的会话;未打开会话的
+// 旧副本会一直占着安卓 6 MiB 的库,挤掉发件箱 / 草稿写入。旧副本可从被控端重建,直接删除。
+export function discardLegacySessionMessageCache(): Promise<void> {
+  return messageCacheStorage.discardLegacy(STORAGE_KEY_PREFIX);
+}
+
 // 排序(升序 createdAt)+ 按 messageKey 去重(对账:同 id 保留最后一次)+ 取最新 N 条。
 // mobile-system-* 没有服务端副本，必须跨窗口保留；保护行可以让软上限略微超出。
 function normalizeCachedMessages(input: readonly unknown[]): RemoteMessage[] {

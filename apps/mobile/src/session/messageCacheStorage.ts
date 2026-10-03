@@ -55,6 +55,11 @@ export const messageCacheStorage = {
       async () => { await (await disk()).remove(`${key}.json`); },
     ]));
   },
+  /** Drop pre-file AsyncStorage copies only; they are rebuildable and squeeze Android's 6 MiB database. */
+  async discardLegacy(prefix: string): Promise<void> {
+    const keys = (await AsyncStorage.getAllKeys()).filter(key => key.startsWith(`${prefix}.`));
+    if (keys.length) await AsyncStorage.multiRemove(keys);
+  },
   async clear(prefix: string): Promise<void> {
     await persist(() => removeAll([
       async () => {

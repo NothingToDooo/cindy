@@ -119,6 +119,14 @@ describe('message cache file migration', () => {
     expect(state.files.size).toBe(0);
     expect([...state.legacy]).toEqual([['preferences', 'keep']]);
   });
+  it('discards only legacy AsyncStorage copies, keeping files and other keys', async () => {
+    state.legacy.set('cache.a', 'old'); state.legacy.set('cache.b', 'old'); state.legacy.set('preferences', 'keep');
+    await storage.setItem('cache.c', 'new');
+    await storage.discardLegacy('cache');
+    expect([...state.legacy]).toEqual([['preferences', 'keep']]);
+    expect(await storage.getItem('cache.c')).toBe('new');
+    expect(await storage.getItem('cache.a')).toBeNull();
+  });
   it('retains files beyond 6 MB total without evicting earlier entries', async () => {
     const body = 'x'.repeat(1024 * 1024);
     for (let i = 0; i < 8; i++) await storage.setItem(`cache.${i}`, body);
