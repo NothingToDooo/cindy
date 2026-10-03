@@ -377,11 +377,23 @@ async function runVectorArm(
   const f32 = Buffer.from(Float32Array.from(queryVec).buffer);
   const { clause, params } = buildFilterClause(args, workdirCandidates);
   const vectorPoolLimit = clampInternalPoolLimit(args.vectorPoolLimit, ARM_POOL);
+  // vec0 supports rowid IN within its KNN cursor. Apply the remote scope before
+  // its candidate limit: filtering only outside the CTE lets hidden rows starve
+  // visible semantic hits. Reuse the arm predicate; local search stays unchanged.
+  const eligibleRowids = args.remoteVisibleOnly
+    ? `AND rowid IN (
+        SELECT j.rowid FROM embedding_jobs j
+        JOIN messages m ON m.id = j.source_id
+        JOIN sessions s ON s.id = m.session_id
+        WHERE ${clause}
+      )`
+    : '';
   const sql = `
     WITH knn AS (
       SELECT rowid, distance
         FROM "${CHAT_VEC_TABLE}"
        WHERE embedding MATCH ?
+         ${eligibleRowids}
        ORDER BY distance
        LIMIT ?
     )
@@ -404,7 +416,13 @@ async function runVectorArm(
       role: string;
       createdAt: number;
       distance: number;
-    }>(sql, [f32, vectorPoolLimit * VEC_OVERFETCH, ...params, vectorPoolLimit]);
+    }>(sql, [
+      f32,
+      ...(args.remoteVisibleOnly ? params : []),
+      vectorPoolLimit * VEC_OVERFETCH,
+      ...params,
+      vectorPoolLimit,
+    ]);
     return {
       rows: rows.map((r) => ({
         messageId: r.messageId,
