@@ -99,14 +99,10 @@ function lockPath(): string {
   return `${filePath()}.lock`;
 }
 
-function legacyMachineWideDir(): string {
-  return path.join(os.homedir(), '.cindy');
-}
-
 function sharedSkillRootsLockPath(): string {
   // Same path as the former machine-wide marker lock, so builds that still use
   // the home-level marker keep serializing their shared-root writes with ours.
-  return path.join(legacyMachineWideDir(), `${FILE_NAME}.lock`);
+  return path.join(os.homedir(), '.cindy', `${FILE_NAME}.lock`);
 }
 
 function normalizeOwnerId(value: unknown): string | null | undefined {
@@ -202,29 +198,15 @@ function normalizeQuarantineRecord(raw: unknown): QuarantineState | null {
   };
 }
 
-/**
- * A passive instance can never seed its own marker. When it joins an older
- * primary on the same userData, that primary only publishes the legacy
- * machine-wide marker, so read that pair until the instance marker exists.
- */
-function readsLegacyPassiveMarker(): boolean {
-  return isPassiveSharedUserDataInstance()
-    && readStateFile(filePath(), normalizeRecord).kind === 'missing';
-}
-
+// Only this instance's marker is authoritative. A passive join beside an older
+// primary that still publishes the legacy machine-wide marker fails closed
+// (known boundary for mixed dev builds; --isolated is unaffected).
 function readState(): StateRead {
-  const observed = readStateFile(filePath(), normalizeRecord);
-  if (observed.kind === 'missing' && isPassiveSharedUserDataInstance()) {
-    return readStateFile(path.join(legacyMachineWideDir(), FILE_NAME), normalizeRecord);
-  }
-  return observed;
+  return readStateFile(filePath(), normalizeRecord);
 }
 
 function readQuarantineState(): QuarantineRead {
-  const target = readsLegacyPassiveMarker()
-    ? path.join(legacyMachineWideDir(), QUARANTINE_FILE_NAME)
-    : quarantinePath();
-  return readStateFile(target, normalizeQuarantineRecord);
+  return readStateFile(quarantinePath(), normalizeQuarantineRecord);
 }
 
 function readStateFile<T>(
