@@ -4,7 +4,7 @@ import { escapeWecomMarkdown, type IMMessageEvent, type WecomIM } from '@cindy/i
 import { autoReviewUnavailablePromptLine } from '../shared/autoReviewUnavailablePrompt';
 import { isStopCommand } from '../shared/controlCommands';
 import type { SharedPermission } from '../../maker-ipc/sharedPermission';
-import { permissionOutcomeText } from '../shared/permissionPresentation';
+import { INTERACTION_CHOICE_RECEIVED_TEXT, permissionOutcomeText } from '../shared/permissionPresentation';
 
 interface PendingInteraction {
   request: InteractionRequest;
@@ -100,7 +100,7 @@ export class WecomTextInteractions {
     clearTimeout(pending.timer);
     this.pending.delete(event.senderId);
     pending.resolve(decision);
-    void this.im.sendText(event.senderId, '已收到你的选择，继续处理。');
+    void this.im.sendText(event.senderId, INTERACTION_CHOICE_RECEIVED_TEXT);
     return true;
   }
 }

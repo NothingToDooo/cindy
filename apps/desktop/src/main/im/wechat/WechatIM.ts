@@ -25,7 +25,7 @@ import {
 } from '@cindy/wechat-ilink';
 import type { InteractionDecision, InteractionRequest } from '@cindy/maker-core';
 import type { SharedPermission } from '../../maker-ipc/sharedPermission';
-import { permissionOutcomeText } from '../shared/permissionPresentation';
+import { INTERACTION_CHOICE_RECEIVED_TEXT, permissionOutcomeText } from '../shared/permissionPresentation';
 
 import { autoReviewUnavailablePromptLine } from '../shared/autoReviewUnavailablePrompt';
 import type { ImSessionRepo } from '../shared/sessionRepo';
@@ -1137,7 +1137,7 @@ export class WechatIM extends BaseIM implements RichChannelIM {
     clearTimeout(pending.timer);
     this.#pendingInteractions.delete(task.peerId);
     pending.resolve(decision);
-    await this.#commitAcceptedReply(task, '已收到你的选择，继续处理。');
+    await this.#commitAcceptedReply(task, INTERACTION_CHOICE_RECEIVED_TEXT);
     await this.#flushCurrentOutbox(task.bindingEpoch);
   }
 
@@ -1159,7 +1159,7 @@ export class WechatIM extends BaseIM implements RichChannelIM {
         {
           peerId: message.senderId,
           text: decision
-            ? '已收到你的选择，继续处理。'
+            ? INTERACTION_CHOICE_RECEIVED_TEXT
             : '回复格式不正确。请按上一条消息提示回复；权限确认只支持“允许”或“拒绝”。',
           contextToken: message.contextToken,
           clientId: randomUUID(),

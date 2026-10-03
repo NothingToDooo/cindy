@@ -38,6 +38,36 @@ it('Desktop confirmation clears the text reply waiter and sends the same result'
 });
 
 describe('formatWecomInteractionPrompt', () => {
+  it.each([
+    { behavior: 'allow' as const, reason: undefined, outcome: '已允许' },
+    { behavior: 'deny' as const, reason: 'user_denied', outcome: '已拒绝' },
+    { behavior: 'deny' as const, reason: 'session_aborted', outcome: '已失效' },
+  ])('only acknowledges a paused choice until the Host settles $outcome', async ({ behavior, reason, outcome }) => {
+    let intercept!: (event: IMMessageEvent) => boolean;
+    const sendText = vi.fn(async () => ({ messageId: 'result' }));
+    const im = {
+      onTextMessageIntercept: (handler: typeof intercept) => { intercept = handler; },
+      onStatusChange: vi.fn(),
+      sendMarkdownText: vi.fn(async () => ({ messageId: 'prompt' })),
+      sendText,
+    } as unknown as WecomIM;
+    const interactions = new WecomTextInteractions(im);
+    const sharedPermission = createSharedPermission();
+    // The Host accepts the proposal but holds execution while paused.
+    sharedPermission.decide = vi.fn(() => true);
+    const result = interactions.handle('owner', permissionRequest({}), { sharedPermission });
+    await Promise.resolve();
+    expect(intercept({ senderId: 'owner', text: '允许' } as IMMessageEvent)).toBe(true);
+    await Promise.resolve();
+    expect(sharedPermission.decide).toHaveBeenCalledWith({ kind: 'permission', behavior: 'allow' });
+    expect(sharedPermission.decision).toBeUndefined();
+    expect(sendText.mock.calls).toEqual([['owner', '已收到你的选择。']]);
+    sharedPermission.settle({ kind: 'permission', behavior, ...(reason ? { reason } : {}) });
+    await expect(result).resolves.toMatchObject({ behavior });
+    await vi.waitFor(() => expect(sendText).toHaveBeenLastCalledWith('owner', expect.stringContaining(outcome)));
+    expect(sendText).toHaveBeenCalledTimes(2);
+  });
+
   it('在允许用户审批前展示工具参数', () => {
     const prompt = formatWecomInteractionPrompt(
       permissionRequest({

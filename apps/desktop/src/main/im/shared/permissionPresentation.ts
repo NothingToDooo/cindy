@@ -7,6 +7,9 @@ import {
 import { hasSessionPermissionUpdates } from '@cindy/maker-core';
 import { forgetSharedPending, registerPendingExternal } from './pendingInteractions';
 
+/** Receipt only: the Host may hold the choice until the task resumes. */
+export const INTERACTION_CHOICE_RECEIVED_TEXT = '已收到你的选择。';
+
 /** Text-only channels and Hook share the same final permission wording. */
 export function permissionOutcomeText(decision: InteractionDecision, toolName?: string): string {
   const status =

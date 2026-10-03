@@ -2810,7 +2810,7 @@ describe('交互卡链路(interaction listener 覆盖)', () => {
     await expect(decisionPromise).resolves.toEqual({
       kind: 'permission',
       behavior: 'deny',
-      reason: 'hook_interaction_timeout',
+      reason: 'hook_turn_terminal',
     });
     expect(cancels).toEqual([{ interactionId: 'int-pd', reason: expect.stringContaining('来源：') }]);
     expect(cancels[0].reason).toContain('Bash');
