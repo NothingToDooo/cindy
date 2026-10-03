@@ -5,6 +5,26 @@ import {
 
 afterEach(() => setRemoteBotSessionLookup(null));
 
+it.each([false, true])('rechecks parent references on repeated history delivery (batch=%s)', async (useBatch) => {
+  let parentAccess: 'visible' | 'hidden' | 'missing' = 'visible';
+  const single = vi.fn(async (id: string) => id === 'parent' ? parentAccess : 'ordinary' as const);
+  const batch = vi.fn(async (ids: readonly string[]) => new Map(ids.map((id) => [id, id === 'parent' ? parentAccess : 'ordinary' as const])));
+  setRemoteBotSessionLookup(single, useBatch ? batch : null);
+  const result = { ok: true, sessions: [{ id: 'child', parentSessionId: 'parent' }], nextCursor: 'cursor', hasMore: true };
+  expect(await projectRemoteSessionResult('local-db:history:query', result)).toEqual(result);
+  for (const status of ['hidden', 'missing'] as const) {
+    parentAccess = status;
+    expect(await projectRemoteSessionResult('local-db:history:query', result)).toEqual({
+      ...result, sessions: [{ id: 'child' }],
+    });
+  }
+  expect(result.sessions[0].parentSessionId).toBe('parent');
+  if (useBatch) {
+    expect(batch).toHaveBeenLastCalledWith(['child', 'parent'], 'session');
+    expect(single).not.toHaveBeenCalled();
+  }
+});
+
 it('rejects stale history pages without returning hidden content or pagination metadata', async () => {
   let hide = false;
   setRemoteBotSessionLookup(async (id) => hide && id === 'secret' ? 'hidden' : 'ordinary');

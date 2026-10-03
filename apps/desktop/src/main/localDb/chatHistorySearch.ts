@@ -133,7 +133,9 @@ export async function searchChatHistoryHybrid(
     args.workdir != null ? await resolveStoredWorkingDirCandidates(args.workdir) : null;
   // 空候选 ⟺ 库里不存在该目录的任何拼写(typo / 已删),必然零命中——在两路
   // arm 之前短路,避免向量 arm 白算一次 query embedding(Codex review)。
-  if (workdirCandidates !== null && workdirCandidates.length === 0) {
+  // Remote requests instead use the filtered arm/probe: the diagnostic must be
+  // identical when a directory exists only in hidden sessions or is absent.
+  if (!args.remoteVisibleOnly && workdirCandidates !== null && workdirCandidates.length === 0) {
     return {
       hits: [],
       sessions: {},
@@ -327,11 +329,23 @@ async function runVectorArm(
   if (!isDbClientVecAvailable()) {
     return { rows: [], skipReason: 'sqlite-vec 扩展未加载, 本次仅用 FTS 全文检索。' };
   }
+  const { clause, params } = buildFilterClause(args, workdirCandidates);
+  // The availability probe and KNN must see the same eligible rows. Probing the
+  // full vector table would expose hidden data through vector_used/skip_reason.
+  const eligibleRowids = args.remoteVisibleOnly
+    ? `rowid IN (
+        SELECT j.rowid FROM embedding_jobs j
+        JOIN messages m ON m.id = j.source_id
+        JOIN sessions s ON s.id = m.session_id
+        WHERE ${clause}
+      )`
+    : '';
   // gate 3: 向量表里有无数据? 无 → 用户没开"聊天记录语义索引"或尚未嵌完,
   // 提前短路, 不浪费一次 query embedding 的 API 调用。
   try {
     const probe = await getDbClient().queryOne<{ rowid: number }>(
-      `SELECT rowid FROM "${CHAT_VEC_TABLE}" LIMIT 1`,
+      `SELECT rowid FROM "${CHAT_VEC_TABLE}" ${eligibleRowids ? `WHERE ${eligibleRowids}` : ''} LIMIT 1`,
+      args.remoteVisibleOnly ? params : [],
     );
     if (!probe) {
       return {
@@ -375,25 +389,16 @@ async function runVectorArm(
   // flatten 回外层重新触发该错误。
   // float32 必须以 Buffer(little-endian)绑定为 BLOB(better-sqlite3 不接受裸 Float32Array)。
   const f32 = Buffer.from(Float32Array.from(queryVec).buffer);
-  const { clause, params } = buildFilterClause(args, workdirCandidates);
   const vectorPoolLimit = clampInternalPoolLimit(args.vectorPoolLimit, ARM_POOL);
   // vec0 supports rowid IN within its KNN cursor. Apply the remote scope before
   // its candidate limit: filtering only outside the CTE lets hidden rows starve
   // visible semantic hits. Reuse the arm predicate; local search stays unchanged.
-  const eligibleRowids = args.remoteVisibleOnly
-    ? `AND rowid IN (
-        SELECT j.rowid FROM embedding_jobs j
-        JOIN messages m ON m.id = j.source_id
-        JOIN sessions s ON s.id = m.session_id
-        WHERE ${clause}
-      )`
-    : '';
   const sql = `
     WITH knn AS (
       SELECT rowid, distance
         FROM "${CHAT_VEC_TABLE}"
        WHERE embedding MATCH ?
-         ${eligibleRowids}
+         ${eligibleRowids ? `AND ${eligibleRowids}` : ''}
        ORDER BY distance
        LIMIT ?
     )

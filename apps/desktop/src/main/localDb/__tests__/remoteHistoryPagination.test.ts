@@ -109,6 +109,11 @@ describe.each(modes)('%s remote history visibility', (mode) => {
       queryOne: async (sql: string, params: unknown[] = []) => db.prepare(sql).get(...params),
     };
     setChatEmbeddingEnabled(true);
+    setRemoteBotSessionLookup(async (id, kind) =>
+      (await readRemoteBotSessionAccessBatch([id], kind)).get(id) ?? 'hidden',
+      readRemoteBotSessionAccessBatch,
+    );
+    registerHistoryQueryIpc();
   });
   afterEach(() => {
     setRemoteBotSessionLookup(null);
@@ -140,6 +145,18 @@ describe.each(modes)('%s remote history visibility', (mode) => {
     limit: 1,
     offset: 0,
     remoteVisibleOnly: true,
+  };
+
+  const invokeHistory = async (tool: string, args: Record<string, unknown>) => {
+    const channel = 'local-db:history:query';
+    const request = { tool, args };
+    await assertRemoteBotInvocationAllowed([request], channel);
+    const result = await runDeviceLinkInvokeContext(
+      { controllerDeviceId: 'owner', channel },
+      () => handlers.get(channel)!({}, request),
+    );
+    await assertRemoteBotInvocationAllowed([request], channel);
+    return projectRemoteSessionResult(channel, result);
   };
 
   it('paginates the visible list without hidden rows consuming slots or cursors', async () => {
@@ -217,7 +234,7 @@ describe.each(modes)('%s remote history visibility', (mode) => {
       hasMore: false,
       poolSize: 0,
       poolCapped: false,
-      vectorUsed: true,
+      vectorUsed: false,
     });
   });
 
@@ -245,22 +262,7 @@ describe.each(modes)('%s remote history visibility', (mode) => {
 
   it.each([true, false])('does not distinguish inaccessible IDs from missing IDs across the remote query (FTS only=%s)', async (ftsOnly) => {
     setChatEmbeddingEnabled(!ftsOnly);
-    setRemoteBotSessionLookup(async (id, kind) =>
-      (await readRemoteBotSessionAccessBatch([id], kind)).get(id) ?? 'hidden',
-      readRemoteBotSessionAccessBatch,
-    );
-    registerHistoryQueryIpc();
-    const channel = 'local-db:history:query';
-    const invoke = async (session_ids: string[]) => {
-      const request = { tool: 'search_chat_history', args: { query: 'needle', session_ids, limit: 1 } };
-      await assertRemoteBotInvocationAllowed([request], channel);
-      const result = await runDeviceLinkInvokeContext(
-        { controllerDeviceId: 'owner', channel },
-        () => handlers.get(channel)!({}, request),
-      );
-      await assertRemoteBotInvocationAllowed([request], channel);
-      return projectRemoteSessionResult(channel, result);
-    };
+    const invoke = (session_ids: string[]) => invokeHistory('search_chat_history', { query: 'needle', session_ids, limit: 1 });
     for (const ids of [['hidden-0'], ['archived'], ['orphan'], ['hidden-0', 'archived', 'orphan', 'missing']]) {
       const empty = await invoke(ids);
       expect(empty).toMatchObject({ ok: true, hits: [], sessions: {}, hasMore: false, nextCursor: null });
@@ -278,5 +280,43 @@ describe.each(modes)('%s remote history visibility', (mode) => {
         db.exec('ROLLBACK TO inaccessible; RELEASE inaccessible');
       }
     }
+  });
+
+  it('projects parent references using current source visibility without changing local history', async () => {
+    for (const parent of ['visible', 'zero', 'hidden-0', 'archived', 'orphan', 'missing']) {
+      db.prepare("UPDATE sessions SET parent_session_id = ? WHERE id = 'ordinary'").run(parent);
+      const result = await invokeHistory('list_sessions', { order: 'asc', limit: 1 });
+      expect(result).toMatchObject({
+        ok: true,
+        sessions: [{ id: 'ordinary' }],
+        hasMore: true,
+      });
+      if (['visible', 'zero'].includes(parent)) {
+        expect(result).toHaveProperty('sessions.0.parentSessionId', parent);
+      } else {
+        expect(result).not.toHaveProperty('sessions.0.parentSessionId');
+      }
+      const local = await listSessionsForHistory({ ...listArgs, sessionIds: ['ordinary'], remoteVisibleOnly: false });
+      expect(local.items[0].parentSessionId).toBe(parent);
+    }
+  });
+
+  it('keeps all diagnostics identical with hidden-only vectors and no vectors', async () => {
+    db.exec(`DELETE FROM chat_messages_vec_v1 WHERE rowid IN (
+      SELECT rowid FROM embedding_jobs WHERE source_id IN ('ordinary', 'visible', 'zero'))`);
+    const before = await invokeHistory('search_chat_history', { query: 'needle' });
+    expect(before).toMatchObject({ ok: true, vector_used: false });
+    db.exec('DELETE FROM chat_messages_vec_v1');
+    expect(await invokeHistory('search_chat_history', { query: 'needle' })).toEqual(before);
+  });
+
+  it('does not expose an invisible-only workdir through empty-scope diagnostics', async () => {
+    // Host filesystem paths use the platform path implementation.
+    const workdir = path.resolve('hidden-workdir');
+    db.prepare("UPDATE sessions SET working_dir = ? WHERE id = 'hidden-0'").run(workdir);
+    const before = await invokeHistory('search_chat_history', { query: 'needle', workdir });
+    expect(before).toMatchObject({ ok: true, hits: [], vector_used: false });
+    db.exec("DELETE FROM sessions WHERE id = 'hidden-0'");
+    expect(await invokeHistory('search_chat_history', { query: 'needle', workdir })).toEqual(before);
   });
 });
