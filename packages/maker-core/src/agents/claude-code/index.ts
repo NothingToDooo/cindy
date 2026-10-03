@@ -174,6 +174,7 @@ import { isClaudeResumeSessionNotFound } from './invalid-resume.js';
 import { translateSdkMessage, newRuntimeState, type TurnState, type RuntimeState } from './translator.js';
 import { resetClaudeGenerationTiming } from './generation-timing.js';
 import type { Effort, PermissionMode } from '../../types/common.js';
+import { clampEffortToSupported } from '@cindy/model-providers/effort-resolution';
 import type {
   ScanAtResourcesOptions,
   ScanAtResourcesResult,
@@ -952,7 +953,9 @@ export class ClaudeCodeAgent extends BaseAgent {
   private sdkEffortForModel(model: string, effort: Effort): ClaudeSdkEffort | undefined {
     const descriptor = this.capabilities.availableModels.find((m) => m.id === model);
     if (descriptor && descriptor.efforts.length === 0) return undefined;
-    return clampEffortForClaude(effort);
+    // 会话档位可能来自上一个模型(如 Claude 的 xhigh),原样下发会被只认目录档位的
+    // 上游拒绝(GLM-5.3 收到 xhigh 回 400/1210,#5402)。按目标模型声明的档位收窄。
+    return clampEffortForClaude((clampEffortToSupported(effort, descriptor?.efforts) as Effort | undefined) ?? effort);
   }
 
   private sdkMaxEffortFallbackForModel(model: string): Exclude<ClaudeSdkEffort, 'max'> {

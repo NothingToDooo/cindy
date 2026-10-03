@@ -25,6 +25,7 @@ import type { AuthAdapter } from '../../../interfaces/auth-adapter.js';
 import type { AgentEvent } from '../../../types/events.js';
 import type { Logger } from '../../../interfaces/logger.js';
 import type { ModelDescriptor } from '../../../types/capabilities.js';
+import type { Effort } from '../../../types/common.js';
 
 const sdkMock = vi.hoisted(() => ({
   forkSession: vi.fn(),
@@ -206,6 +207,7 @@ async function startRewindableSession(
     idleTimeoutMs?: number;
     remoteHostId?: string;
     model?: string;
+    effort?: Effort;
     availableModels?: ModelDescriptor[];
     resolveModelContextLimit?: AgentDeps['resolveModelContextLimit'];
     shouldHandoffAfterContextAssessment?: (tokens: number, window: number) => boolean;
@@ -245,6 +247,7 @@ async function startRewindableSession(
   const handle = await agent.startSession({
     sessionId: 'session-rewind',
     model: options.model ?? 'claude-opus-4-6',
+    ...(options.effort ? { effort: options.effort } : {}),
     workingDir,
     permissionMode: 'acceptEdits',
     ...(options.remoteHostId ? { remoteHostId: options.remoteHostId } : {}),
@@ -673,6 +676,32 @@ describe('ClaudeCodeAgent runtime settings during rewind window', () => {
     await handle.setEffort?.('max');
 
     expect(firstQuery.applyFlagSettings).toHaveBeenLastCalledWith({ effortLevel: 'max' });
+
+    await handle.close();
+  });
+
+  it('clamps a carried-over xhigh to the target model efforts on start and live change (#5402)', async () => {
+    const glm: ModelDescriptor = {
+      id: 'z-ai/glm-5.3',
+      displayName: 'GLM-5.3',
+      contextWindow: 1_000_000,
+      efforts: ['low', 'medium', 'high', 'max'],
+      defaultEffort: 'high',
+    };
+    const { handle, firstQuery } = await startRewindableSession({
+      model: glm.id,
+      effort: 'xhigh',
+      availableModels: [...TEST_MODELS, glm],
+    });
+
+    expect(sdkMock.query.mock.calls[0]?.[0]?.options?.effort).toBe('high');
+
+    await handle.setEffort?.('xhigh');
+    expect(firstQuery.applyFlagSettings).toHaveBeenLastCalledWith({ effortLevel: 'high' });
+
+    await handle.setModel?.('claude-sonnet-5');
+    await handle.setEffort?.('xhigh');
+    expect(firstQuery.applyFlagSettings).toHaveBeenLastCalledWith({ effortLevel: 'xhigh' });
 
     await handle.close();
   });
@@ -2608,12 +2637,12 @@ describe('ClaudeCodeAgent runtime settings during rewind window', () => {
     await handle.send({ type: 'user', content: 'long bridge compact' });
 
     await expect(handle.setModel?.('claude-opus-4-6')).resolves.toBeUndefined();
-    await expect(handle.setEffort?.('xhigh')).resolves.toBeUndefined();
+    await expect(handle.setEffort?.('max')).resolves.toBeUndefined();
     await expect(handle.setFastMode?.(true)).resolves.toBeUndefined();
     await expect(handle.setPermissionMode?.('auto')).resolves.toBeUndefined();
 
     expect(secondQuery.setModel).toHaveBeenCalledWith('claude-opus-4-6[1m]');
-    expect(secondQuery.applyFlagSettings).toHaveBeenCalledWith({ effortLevel: 'xhigh' });
+    expect(secondQuery.applyFlagSettings).toHaveBeenCalledWith({ effortLevel: 'max' });
     expect(secondQuery.applyFlagSettings).toHaveBeenCalledWith({ fastMode: true });
     // Cindy 档 'auto' 映射到 SDK 'default'(见 toSdkPermissionMode)。
     expect(secondQuery.setPermissionMode).toHaveBeenCalledWith('default');
