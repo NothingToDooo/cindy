@@ -49,7 +49,6 @@ import {
   withGhostSkillProjectionOwnerCommit,
   withGhostSkillProjectionReadOnlyOwner,
   withGhostSkillProjectionReconcile,
-  withOwnerPrivateSkillProjectionMutation,
   withSharedGlobalSkillProjectionMutation,
   withSharedSkillRootsLock,
   withStableOwnerBoundaryMutation,
@@ -118,7 +117,7 @@ describe('Ghost skill projection boundary state', () => {
     pathMock.userDataDir = instanceA;
     expect(isGhostSkillProjectionBoundaryStableForOwner('cloud-user')).toBe(true);
     await expect(
-      withOwnerPrivateSkillProjectionMutation('cloud-user', async () => 'codex-home'),
+      withSharedGlobalSkillProjectionMutation('cloud-user', async () => 'codex-home'),
     ).resolves.toBe('codex-home');
     await expect(
       withGhostSkillProjectionReconcile('cloud-user', async () => 'reconciled'),
@@ -147,11 +146,11 @@ describe('Ghost skill projection boundary state', () => {
   it('treats a missing instance marker as unstable until this instance commits', async () => {
     expect(isGhostSkillProjectionBoundaryStableForOwner('cloud-user')).toBe(false);
     await expect(
-      withOwnerPrivateSkillProjectionMutation('cloud-user', async () => undefined),
+      withSharedGlobalSkillProjectionMutation('cloud-user', async () => undefined),
     ).rejects.toThrow('not stable');
   });
 
-  it('takes the owner lock before the shared-roots lock for shared mutations only', async () => {
+  it('takes the owner lock before the shared-roots lock', async () => {
     await commitOwner('owner-a');
     lockMock.acquired.length = 0;
 
@@ -159,22 +158,15 @@ describe('Ghost skill projection boundary state', () => {
     expect(lockMock.acquired).toEqual([__testing.lockPath(), __testing.sharedSkillRootsLockPath()]);
 
     lockMock.acquired.length = 0;
-    await withOwnerPrivateSkillProjectionMutation('owner-a', async () => undefined);
-    expect(lockMock.acquired).toEqual([__testing.lockPath()]);
-
-    lockMock.acquired.length = 0;
     await withSharedSkillRootsLock(async () => undefined);
     expect(lockMock.acquired).toEqual([__testing.sharedSkillRootsLockPath()]);
   });
 
-  it('keeps owner-private mutations available while another process holds the shared roots', async () => {
+  it('fails closed while another process holds the shared roots', async () => {
     await commitOwner('owner-a');
     lockMock.busyPaths.add(__testing.sharedSkillRootsLockPath());
     const shared = vi.fn(async () => undefined);
 
-    await expect(
-      withOwnerPrivateSkillProjectionMutation('owner-a', async () => 'private'),
-    ).resolves.toBe('private');
     await expect(withSharedGlobalSkillProjectionMutation('owner-a', shared)).rejects.toThrow(
       'lock is busy or unavailable',
     );

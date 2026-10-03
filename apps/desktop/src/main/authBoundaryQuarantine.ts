@@ -495,17 +495,6 @@ export async function withSharedGlobalSkillProjectionMutation<T>(
   return withStableOwnerBoundaryMutation(ownerId, () => withSharedRootsLock(mutation));
 }
 
-/**
- * Mutate owner-private skill projections (userData Codex homes and similar)
- * for this instance's stable owner. Never waits on other Cindy processes.
- */
-export async function withOwnerPrivateSkillProjectionMutation<T>(
-  ownerId: string | null,
-  mutation: () => Promise<T>,
-): Promise<T> {
-  return withStableOwnerBoundaryMutation(ownerId, mutation);
-}
-
 /** Serialize non-projection state that must agree with the same durable owner. */
 export async function withStableOwnerBoundaryMutation<T>(
   ownerId: string | null,

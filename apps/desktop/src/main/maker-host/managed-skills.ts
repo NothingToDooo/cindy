@@ -10,27 +10,13 @@ import {
 import type { AgentDeps } from '@cindy/maker-core';
 import { builtInSkillDescriptors, sharedBuiltInSkillsRoot } from './built-in-skills.js';
 import { getGhostManager, listAvailableGhostsForAuthorization } from '../cindy-brain/index.js';
-import {
-  withOwnerPrivateSkillProjectionMutation,
-  withSharedGlobalSkillProjectionMutation,
-} from '../authBoundaryQuarantine.js';
+import { withSharedGlobalSkillProjectionMutation } from '../authBoundaryQuarantine.js';
 import { prepareCodexGlobalSkillsLinks } from './codex-global-skills.js';
-
-function isInsideUserData(dir: string): boolean {
-  const relative = path.relative(app.getPath('userData'), path.resolve(dir));
-  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
-}
 
 /** Reconcile the selected app-server home, including independently routed accounts. */
 export async function prepareCindyCodexSkills(codexHome: string): Promise<void> {
   const ownerId = getActiveAppSession().dataOwnerId;
-  // Resumed imported threads run in their original history home (for example
-  // ~/.codex), which other Cindy processes may also project into. Only homes
-  // under this instance's userData skip the machine-wide lock.
-  const mutate = isInsideUserData(codexHome)
-    ? withOwnerPrivateSkillProjectionMutation
-    : withSharedGlobalSkillProjectionMutation;
-  await mutate(ownerId, async () => {
+  await withSharedGlobalSkillProjectionMutation(ownerId, async () => {
     await prepareCodexGlobalSkillsLinks(codexHome, {
       managedRoots: await cindyManagedSkillRoots(),
       managedSkills: await listCindyManagedSkills(),

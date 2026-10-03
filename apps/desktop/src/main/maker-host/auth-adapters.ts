@@ -101,7 +101,6 @@ import {
 } from '../appSessionState.js';
 import {
   assertGhostSkillProjectionBoundaryStableForOwner,
-  withOwnerPrivateSkillProjectionMutation,
   withSharedGlobalSkillProjectionMutation,
 } from '../authBoundaryQuarantine.js';
 import {
@@ -1383,9 +1382,7 @@ export class DesktopCodexAuthAdapter implements AuthAdapter {
     );
 
     const [skillsOutcome, rulesOutcome] = await Promise.all([
-      // Links live inside this instance's codex-home; other Cindy processes
-      // never contend for them.
-      withOwnerPrivateSkillProjectionMutation(ownerId, async () =>
+      withSharedGlobalSkillProjectionMutation(ownerId, async () =>
         prepareCodexGlobalSkillsLinks(this.codexHome, { managedRoots: await cindyManagedSkillRoots(), managedSkills: await listCindyManagedSkills() }),
       ).then(
         (r) => ({ ok: true as const, label: 'skills' as const, warnings: r.warnings }),
@@ -2501,7 +2498,7 @@ export class DesktopCodexAuthAdapter implements AuthAdapter {
     if (isCodexAccountProvider(options?.providerId)) {
       const ownerId = getActiveAppSession().dataOwnerId;
       await desktopClaudeAuthAdapter.ensureSharedGlobalSkills();
-      return { CODEX_HOME: await withOwnerPrivateSkillProjectionMutation(ownerId, async () =>
+      return { CODEX_HOME: await withSharedGlobalSkillProjectionMutation(ownerId, async () =>
         prepareCodexAccountHome(options!.providerId!, await cindyManagedSkillRoots(), await listCindyManagedSkills()),
       ) };
     }
