@@ -8,14 +8,25 @@ import { RichContentContext } from '@/session/richContentContext';
 import { RichContentRuntime } from '@/session/richContentRuntime';
 
 const state = vi.hoisted(() => ({
-  props: {} as any, image: null as any, layout: null as any, mounts: 0, live: 0,
+  props: {} as any, image: null as any, layout: null as any, mounts: 0, live: 0, imageLive: 0, height: 0,
   dark: false, inject: vi.fn(),
 }));
-vi.mock('react-native', () => ({
-  View: (props: any) => { if (props.onLayout) state.layout = props.onLayout; return props.children; },
-  Image: (props: any) => { state.image = props; return null; },
-  StyleSheet: { create: (v: unknown) => v, hairlineWidth: 1 },
-}));
+vi.mock('react-native', async () => {
+  const { useEffect } = await import('react');
+  return {
+    View: (props: any) => {
+      if (props.onLayout) state.layout = props.onLayout;
+      state.height = props.style?.find((style: any) => typeof style?.height === 'number')?.height;
+      return props.children;
+    },
+    Image: (props: any) => {
+      state.image = props;
+      useEffect(() => { state.imageLive++; return () => { state.imageLive--; }; }, []);
+      return null;
+    },
+    StyleSheet: { create: (v: unknown) => v, hairlineWidth: 1 },
+  };
+});
 vi.mock('react-native-webview', async () => {
   const { forwardRef, useEffect, useImperativeHandle } = await import('react');
   return { WebView: forwardRef((props: any, ref) => {
@@ -48,7 +59,7 @@ function tick(ms = 200) { act(() => vi.advanceTimersByTime(ms)); }
 function message(props: any, payload: unknown) { act(() => props.onMessage({ nativeEvent: { data: JSON.stringify(payload) } })); }
 beforeEach(() => {
   vi.useFakeTimers(); runtime = new RichContentRuntime();
-  state.mounts = 0; state.live = 0; state.image = null; state.dark = false;
+  state.mounts = 0; state.live = 0; state.imageLive = 0; state.image = null; state.layout = null; state.dark = false;
   root = createRoot(document.createElement('div'));
 });
 afterEach(() => { act(() => root.unmount()); runtime.clear(); vi.useRealTimers(); });
@@ -65,6 +76,55 @@ it('cancels unseen work, keeps visible content during a drag and reuses a snapsh
   render('mermaid', 'graph TD; A-->B'); tick(); expect(state.mounts).toBe(1);
   const previous = runtime; runtime = new RichContentRuntime(); previous.clear();
   render('mermaid', 'graph TD; A-->B'); tick(); expect(state.mounts).toBe(2);
+});
+
+it.each([false, true])('unmounts offscreen snapshots and revisits them without a WebView (dark=%s)', (dark) => {
+  state.dark = dark;
+  const source = 'graph TD; Hidden-->Visible';
+  render('mermaid', source); tick();
+  message(state.props, { type: 'mermaid-export', id: 'inline-preview', ok: true, base64: png });
+  expect(state.imageLive).toBe(1);
+  expect(state.height).toBe(220);
+  const uri = state.image.source.uri;
+  render('mermaid', source, false); tick();
+  expect(state.imageLive).toBe(0);
+  expect(state.live).toBe(0);
+  expect(state.height).toBe(220);
+  runtime.onScroll();
+  render('mermaid', source);
+  expect(state.imageLive).toBe(1);
+  expect(state.image.source.uri).toBe(uri);
+  tick();
+  expect(state.mounts).toBe(1);
+});
+
+it.each([false, true])('isolates formula heights by width and ignores old document reports (dark=%s)', (dark) => {
+  state.dark = dark;
+  const source = `width-sensitive-${dark}`;
+  render('math', source); tick();
+  const narrow = state.props;
+  message(narrow, { kind: 'math-height', stage: 'katex', height: 140 });
+  expect(state.height).toBe(140);
+  act(() => state.layout({ nativeEvent: { layout: { width: 480 } } }));
+  expect(state.height).toBe(60);
+  tick();
+  message(narrow, { kind: 'math-height', stage: 'katex', height: 200 });
+  expect(state.height).toBe(60);
+  // The previous width's final height must not suppress the new document's source height.
+  message(state.props, { kind: 'math-height', stage: 'source', height: 90 });
+  expect(state.height).toBe(90);
+  message(state.props, { kind: 'math-height', stage: 'katex', height: 80 });
+  expect(state.height).toBe(80);
+  act(() => state.layout({ nativeEvent: { layout: { width: 360 } } }));
+  expect(state.height).toBe(140);
+  tick();
+  message(state.props, { kind: 'math-height', stage: 'source', height: 70 });
+  expect(state.height).toBe(140);
+  act(() => state.layout({ nativeEvent: { layout: { width: 480 } } }));
+  expect(state.height).toBe(80);
+  act(() => root.render(null));
+  render('math', source);
+  expect(state.height).toBe(140);
 });
 
 it('ignores stale snapshots and invalidates content, theme and width independently', () => {
@@ -89,6 +149,22 @@ it('keeps the live view when snapshots fail or exceed the cache budget, and fall
   message(state.props, { type: 'mermaid-export', id: 'inline-preview', ok: true, base64: png });
   act(() => state.image.onError()); tick(); expect(state.live).toBe(1);
   expect(state.props.source.html).toContain('if (!false) return;');
+});
+
+it('keeps immediate formula mounting and measured height reuse without the Android runtime', () => {
+  const formula = () => createElement(MathFormulaWebView, { source: 'non-android-formula' });
+  act(() => root.render(formula()));
+  expect(state.layout).toBeNull();
+  expect(state.live).toBe(1);
+  message(state.props, { kind: 'math-height', stage: 'katex', height: 112 });
+  state.dark = true;
+  act(() => root.render(formula()));
+  expect(state.live).toBe(1);
+  expect(state.height).toBe(112);
+  act(() => root.render(null));
+  act(() => root.render(formula()));
+  expect(state.live).toBe(1);
+  expect(state.height).toBe(112);
 });
 
 it('reuses formula markup without restarting the current document and rejects late results from another source', () => {

@@ -181,7 +181,7 @@ export const MermaidDiagramWebView = forwardRef<MermaidDiagramWebViewHandle, {
       testID={testID}
       onLayout={previewEnabled ? (event) => setWidth(Math.round(event.nativeEvent.layout.width)) : undefined}
     >
-      {preview ? <Image
+      {active && preview ? <Image
         source={{ uri: preview }}
         resizeMode="contain"
         style={styles.preview}
