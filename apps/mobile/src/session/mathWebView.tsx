@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { RichContentContext, useDeferredRichContent } from './richContentContext';
 import { StyleSheet, View } from 'react-native';
 import { WebView, type WebViewMessageEvent } from 'react-native-webview';
 import { buildMathWebViewHtml } from '@/session/mathWebViewHtml';
@@ -50,13 +51,19 @@ export function MathFormulaWebView({
 }) {
   const styles = useThemedStyles(makeStyles);
   const { colors } = useTheme();
-  const renderIdentityRef = useRef({ active, source });
+  const runtime = useContext(RichContentContext);
+  const [width, setWidth] = useState(0);
+  const cacheKey = JSON.stringify(['math', source, colors.surface, colors.textPrimary, colors.textSecondary, width]);
+  // Read once per document identity; receiving a result must not reload the current document.
+  const cachedMarkup = useMemo(() => active ? runtime?.get(cacheKey) : undefined, [runtime, cacheKey, active]);
+  const mountWebView = useDeferredRichContent(active && (!runtime || width > 0), cacheKey);
+  const renderIdentityRef = useRef({ active, cacheKey });
   const renderGenerationRef = useRef(0);
   if (
     renderIdentityRef.current.active !== active
-    || renderIdentityRef.current.source !== source
+    || renderIdentityRef.current.cacheKey !== cacheKey
   ) {
-    renderIdentityRef.current = { active, source };
+    renderIdentityRef.current = { active, cacheKey };
     renderGenerationRef.current += 1;
   }
   const renderGeneration = renderGenerationRef.current;
@@ -73,19 +80,19 @@ export function MathFormulaWebView({
     setHeight((current) => current === nextHeight ? current : nextHeight);
   }, [source]);
   useEffect(() => {
-    if (!active) return undefined;
+    if (!mountWebView) return undefined;
     return registerMobileMessageWebView('math');
-  }, [active]);
+  }, [mountWebView]);
   const html = useMemo(
     () =>
-      active
+      mountWebView
         ? buildMathWebViewHtml(source, {
             background: colors.surface,
             textPrimary: colors.textPrimary,
             textSecondary: colors.textSecondary,
-          })
+          }, cachedMarkup, !!runtime)
         : '',
-    [active, colors.surface, colors.textPrimary, colors.textSecondary, source],
+    [mountWebView, cachedMarkup, colors.surface, colors.textPrimary, colors.textSecondary, source, runtime],
   );
   // 本次挂载是否已应用过 KaTeX 最终态高度:应用过之后,迟到的过渡态上报
   // (乱序消息)不允许再把高度拉回去。
@@ -98,7 +105,14 @@ export function MathFormulaWebView({
         kind?: string;
         stage?: string;
         height?: number;
+        markup?: unknown;
       };
+      if (payload.kind === 'math-rendered') {
+        if (typeof payload.markup === 'string' && payload.markup.length <= 200_000) {
+          runtime?.set(cacheKey, payload.markup);
+        }
+        return;
+      }
       if (payload.kind !== 'math-height' || typeof payload.height !== 'number') return;
       if (!Number.isFinite(payload.height) || payload.height <= 0) return;
       const isFinalStage = payload.stage === 'katex';
@@ -124,10 +138,12 @@ export function MathFormulaWebView({
     } catch {
       // 非 JSON 消息不属于本组件协议,忽略。
     }
-  }, [active, renderGeneration, source]);
+  }, [active, renderGeneration, source, cacheKey, runtime]);
   return (
-    <View style={[styles.container, { height }]} testID={testID}>
-      {active ? <WebView
+    <View style={[styles.container, { height }]} testID={testID}
+      onLayout={runtime ? (event) => setWidth(Math.round(event.nativeEvent.layout.width)) : undefined}>
+      {mountWebView ? <WebView
+        key={cacheKey}
         automaticallyAdjustContentInsets={false}
         javaScriptEnabled
         nestedScrollEnabled
