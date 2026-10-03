@@ -735,12 +735,60 @@ describe('ClaudeCodeAgent runtime settings during rewind window', () => {
     expect(firstQuery.applyFlagSettings).toHaveBeenLastCalledWith({ effortLevel: 'max' });
     expect(handle.getEffort?.()).toBe('max');
 
-    // Same SDK level after narrowing: no redundant effort write.
-    firstQuery.applyFlagSettings.mockClear();
-    await handle.setModel?.('claude-opus-4-6', { effort: 'max' });
-    expect(firstQuery.applyFlagSettings.mock.calls).toEqual([
-      [{ availableModels: expect.any(Array) }],
-    ]);
+    await handle.close();
+  });
+
+  it('re-applies on a hot switch even when the selected effort is unchanged, since the runtime may have fallen back (#5402)', async () => {
+    const glm: ModelDescriptor = {
+      id: 'z-ai/glm-5.3',
+      displayName: 'GLM-5.3',
+      contextWindow: 1_000_000,
+      efforts: ['low', 'medium', 'high', 'max'],
+      defaultEffort: 'high',
+    };
+    const { handle, firstQuery } = await startRewindableSession({
+      model: 'claude-sonnet-5',
+      availableModels: [...TEST_MODELS, glm],
+    });
+    // An older runtime rejects max; the live Query actually keeps xhigh while the session keeps max.
+    firstQuery.applyFlagSettings
+      .mockRejectedValueOnce(new Error('invalid effortLevel: max'))
+      .mockResolvedValueOnce(undefined);
+    await handle.setEffort?.('max');
+    expect(firstQuery.applyFlagSettings).toHaveBeenLastCalledWith({ effortLevel: 'xhigh' });
+
+    // Same selected max on GLM-5.3: the sticky xhigh must still be replaced.
+    await handle.setModel?.(glm.id);
+    expect(firstQuery.applyFlagSettings).toHaveBeenLastCalledWith({ effortLevel: 'max' });
+
+    await handle.close();
+  });
+
+  it('re-applies the narrowed effort when the model drifts during query rebuild (#5402)', async () => {
+    const glm: ModelDescriptor = {
+      id: 'z-ai/glm-5.3',
+      displayName: 'GLM-5.3',
+      contextWindow: 1_000_000,
+      efforts: ['low', 'medium', 'high', 'max'],
+      defaultEffort: 'high',
+    };
+    const { handle } = await startRewindableSession({
+      model: 'claude-sonnet-5',
+      effort: 'xhigh',
+      availableModels: [...TEST_MODELS, glm],
+    });
+    await handle.commitRewindFiles?.('user-uuid-1', 'assistant-uuid-1');
+
+    const secondQuery = createFakeQuery();
+    sdkMock.query.mockImplementationOnce(() => {
+      // Only the model drifts; the selected effort stays xhigh.
+      void handle.setModel?.(glm.id);
+      return secondQuery;
+    });
+    await handle.send({ type: 'user', content: 'switch to glm during rebuild' });
+
+    expect(secondQuery.setModel).toHaveBeenCalled();
+    expect(secondQuery.applyFlagSettings).toHaveBeenLastCalledWith({ effortLevel: 'high' });
 
     await handle.close();
   });

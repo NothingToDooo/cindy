@@ -5831,6 +5831,17 @@ export class ClaudeCodeAgent extends BaseAgent {
       fastMode: boolean;
       sdkPermissionMode: SdkPermissionMode;
     };
+    /**
+     * 按目标路由收窄档位并写入当前 Query。effortLevel 是 sticky flag,且旧 runtime 拒绝
+     * max 时实际生效的是回退档,与 mutableEffort 不一定相同;因此切模(含重建回放)后一律
+     * 重下发,不按「新旧档位相同」跳过,否则上一个模型的 xhigh 会打给 GLM-5.3(1210,#5402)。
+     */
+    async function applyRouteEffort(model: string, effort: Effort, providerId: string | null): Promise<void> {
+      const sdkEffort = getSdkEffortForModel(model, effort, providerId);
+      if (!sdkEffort) return;
+      const appliedEffort = await applyClaudeEffortFlagSettings(q, sdkEffort, getSdkMaxEffortFallbackForModel(model));
+      log.debug('applied route effort', { model, effort, sdk: appliedEffort, downgraded: appliedEffort !== sdkEffort });
+    }
     async function replayRuntimeDrift(snapshot: QueryRuntimeSnapshot, label: string): Promise<void> {
       for (let pass = 0; pass < 5; pass += 1) {
         let replayed = false;
@@ -5846,6 +5857,10 @@ export class ClaudeCodeAgent extends BaseAgent {
             await q.setModel(sdkModelFor(targetModel));
             snapshot.model = targetModel;
             log.debug(`${label}: replayed setModel`, { model: targetModel });
+            // 新 Query 的档位按旧模型构建;切模漂移时同 live setModel 一样按目标路由重下发。
+            const targetEffort = mutableEffort;
+            await applyRouteEffort(targetModel, targetEffort, mutableProviderId);
+            snapshot.effort = targetEffort;
           } catch (e) {
             log.warn(`${label}: replay setModel failed`, { error: String(e) });
           }
@@ -5853,22 +5868,11 @@ export class ClaudeCodeAgent extends BaseAgent {
         if (mutableEffort !== snapshot.effort) {
           replayed = true;
           const targetEffort = mutableEffort;
-          const sdkEffort = getSdkEffortForModel(mutableModel, targetEffort, mutableProviderId);
-          if (sdkEffort) {
-            try {
-              const appliedEffort = await applyClaudeEffortFlagSettings(
-                q,
-                sdkEffort,
-                getSdkMaxEffortFallbackForModel(mutableModel),
-              );
-              log.debug(`${label}: replayed setEffort`, {
-                effort: targetEffort,
-                sdk: appliedEffort,
-                downgraded: appliedEffort !== sdkEffort,
-              });
-            } catch (e) {
-              log.warn(`${label}: replay setEffort failed`, { error: String(e) });
-            }
+          try {
+            await applyRouteEffort(mutableModel, targetEffort, mutableProviderId);
+            log.debug(`${label}: replayed setEffort`, { effort: targetEffort });
+          } catch (e) {
+            log.warn(`${label}: replay setEffort failed`, { error: String(e) });
           }
           snapshot.effort = targetEffort;
         }
@@ -7097,23 +7101,14 @@ export class ClaudeCodeAgent extends BaseAgent {
             availableModels: currentAvailableSdkModels(newModel),
           });
           await q.setModel(sdkModel);
-          // effortLevel 是 sticky flag:热切不重下发时,上一个模型的 xhigh 会原样打给
-          // 只认 low/high/max 的目标模型(GLM-5.3 回 400/1210,#5402)。按目标模型重新收窄。
-          const previousSdkEffort = getSdkEffortForModel(mutableModel, mutableEffort, mutableProviderId);
-          const nextSdkEffort = getSdkEffortForModel(
-            newModel, setModelOpts?.effort ?? mutableEffort, targetProviderId ?? null,
-          );
-          if (nextSdkEffort && nextSdkEffort !== previousSdkEffort) {
-            // 切模已生效:档位重下发失败只 warn,不把整个 setModel 报成失败(同下方 auto 审查重配)。
-            await applyClaudeEffortFlagSettings(q, nextSdkEffort, getSdkMaxEffortFallbackForModel(newModel))
-              .catch((e) => {
-                log.warn('setModel: effort reapply for target model failed; model switch kept', {
-                  model: newModel,
-                  effort: nextSdkEffort,
-                  error: String(e),
-                });
+          // 切模已生效:档位重下发失败只 warn,不把整个 setModel 报成失败(同下方 auto 审查重配)。
+          await applyRouteEffort(newModel, setModelOpts?.effort ?? mutableEffort, targetProviderId ?? null)
+            .catch((e) => {
+              log.warn('setModel: effort reapply for target model failed; model switch kept', {
+                model: newModel,
+                error: String(e),
               });
-          }
+            });
         }
         if (setModelOpts?.effort) mutableEffort = setModelOpts.effort;
         const usedNativeAutoReview = usesNativeClaudeAutoReview();
