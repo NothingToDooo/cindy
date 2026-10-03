@@ -166,6 +166,20 @@ describe('summarizeAccountRateLimits', () => {
     ]);
   });
 
+  it('omits windows whose reset has passed when labelling by countdown', () => {
+    const past = Math.floor(NOW_MS / 1000) - 60;
+    const summary = summarizeAccountRateLimits({
+      primary: { usedPercent: 40, windowMinutes: 300, resetsAt: past },
+      secondary: { usedPercent: 10, windowMinutes: 10080 },
+    }, NOW_MS, undefined, () => 'unused');
+    expect(summary!.rows).toEqual([{ label: '周', value: '剩余 90% · 已用 10%' }]);
+    // Without countdown labels the existing reset-time rendering is unchanged.
+    const legacy = summarizeAccountRateLimits({
+      primary: { usedPercent: 40, windowMinutes: 300, resetsAt: past },
+    }, NOW_MS);
+    expect(legacy!.rows[0].value).toContain('重置');
+  });
+
   it('follows upstream window composition instead of assuming 5h exists (weekly-only)', () => {
     const summary = summarizeAccountRateLimits({
       primary: { usedPercent: 30, windowMinutes: 10080 },

@@ -165,6 +165,9 @@ export function summarizeAccountRateLimits(
       }),
     ];
     const resetsAt = readNumber(window.resetsAt);
+    // Countdown mode never presents a window whose reset has passed: its percentage
+    // belongs to the previous period until a new snapshot arrives.
+    if (resetLabel && resetsAt !== null && resetsAt > 0 && resetsAt * 1000 <= nowMs) continue;
     const countdownLabel =
       resetLabel && resetsAt !== null && resetsAt > 0 ? resetLabel(resetsAt) : null;
     if (!resetLabel) {
