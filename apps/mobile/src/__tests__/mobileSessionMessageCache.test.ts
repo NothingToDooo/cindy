@@ -18,6 +18,7 @@ vi.mock('@/session/messageCacheStorage', () => ({
     clear: vi.fn(async (prefix: string) => {
       for (const key of store.keys()) if (key.startsWith(`${prefix}.`)) store.delete(key);
     }),
+    migrateLegacy: vi.fn(async () => {}),
     legacyKeys: vi.fn(async (prefix: string) => [...store.keys()].filter((key) => key.startsWith(`${prefix}.`))),
     multiRemove: vi.fn(async (keys: readonly string[]) => {
       for (const key of keys) store.delete(key);
@@ -71,9 +72,9 @@ describe('mobileSessionMessageCache', () => {
     store.set('xdt.mobileSessionMessageCache.v1.a', '[]');
     store.set('xdt.mobileSessionMessageCache.v1.b', '[]');
     store.set('unrelated', 'keep');
-    vi.mocked(storage.getItem).mockClear();
+    vi.mocked(storage.migrateLegacy).mockClear();
     await migrateLegacySessionMessageCache();
-    expect(vi.mocked(storage.getItem).mock.calls.map(([key]) => key)).toEqual([
+    expect(vi.mocked(storage.migrateLegacy).mock.calls.map(([key]) => key)).toEqual([
       'xdt.mobileSessionMessageCache.v1.a', 'xdt.mobileSessionMessageCache.v1.b',
     ]);
     expect(storage.removeItem).not.toHaveBeenCalled();
@@ -88,13 +89,13 @@ describe('mobileSessionMessageCache', () => {
       await new Promise<void>((resolve) => { release = resolve; });
       return [...store.keys()].filter((key) => key.startsWith(`${prefix}.`));
     });
-    vi.mocked(storage.getItem).mockClear();
+    vi.mocked(storage.migrateLegacy).mockClear();
     const migration = migrateLegacySessionMessageCache();
     await vi.waitFor(() => expect(release).toBeTypeOf('function'));
     const clearing = clearCachedSessionMessages();
     release();
     await Promise.all([migration, clearing]);
-    expect(storage.getItem).not.toHaveBeenCalled();
+    expect(storage.migrateLegacy).not.toHaveBeenCalled();
     expect(store.has('xdt.mobileSessionMessageCache.v1.a')).toBe(false);
   });
 

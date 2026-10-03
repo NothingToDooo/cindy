@@ -173,7 +173,7 @@ export function clearCachedSessionMessages(): Promise<void> {
 
 // 文件缓存之前的版本把消息缓存写在 AsyncStorage,按需迁移只覆盖打开过的会话;未打开会话的
 // 旧副本会一直占着安卓 6 MiB 的库,挤掉发件箱 / 草稿写入(#5403)。旧副本里的 mobile-system-*
-// 卡片没有服务端副本,不能直接删,所以逐条走 getItem 迁成文件(成功后才删旧值)。
+// 卡片没有服务端副本,不能直接删,所以逐条迁成文件(成功后才删旧值;已有文件时文件为准,只删旧值)。
 // 迁移只搬运已有内容,不依赖登录身份;与同 key 写删共用队列,登出全清会让排队中的迁移作废。
 export async function migrateLegacySessionMessageCache(): Promise<void> {
   for (const key of await messageCacheStorage.legacyKeys(STORAGE_KEY_PREFIX)) {
@@ -182,7 +182,7 @@ export async function migrateLegacySessionMessageCache(): Promise<void> {
     const keyEpoch = keyWriteEpochs.get(key) ?? 0;
     await enqueueCacheOperation(key, async () => {
       if (globalEpoch !== globalWriteEpoch || keyEpoch !== (keyWriteEpochs.get(key) ?? 0)) return;
-      await messageCacheStorage.getItem(key);
+      await messageCacheStorage.migrateLegacy(key);
     });
   }
 }

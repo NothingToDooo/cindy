@@ -119,15 +119,29 @@ describe('message cache file migration', () => {
     expect(state.files.size).toBe(0);
     expect([...state.legacy]).toEqual([['preferences', 'keep']]);
   });
-  it('lists only legacy AsyncStorage keys, and getItem moves each into a file', async () => {
+  it('lists only legacy AsyncStorage keys, and migrateLegacy moves each into a file', async () => {
     state.legacy.set('cache.a', '["mobile-system-pwd"]'); state.legacy.set('preferences', 'keep');
     await storage.setItem('cache.c', 'new');
     const keys = await storage.legacyKeys('cache');
     expect(keys).toEqual(['cache.a']);
-    for (const key of keys) await storage.getItem(key);
+    for (const key of keys) await storage.migrateLegacy(key);
     expect([...state.legacy]).toEqual([['preferences', 'keep']]);
     expect(state.files.get('cache.a.json')).toBe('["mobile-system-pwd"]');
     expect(await storage.getItem('cache.c')).toBe('new');
+  });
+  it('deletes a leftover legacy copy when its file already exists', async () => {
+    state.files.set('cache.a.json', 'file');
+    state.legacy.set('cache.a', 'stale');
+    await storage.migrateLegacy('cache.a');
+    expect(state.legacy.size).toBe(0);
+    expect(state.files.get('cache.a.json')).toBe('file');
+    expect(io.write).not.toHaveBeenCalled();
+  });
+  it('keeps the legacy copy when migrating it into a file fails', async () => {
+    state.legacy.set('cache.a', 'old');
+    io.write.mockRejectedValueOnce(new Error('disk full'));
+    await storage.migrateLegacy('cache.a');
+    expect(state.legacy.get('cache.a')).toBe('old');
   });
   it('retains files beyond 6 MB total without evicting earlier entries', async () => {
     const body = 'x'.repeat(1024 * 1024);
