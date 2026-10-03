@@ -15,8 +15,8 @@ const { setAsyncStorageDbSize, DATABASE_SIZE_MB } =
   };
 
 describe("with-async-storage-db-size config plugin", () => {
-  it("raises the Android AsyncStorage limit above the 6 MiB default", () => {
-    expect(DATABASE_SIZE_MB).toBeGreaterThan(6);
+  it("raises the Android AsyncStorage limit from the 6 MiB default to 64 MiB", () => {
+    expect(DATABASE_SIZE_MB).toBe(64);
     const properties = setAsyncStorageDbSize([
       { type: "property", key: "newArchEnabled", value: "true" },
     ]);
