@@ -55,7 +55,7 @@ describe('session interaction router', () => {
       await expect(requestHostInteraction(host.session, permission('download-1'), new AbortController().signal))
         .resolves.toMatchObject({ behavior: 'allow' });
       expect(remote).toHaveBeenCalledOnce();
-      expect(desktop).not.toHaveBeenCalled();
+      expect(desktop).toHaveBeenCalledOnce();
       expect(host.setInteractionListener).toHaveBeenCalledOnce();
     } finally { lease.release(); }
   });
@@ -119,7 +119,7 @@ describe('session interaction router', () => {
       reason: 'desktop',
     });
     expect(channel).toHaveBeenCalledTimes(1);
-    expect(desktop).toHaveBeenCalledTimes(1);
+    expect(desktop).toHaveBeenCalledTimes(2);
     expect(harness.setInteractionListener).toHaveBeenCalledTimes(1);
   });
 

@@ -3,6 +3,7 @@ import type { IMMessageEvent, IMStatus, WecomIM } from '@cindy/im';
 import { describe, expect, it, vi } from 'vitest';
 
 import { formatWecomInteractionPrompt, WecomTextInteractions } from '../textInteractions';
+import { createSharedPermission } from '../../../maker-ipc/sharedPermission';
 
 function permissionRequest(
   input: Record<string, unknown>,
@@ -17,6 +18,24 @@ function permissionRequest(
     ...extras,
   };
 }
+
+it('Desktop confirmation clears the text reply waiter and sends the same result', async () => {
+  let intercept!: (event: IMMessageEvent) => boolean;
+  const sendText = vi.fn(async () => ({ messageId: 'result' }));
+  const im = {
+    onTextMessageIntercept: (handler: typeof intercept) => { intercept = handler; },
+    onStatusChange: vi.fn(),
+    sendMarkdownText: vi.fn(async () => ({ messageId: 'prompt' })),
+    sendText,
+  } as unknown as WecomIM;
+  const interactions = new WecomTextInteractions(im);
+  const sharedPermission = createSharedPermission();
+  const result = interactions.handle('owner', permissionRequest({ command: 'ls' }), { sharedPermission });
+  sharedPermission.decide({ kind: 'permission', behavior: 'allow' });
+  await expect(result).resolves.toMatchObject({ behavior: 'allow' });
+  expect(intercept({ senderId: 'owner', text: '拒绝' } as IMMessageEvent)).toBe(false);
+  await vi.waitFor(() => expect(sendText).toHaveBeenCalledWith('owner', expect.stringContaining('已允许')));
+});
 
 describe('formatWecomInteractionPrompt', () => {
   it('在允许用户审批前展示工具参数', () => {

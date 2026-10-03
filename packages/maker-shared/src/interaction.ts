@@ -39,6 +39,7 @@ export interface IssueConfirmPayload {
 }
 
 export interface PermissionReviewPresentation {
+  sourceDescription?: string;
   autoReviewUnavailable: boolean;
   canAlwaysAllow: boolean;
   code: string;
@@ -209,6 +210,7 @@ export function buildPermissionReviewPresentation(
 
   return {
     autoReviewUnavailable: permissionAutoReviewUnavailable(request),
+    ...(permissionSourceDescription(request) ? { sourceDescription: permissionSourceDescription(request)! } : {}),
     canAlwaysAllow,
     code: formatPermissionInput(toolName, input),
     description: permissionDescription(request),
@@ -836,6 +838,13 @@ export function permissionTitle(
   const toolName = readString(request.toolName) || 'tool';
   const tool = displayName || toolName;
   return presentationText(localizer, 'interaction.presentation.permission.title', `允许使用 ${tool}?`, { tool });
+}
+
+export function permissionSourceDescription(request: InteractionRequestLike): string | null {
+  const metadata = request.metadata;
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return null;
+  const source = (metadata as Record<string, unknown>).imSourceDescription;
+  return typeof source === 'string' ? source : null;
 }
 
 export function permissionDescription(request: InteractionRequestLike): string | null {

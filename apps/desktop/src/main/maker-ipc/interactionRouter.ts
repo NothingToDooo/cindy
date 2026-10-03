@@ -12,6 +12,7 @@ import type {
   InteractionRequest,
   TurnPermissionOrigin,
 } from '@cindy/maker-core';
+import { createSharedPermission, type SharedPermission } from './sharedPermission';
 
 export type TurnOrigin = TurnPermissionOrigin;
 
@@ -24,10 +25,15 @@ export interface InteractionRoute {
   origin: TurnOrigin;
   interactionSurface: InteractionSurface;
   timeoutMs?: number;
+  /** Main-owned source text, shared by Desktop and channel presentations. */
+  sourceDescription?: string;
   onStateChange?(state: InteractionRouteState): void;
 }
 
-export type InteractionHandler = (request: InteractionRequest) => Promise<InteractionDecision>;
+export type InteractionHandler = (
+  request: InteractionRequest,
+  permission?: SharedPermission,
+) => Promise<InteractionDecision>;
 
 export interface InteractionLifecycleObserver {
   onStart(request: InteractionRequest, route?: InteractionRoute): void;
@@ -48,6 +54,8 @@ type RouteRegistration =
   | {
       route: InteractionRoute & { interactionSurface: 'channel-card' | 'headless' };
       handle: InteractionHandler;
+      /** Apply existing channel restrictions before exposing a Desktop mirror. */
+      permissionGuard?: (request: Extract<InteractionRequest, { kind: 'permission' }>) => InteractionDecision | null;
       /**
        * Return true when the routed surface resolved its own handler promise.
        * Otherwise the router resolves the request with its kind-correct fallback.
@@ -169,17 +177,37 @@ class SessionInteractionRouter {
     }
 
     const active = this.activeRoute;
+    if (request.kind === 'permission' && active?.route.sourceDescription) {
+      request = { ...request,
+        metadata: { ...request.metadata, imSourceDescription: active.route.sourceDescription },
+        description: [active.route.sourceDescription, request.description].filter(Boolean).join('\n\n'),
+      };
+    }
     const handler =
       active?.route.interactionSurface === 'desktop'
         ? this.desktopHandler
         : active?.handle ?? this.desktopHandler;
     if (!handler) return safeDecision(request, 'no_interaction_route');
+    if (request.kind === 'permission' && active?.route.interactionSurface !== 'desktop' && active && 'permissionGuard' in active) {
+      try {
+        const blocked = active.permissionGuard?.(request);
+        if (blocked) return blocked;
+      } catch {
+        return safeDecision(request, 'interaction_handler_failed');
+      }
+    }
+
+    // Desktop-only confirmations retain their existing boundary. Every IM
+    // channel using this router automatically shares ordinary tool permissions.
+    const shared = request.kind === 'permission' && active?.route.interactionSurface === 'channel-card'
+      ? createSharedPermission() : undefined;
 
     let cancel!: (decision: InteractionDecision) => void;
     let cancelledByRouter = false;
     const cancelled = new Promise<InteractionDecision>((resolve) => {
       cancel = (decision) => {
         cancelledByRouter = true;
+        shared?.decide(decision);
         resolve(decision);
       };
     });
@@ -213,9 +241,23 @@ class SessionInteractionRouter {
         : null;
 
     try {
-      const handled = handler(request);
+      let handled: Promise<InteractionDecision>;
+      if (shared) {
+        const surfaces = this.desktopHandler ? [handler, this.desktopHandler] : [handler];
+        let failed = 0;
+        const fail = () => {
+          if (++failed === surfaces.length) shared.decide(safeDecision(request, 'interaction_handler_failed'));
+        };
+        for (const surface of surfaces) {
+          try { void surface(request, shared).then(shared.decide, fail); }
+          catch { fail(); }
+        }
+        handled = shared.result;
+      } else {
+        handled = handler(request);
+      }
       if (signal?.aborted) abort();
-      const decision = await Promise.race([handled, cancelled]);
+      const decision = await Promise.race([shared?.result ?? handled, cancelled]);
       this.notifyState(
         active?.route,
         !cancelledByRouter && this.activeRoute?.token === active?.token

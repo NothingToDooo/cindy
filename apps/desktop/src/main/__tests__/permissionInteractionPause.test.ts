@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import ts from 'typescript';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { InteractionDecision, InteractionRequest } from '@cindy/maker-core';
+import { createSharedPermission } from '../maker-ipc/sharedPermission';
 import { assertSharedTaskInteractionResolveCurrent, assertSharedTaskInvoke, setSharedTaskInteractionReader, type SharedTaskPeerCapture } from '../device-link/sharedTaskDispatch.js';
 
 // Execute the production listener and control adapter without booting Electron.
@@ -56,6 +57,7 @@ function harness() {
   const entries = new Map();
   const dismiss = vi.fn();
   const deps = {
+    createSharedPermission,
     getDeviceLinkInvokeContext: () => ({ sharedTask }),
     assertSharedTaskInteractionResolveCurrent,
     setSharedTaskInteractionReader,
@@ -120,7 +122,7 @@ it('does not consume the pending decision when membership is revoked after dispa
   expect(h.dismiss).toHaveBeenCalledTimes(1);
 });
 
-it.each(['permission', 'ask_user_question', 'plan_review'] as const)('rejects guest decisions after %s is handed to Feishu, including already-admitted requests', async (kind) => {
+it.each(['ask_user_question', 'plan_review'] as const)('rejects guest decisions after %s is handed to Feishu, including already-admitted requests', async (kind) => {
   const h = harness();
   const p = h.request(kind, 'task', kind);
   const peer: SharedTaskPeerCapture = {
@@ -142,6 +144,22 @@ it.each(['permission', 'ask_user_question', 'plan_review'] as const)('rejects gu
   taken.resolve(decision);
   await expect(p.promise).resolves.toEqual(decision);
   expect(h.entries.has(kind)).toBe(false);
+});
+
+it('keeps an authorized shared-task permission answer available after IM takeover', async () => {
+  const h = harness();
+  const p = h.request();
+  const [taken] = h.take('task');
+  expect(h.entries.get('permission').migrated).not.toBe(true);
+  h.setSharedTask({
+    author: { sharedTaskId: 'shared', sessionId: 'task', memberId: 'guest', accountId: 'guest', displayName: 'Guest' },
+    isCurrent: () => true, authorize: () => true,
+  });
+  const answer = { kind: 'permission', behavior: 'allow' } as const;
+  await expect(h.resolveFromIpc({}, 'permission', answer)).resolves.toEqual({ accepted: true });
+  taken.resolve({ kind: 'permission', behavior: 'deny' });
+  await expect(p.promise).resolves.toEqual(answer);
+  expect(h.dismiss).toHaveBeenCalledTimes(1);
 });
 
 it('rejects a guest replacement tool input without consuming the pending request', async () => {

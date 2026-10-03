@@ -471,6 +471,7 @@ async function retryUnconfirmedOpen(
   feishuEvents.emit('message', {
     channelName: 'feishu',
     senderId: laneUserId,
+    interactionSource: { chatName: entry.chatId, senderName: entry.senderOpenId },
     chatId: entry.chatId,
     contextId: entry.botAppId,
     messageId: entry.messageId,
@@ -1826,6 +1827,7 @@ async function processClaimedMessage(
   feishuEvents.emit('message', {
     channelName: 'feishu',
     senderId: laneUserId ?? senderOpenId,
+    interactionSource: { chatName: chatId, senderName: senderOpenId, threadName: data.message?.thread_id },
     ...(!isGroup && data.message?.thread_id && data.message?.root_id
       ? { replyThread: { rootMessageId: data.message.root_id, threadId: data.message.thread_id } }
       : {}),
