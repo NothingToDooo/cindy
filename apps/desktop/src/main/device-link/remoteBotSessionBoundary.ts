@@ -32,7 +32,8 @@ export async function assertRemoteBotInvocationAllowed(args: unknown[], channel 
     if (ids !== undefined && (!Array.isArray(ids) || ids.length > 50 || ids.some((id) => typeof id !== 'string' || !id || id.length > 512))) {
       throw new Error('[INVALID_PARAMS] Invalid history session IDs');
     }
-    await assertRemoteBotInvocationAllowed([{ sessionIds: ids }]);
+    // The source query applies visibility before ranking/pagination. Looking up
+    // requested IDs here would distinguish hidden sessions from missing ones.
     return;
   }
   if (channel === 'maker:review:start') {

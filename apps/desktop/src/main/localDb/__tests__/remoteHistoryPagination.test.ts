@@ -6,8 +6,16 @@ import { listSessionsForHistory } from '../chatHistoryReader';
 import { searchChatHistoryHybrid } from '../chatHistorySearch';
 import { readRemoteBotSessionAccessBatch } from '../ipc/botRemoteSessionAccess';
 import { setChatEmbeddingEnabled } from '../../embedders/chat-history-embedder';
+import { registerHistoryQueryIpc } from '../ipc/historyQuery';
+import { runDeviceLinkInvokeContext } from '../../device-link/invoke-context';
+import {
+  assertRemoteBotInvocationAllowed,
+  projectRemoteSessionResult,
+  setRemoteBotSessionLookup,
+} from '../../device-link/remoteBotSessionBoundary';
 
 const state = vi.hoisted(() => ({ client: null as any }));
+const handlers = vi.hoisted(() => new Map<string, (...args: any[]) => any>());
 vi.mock('../client/current', () => ({ getDbClient: () => state.client }));
 vi.mock('../../embedding-host', () => ({
   getEmbeddingService: () => ({ embedSync: async () => ({ embeddings: [[1]] }) }),
@@ -16,7 +24,12 @@ vi.mock('../../device-link/broadcast-tap.js', () => ({
   captureDataOwnerBroadcastScope: () => 1,
   isDataOwnerBroadcastScopeCurrent: () => true,
 }));
-vi.mock('electron', () => ({ app: { getPath: () => '' } }));
+vi.mock('electron', () => ({
+  app: { getPath: () => '' },
+  ipcMain: {
+    handle: (name: string, handler: (...args: any[]) => any) => handlers.set(name, handler),
+  },
+}));
 vi.mock('../../logger', () => ({ createLogger: () => ({ info: vi.fn(), warn: vi.fn() }) }));
 
 // Linux has no bundled sqlite-vec; keep the SQL fixture on every platform.
@@ -98,6 +111,8 @@ describe.each(modes)('%s remote history visibility', (mode) => {
     setChatEmbeddingEnabled(true);
   });
   afterEach(() => {
+    setRemoteBotSessionLookup(null);
+    handlers.clear();
     db.close();
     state.client = null;
   });
@@ -226,5 +241,42 @@ describe.each(modes)('%s remote history visibility', (mode) => {
     });
     expect(scoped.vectorUsed).toBe(true);
     expect(scoped.hits.map((hit) => hit.sessionId)).toEqual(['visible']);
+  });
+
+  it.each([true, false])('does not distinguish inaccessible IDs from missing IDs across the remote query (FTS only=%s)', async (ftsOnly) => {
+    setChatEmbeddingEnabled(!ftsOnly);
+    setRemoteBotSessionLookup(async (id, kind) =>
+      (await readRemoteBotSessionAccessBatch([id], kind)).get(id) ?? 'hidden',
+      readRemoteBotSessionAccessBatch,
+    );
+    registerHistoryQueryIpc();
+    const channel = 'local-db:history:query';
+    const invoke = async (session_ids: string[]) => {
+      const request = { tool: 'search_chat_history', args: { query: 'needle', session_ids, limit: 1 } };
+      await assertRemoteBotInvocationAllowed([request], channel);
+      const result = await runDeviceLinkInvokeContext(
+        { controllerDeviceId: 'owner', channel },
+        () => handlers.get(channel)!({}, request),
+      );
+      await assertRemoteBotInvocationAllowed([request], channel);
+      return projectRemoteSessionResult(channel, result);
+    };
+    for (const ids of [['hidden-0'], ['archived'], ['orphan'], ['hidden-0', 'archived', 'orphan', 'missing']]) {
+      const empty = await invoke(ids);
+      expect(empty).toMatchObject({ ok: true, hits: [], sessions: {}, hasMore: false, nextCursor: null });
+      const mixedIds = ['ordinary', 'visible', ...ids];
+      const visible = await invoke(mixedIds);
+      expect(visible).toMatchObject({ ok: true, hits: [{ sessionId: 'ordinary' }], hasMore: true });
+      // Use identical requests before/after deletion, including the echoed scope.
+      // No response field may reveal whether inaccessible targets still exist.
+      db.exec('SAVEPOINT inaccessible');
+      try {
+        for (const id of ids) db.prepare('DELETE FROM sessions WHERE id = ?').run(id);
+        expect(await invoke(ids)).toEqual(empty);
+        expect(await invoke(mixedIds)).toEqual(visible);
+      } finally {
+        db.exec('ROLLBACK TO inaccessible; RELEASE inaccessible');
+      }
+    }
   });
 });

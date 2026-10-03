@@ -21,12 +21,14 @@ it('rejects stale history pages without returning hidden content or pagination m
   await expect(projectRemoteSessionResult('local-db:history:query', { ...result, hits: [result.hits[1]] })).rejects.toThrow('[NOT_FOUND] History page is no longer available');
 });
 
-it('checks nested history target IDs and fails closed before visibility initialization', async () => {
+it('validates history target IDs without probing existence and fails closed before initialization', async () => {
   const args = [{ tool: 'search_chat_history', args: { session_ids: ['secret'] } }];
   await expect(assertRemoteBotInvocationAllowed(args, 'local-db:history:query')).rejects.toThrow('HOST_NOT_READY');
-  setRemoteBotSessionLookup(async () => 'hidden');
-  await expect(assertRemoteBotInvocationAllowed(args, 'local-db:history:query')).rejects.toThrow('NOT_FOUND');
+  const lookup = vi.fn(async () => 'hidden' as const);
+  setRemoteBotSessionLookup(lookup);
+  await expect(assertRemoteBotInvocationAllowed(args, 'local-db:history:query')).resolves.toBeUndefined();
   await expect(assertRemoteBotInvocationAllowed([{ tool: 'search_chat_history', args: { session_ids: Array(51).fill('id') } }], 'local-db:history:query')).rejects.toThrow('INVALID_PARAMS');
+  expect(lookup).not.toHaveBeenCalled();
 });
 
 it('checks the normalized source task before remote Review and rechecks visibility changes', async () => {
