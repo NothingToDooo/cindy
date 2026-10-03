@@ -19,6 +19,7 @@ import {
 
 /** minimal 档 —— 与个人 bot 逐个对齐, 两个 bot 的表情语义不该各说各话。 */
 const ACK_EMOJI = '👀';
+const PROCESSING_EMOJI = '👨‍💻';
 const FAIL_EMOJI = '👎';
 
 export interface AckReactionTask {
@@ -122,7 +123,7 @@ export function createAckReactions(deps: {
 
   function react(
     task: AckReactionTask,
-    suffix: 'ack' | 'processing' | 'final' | 'final-fallback',
+    suffix: 'ack' | 'processing' | 'processing-fallback' | 'final' | 'final-fallback',
     emoji: string,
     send: (m: HookMessage) => boolean,
   ): ReactOutcome {
@@ -196,12 +197,11 @@ export function createAckReactions(deps: {
     }
   }
   /**
-   * 可回落的终态表情: opId → 该轮的任务与成败。
+   * 可回落的表情: opId → 该轮的任务与阶段。
    *
-   * 只有 expressive 档的错误表情进这张表 —— 基础款 👎 被拒
-   * 也没有更基础的可退。
+   * 处理中变体可回落一次；expressive 错误表情沿用原有终态回落规则。
    */
-  const retryables = new Map<string, { task: AckReactionTask; failed: boolean }>();
+  const retryables = new Map<string, { task: AckReactionTask; phase: 'processing' | 'error' }>();
   /**
    * 已经真的打出过 👀 的任务(requestId → 任务)。
    *
@@ -214,6 +214,7 @@ export function createAckReactions(deps: {
   return {
     supports,
     onAccountTeardown(sendFor) {
+      retryables.clear();
       // 终态在途(打出去了但回执没到): 尽力再发一次, opId 原样、服务端幂等。
       // 这一发之后就交给命运 —— 账号都没了, 没有下一次重连可等。
       for (const [opId, entry] of pendingFinals) {
@@ -261,7 +262,7 @@ export function createAckReactions(deps: {
         // 服务端按它去重。
         const outcome = reactWithOpId(entry.task, opId, entry.emoji, send);
         if (outcome === 'sent' && entry.failed && entry.emoji !== '' && modeOf() === 'expressive') {
-          retryables.set(opId, { task: entry.task, failed: entry.failed });
+          retryables.set(opId, { task: entry.task, phase: 'error' });
         }
       }
     },
@@ -272,9 +273,16 @@ export function createAckReactions(deps: {
     },
     onStarted(task, send) {
       const emoji = pickExpressiveReaction(PROCESSING_REACTION_POOL, random);
-      if (react(task, 'processing', emoji, send) === 'sent') acked.set(task.requestId, task);
+      if (react(task, 'processing', emoji, send) === 'sent') {
+        acked.set(task.requestId, task);
+        if (emoji !== PROCESSING_EMOJI) {
+          retryables.set(`${task.requestId}:processing`, { task, phase: 'processing' });
+        }
+      }
     },
     onFinished(task, status, send) {
+      // Late processing rejections must never resurrect status after completion.
+      retryables.delete(`${task.requestId}:processing`);
       const failed = status === 'error';
       const mode = modeOf();
       const hadAck = acked.delete(task.requestId);
@@ -292,7 +300,7 @@ export function createAckReactions(deps: {
       // 执行没执行, 要等 msg.op.result。skipped 才是真的不需要收口。
       if (outcome !== 'skipped') rememberPendingFinal(opId, { task, emoji, failed });
       if (outcome === 'sent' && failed && mode === 'expressive') {
-        retryables.set(opId, { task, failed });
+        retryables.set(opId, { task, phase: 'error' });
       }
     },
     onResult(payload, sendFor) {
@@ -303,14 +311,20 @@ export function createAckReactions(deps: {
         return;
       }
       const retry = retryables.get(payload.opId);
+      retryables.delete(payload.opId);
       // 用这一轮自己记下的 connectionId 取发送函数 —— 不猜「当前哪条连接」。
       const send = retry !== undefined ? sendFor?.(retry.task.connectionId) : undefined;
       if (retry !== undefined && send !== undefined) {
         // 群可以限制 available_reactions —— expressive 随机出的那款可能不在名单
         // 里。回落基础款并换一个幂等键(服务端按 opId 去重, 沿用旧键会被当成重复
         // 直接返回上一次的失败)。只回落一次, 基础款再被拒就认了。
-        retryables.delete(payload.opId);
         pendingFinals.delete(payload.opId);
+        if (retry.phase === 'processing') {
+          // Transient status is not replayed on reconnect. Only a live attempt
+          // gets one base-emoji fallback, using its own idempotency key.
+          react(retry.task, 'processing-fallback', PROCESSING_EMOJI, send);
+          return;
+        }
         const fallback = FAIL_EMOJI;
         const fallbackOpId = `${retry.task.requestId}:final-fallback`;
         log.info(`msg.op ${payload.opId} reaction rejected; retrying with the base emoji`);
@@ -319,7 +333,7 @@ export function createAckReactions(deps: {
           rememberPendingFinal(fallbackOpId, {
             task: retry.task,
             emoji: fallback,
-            failed: retry.failed,
+            failed: true,
           });
         }
         return;

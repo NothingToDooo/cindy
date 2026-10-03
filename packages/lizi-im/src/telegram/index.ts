@@ -996,16 +996,12 @@ export class TelegramIM extends BaseIM implements ChannelIM {
   async removeMessageReaction(messageId: string): Promise<void> {
     const api = this.api;
     if (!api) return;
-    try {
-      const { chatId, messageId: nativeId } = decodeMessageId(messageId);
-      await api.call('setMessageReaction', {
-        chat_id: chatId,
-        message_id: Number(nativeId),
-        reaction: [],
-      });
-    } catch {
-      /* cleanup is best-effort */
-    }
+    const { chatId, messageId: nativeId } = decodeMessageId(messageId);
+    await api.call('setMessageReaction', {
+      chat_id: chatId,
+      message_id: Number(nativeId),
+      reaction: [],
+    });
   }
 
   getStatus(): IMStatus {

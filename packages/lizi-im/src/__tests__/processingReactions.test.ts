@@ -2,11 +2,25 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { DiscordIM } from '../discord/index.js';
 import { FeishuIM } from '../feishu/index.js';
+import { TelegramIM } from '../telegram/index.js';
 import * as feishuOutbound from '../feishu/outbound.js';
 
 afterEach(() => vi.restoreAllMocks());
 
 describe('processing reaction transport tokens', () => {
+  it('propagates Discord and Telegram removal failures to the turn owner', async () => {
+    const error = new Error('reaction removal failed');
+    const discord = {
+      fetchChannel: vi.fn(async () => ({ messages: { fetch: vi.fn(async () => ({
+        reactions: { resolve: () => ({ users: { remove: vi.fn().mockRejectedValue(error) } }) },
+      })) } })),
+      gateway: { client: { user: { id: 'bot' } } },
+    } as unknown as DiscordIM;
+    await expect(DiscordIM.prototype.removeMessageReaction.call(discord, '123|456', '🤓')).rejects.toBe(error);
+    const telegram = { api: { call: vi.fn().mockRejectedValue(error) } } as unknown as TelegramIM;
+    await expect(TelegramIM.prototype.removeMessageReaction.call(telegram, '123|456')).rejects.toBe(error);
+  });
+
   it.each(['👨‍💻', '🤔', '🤓', '✍'])(
     'Discord removes the selected %s rather than the requested base emoji',
     async (emoji) => {

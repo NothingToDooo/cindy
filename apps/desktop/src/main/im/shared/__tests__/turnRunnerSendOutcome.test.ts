@@ -2398,6 +2398,30 @@ describe('turnRunner send outcome policy (feishu adapter characterization)', () 
       expect(mocks.feishuIm.reactToMessage).not.toHaveBeenCalledWith('msg-user', '👍');
     });
 
+    it.each(['done', 'stop'] as const)('retains a failed queue-reaction removal for %s cleanup', async terminal => {
+      const h = setupSession(async () => ({ accepted: true }));
+      h.isTurnRunning.mockReturnValue(true);
+      await runDefaultTurn();
+      await waitForAssertion(() => expect(mocks.feishuIm.reactToMessage).toHaveBeenLastCalledWith('msg-user', '👀'));
+      mocks.feishuIm.reactToMessage.mockClear();
+      mocks.feishuIm.removeMessageReaction.mockClear();
+      mocks.feishuIm.removeMessageReaction.mockRejectedValueOnce(new Error('delete failed'));
+      h.isTurnRunning.mockReturnValue(false);
+      h.emit({ type: 'done', data: {} });
+      await waitForAssertion(() => {
+        expect(h.send).toHaveBeenCalledTimes(1);
+        expect(mocks.feishuIm.removeMessageReaction).toHaveBeenCalledWith('msg-user', '👀');
+      });
+      expect(mocks.feishuIm.reactToMessage).not.toHaveBeenCalled();
+      if (terminal === 'stop') {
+        await getRunner().stopActiveTurn({ botContextId: 'cli_test_bot', userId: 'ou_user' });
+        expect(h.abort).toHaveBeenCalledTimes(1);
+      }
+      h.emit({ type: 'done', data: {} });
+      await waitForAssertion(() => expect(mocks.feishuIm.removeMessageReaction).toHaveBeenCalledTimes(2));
+      expect(mocks.feishuIm.removeMessageReaction).toHaveBeenLastCalledWith('msg-user', '👀');
+    });
+
     it.each(['stop', 'dispose'] as const)(
       'cleans a late waiting reaction on %s',
       async (operation) => {

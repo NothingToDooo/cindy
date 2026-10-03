@@ -175,6 +175,46 @@ describe('官方 bot ack 表情', () => {
   });
 
   describe('断线与受限表情', () => {
+    it.each(['minimal', 'expressive'] as const)('%s processing falls back once and never replays on reconnect', mode => {
+      const h = harness([HOOK_FEATURE_MESSAGE_OPS], mode, () => 0.5);
+      h.reactions.onAccepted(TASK, h.send);
+      h.reactions.onStarted(TASK, h.send);
+      h.reactions.onResult({ opId: 'req-1:processing', ok: false, error: 'REACTION_INVALID' }, () => h.send);
+      expect(h.sent.map(m => opOf(m).action.emoji)).toEqual(['👀', '🤓', '👨‍💻']);
+      expect(opOf(h.sent[2]).opId).toBe('req-1:processing-fallback');
+      h.reactions.onResult({ opId: 'req-1:processing', ok: false, error: 'REACTION_INVALID' }, () => h.send);
+      h.reactions.onResult({ opId: 'req-1:processing-fallback', ok: false, error: 'REACTION_INVALID' }, () => h.send);
+      h.reactions.onReconnected(CONN, h.send);
+      expect(h.sent).toHaveLength(3);
+      h.reactions.onFinished(TASK, 'ok', h.send);
+      expect(opOf(h.sent[3]).action.emoji).toBe('');
+    });
+
+    it.each(['ok', 'cancelled', 'error', 'teardown', 'reset', 'success', 'off'] as const)(
+      'does not apply a late processing fallback after %s', reason => {
+        const h = harness([HOOK_FEATURE_MESSAGE_OPS], 'minimal', () => 0.5);
+        h.reactions.onStarted(TASK, h.send);
+        if (reason === 'teardown') h.reactions.onAccountTeardown(() => h.send);
+        else if (reason === 'reset') h.reactions.reset();
+        else if (reason === 'success') h.reactions.onResult({ opId: 'req-1:processing', ok: true });
+        else if (reason === 'off') h.setMode('off');
+        else h.reactions.onFinished(TASK, reason, h.send);
+        const count = h.sent.length;
+        h.reactions.onResult({ opId: 'req-1:processing', ok: false, error: 'REACTION_INVALID' }, () => h.send);
+        expect(h.sent).toHaveLength(count);
+      },
+    );
+
+    it('does not retry a base processing emoji or an unsent variant', () => {
+      for (const random of [0, 0.5]) {
+        const h = harness([HOOK_FEATURE_MESSAGE_OPS], 'minimal', () => random);
+        h.reactions.onStarted(TASK, random === 0 ? h.send : () => false);
+        const count = h.sent.length;
+        h.reactions.onResult({ opId: 'req-1:processing', ok: false, error: 'REACTION_INVALID' }, () => h.send);
+        expect(h.sent).toHaveLength(count);
+      }
+    });
+
     it('终态送不出去 → 重连时补发, 不让消息永远挂着 👀', () => {
       const h = harness();
       const offline = vi.fn(() => false);

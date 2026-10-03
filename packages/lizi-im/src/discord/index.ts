@@ -434,14 +434,10 @@ export class DiscordIM extends BaseIM implements ChannelIM {
   }
 
   async removeMessageReaction(messageId: string, reactionToken: string): Promise<void> {
-    try {
-      const { channelId, messageId: nativeMessageId } = decodeMessageId(messageId);
-      const channel = await this.fetchChannel(channelId);
-      const message = await channel.messages.fetch(nativeMessageId);
-      await message.reactions.resolve(reactionToken)?.users.remove(this.gateway.client?.user?.id);
-    } catch {
-      /* cleanup is best-effort */
-    }
+    const { channelId, messageId: nativeMessageId } = decodeMessageId(messageId);
+    const channel = await this.fetchChannel(channelId);
+    const message = await channel.messages.fetch(nativeMessageId);
+    await message.reactions.resolve(reactionToken)?.users.remove(this.gateway.client?.user?.id);
   }
 
   getStatus(): IMStatus {
