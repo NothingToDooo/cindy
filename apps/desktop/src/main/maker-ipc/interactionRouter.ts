@@ -66,6 +66,7 @@ type RouteRegistration =
 type ActiveRoute = RouteRegistration & { token: symbol };
 
 interface PendingRequest {
+  shared?: SharedPermission;
   routeToken: symbol | null;
   request: InteractionRequest;
   cancel(decision: InteractionDecision): void;
@@ -161,10 +162,11 @@ class SessionInteractionRouter {
         for (const [requestId, pending] of this.pending) {
           if (pending.routeToken !== active.token) continue;
           const decision = safeDecision(pending.request, reason);
+          if (pending.shared) pending.cancel(decision);
           const handledBySurface = callSafely(
             () => active.onCancel?.(requestId, decision) === true,
           ) === true;
-          if (!handledBySurface) pending.cancel(decision);
+          if (!pending.shared && !handledBySurface) pending.cancel(decision);
         }
       },
     };
@@ -207,23 +209,24 @@ class SessionInteractionRouter {
     const cancelled = new Promise<InteractionDecision>((resolve) => {
       cancel = (decision) => {
         cancelledByRouter = true;
-        shared?.decide(decision);
+        shared?.settle(decision);
         resolve(decision);
       };
     });
     this.pending.set(request.requestId, {
+      shared,
       routeToken: active?.token ?? null,
       request,
       cancel,
     });
     const abort = () => {
       const decision = safeDecision(request, 'session_aborted');
+      cancel(decision);
       if (active?.route.interactionSurface === 'channel-card' || active?.route.interactionSurface === 'headless') {
         callSafely(() => active.onCancel?.(request.requestId, decision));
       } else {
         callSafely(() => this.desktopCancel?.(request.requestId, decision));
       }
-      cancel(decision);
     };
     signal?.addEventListener('abort', abort, { once: true });
     this.notifyLifecycle('onStart', request, active?.route);
@@ -233,6 +236,10 @@ class SessionInteractionRouter {
       timeoutMs && timeoutMs > 0
         ? setTimeout(() => {
             const decision = safeDecision(request, 'interaction_timeout');
+            if (shared) {
+              shared.decide(decision);
+              return;
+            }
             const handledBySurface = callSafely(
               () => active?.onCancel?.(request.requestId, decision) === true,
             ) === true;
@@ -243,7 +250,8 @@ class SessionInteractionRouter {
     try {
       let handled: Promise<InteractionDecision>;
       if (shared) {
-        const surfaces = this.desktopHandler ? [handler, this.desktopHandler] : [handler];
+        // Install the Host pause boundary before a channel can synchronously answer.
+        const surfaces = this.desktopHandler ? [this.desktopHandler, handler] : [handler];
         let failed = 0;
         const fail = () => {
           if (++failed === surfaces.length) shared.decide(safeDecision(request, 'interaction_handler_failed'));

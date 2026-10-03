@@ -39,7 +39,7 @@ export function presentSharedPermissionCard(args: {
     '',
     permission.decide,
     () => {
-      permission.decide({ kind: 'permission', behavior: 'deny', reason: 'session_disposed' });
+      permission.settle({ kind: 'permission', behavior: 'deny', reason: 'session_disposed' });
     },
     { owner: args.owner, toolName: args.toolName, sharedPermission: permission },
   );

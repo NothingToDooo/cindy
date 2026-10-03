@@ -44,7 +44,7 @@ function makeSession() {
 describe('session interaction router', () => {
   it('routes Host download permissions through the active channel without replacing the listener', async () => {
     const host = makeSession();
-    const desktop = vi.fn(async (): Promise<InteractionDecision> => ({ kind: 'permission', behavior: 'deny' }));
+    const desktop = vi.fn<InteractionHandler>((_request, shared) => shared!.result);
     const remote = vi.fn(async (): Promise<InteractionDecision> => ({ kind: 'permission', behavior: 'allow' }));
     installDesktopInteractionHandler(host.session, desktop);
     const lease = beginInteractionRoute(host.session, {
@@ -90,7 +90,7 @@ describe('session interaction router', () => {
 
   it('routes only the admitted turn to its channel surface', async () => {
     const harness = makeSession();
-    const desktop = vi.fn(async (): Promise<InteractionDecision> => ({
+    const desktop = vi.fn<InteractionHandler>(async (_request, shared) => shared ? shared.result : ({
       kind: 'permission',
       behavior: 'deny',
       reason: 'desktop',

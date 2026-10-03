@@ -856,7 +856,7 @@ function PermissionEvidence({
           {presentation.toolName}
         </Text>
       </View>
-      {presentation.autoReviewUnavailable && presentation.sourceDescription ? (
+      {presentation.sourceDescription ? (
         <Text selectable style={styles.permissionDescription}>{presentation.sourceDescription}</Text>
       ) : null}
       {presentation.autoReviewUnavailable || presentation.description ? (

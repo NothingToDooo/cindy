@@ -250,7 +250,7 @@ export function cancelHookInteraction(interactionId: string, reason: string): bo
   const entry = pending.get(interactionId);
   if (!entry) return false;
   if (entry.sharedPermission) {
-    return entry.sharedPermission.decide(entry.defaultDecision);
+    return entry.sharedPermission.settle({ kind: 'permission', behavior: 'deny', reason: 'turn_terminal' });
   }
   pending.delete(interactionId);
   clearTimeout(entry.timer);

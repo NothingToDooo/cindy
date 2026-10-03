@@ -207,13 +207,22 @@ export function buildPermissionReviewPresentation(
   const input = permissionInput(request);
   const riskSummary = permissionRiskSummary(request, localizer);
   const canAlwaysAllow = sessionScopedPermissionSuggestions(request.suggestions).length > 0;
+  const sourceDescription = permissionSourceDescription(request);
+  let description = permissionDescription(request);
+  // IM retains its combined body; UI titles must describe the operation only.
+  if (sourceDescription && description?.startsWith(sourceDescription)) {
+    if (description === sourceDescription) description = null;
+    else if (description.startsWith(`${sourceDescription}\n\n`)) {
+      description = readString(description.slice(sourceDescription.length + 2));
+    }
+  }
 
   return {
     autoReviewUnavailable: permissionAutoReviewUnavailable(request),
-    ...(permissionSourceDescription(request) ? { sourceDescription: permissionSourceDescription(request)! } : {}),
+    ...(sourceDescription ? { sourceDescription } : {}),
     canAlwaysAllow,
     code: formatPermissionInput(toolName, input),
-    description: permissionDescription(request),
+    description,
     riskSummary,
     summary: buildPermissionDecisionSummary({ toolName, riskSummary, canAlwaysAllow }, localizer),
     title: permissionTitle(request, localizer),

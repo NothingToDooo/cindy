@@ -152,7 +152,7 @@ export function cancelPending(requestId: string, reason: string): { messageId: s
   const entry = pending.get(requestId);
   if (!entry) return null;
   if (entry.sharedPermission) {
-    entry.sharedPermission.decide(buildPermissionDenyDecision(reason));
+    entry.sharedPermission.settle(buildPermissionDenyDecision(reason));
     return null; // The shared presenter owns the final card, including its source.
   }
   pending.delete(requestId);

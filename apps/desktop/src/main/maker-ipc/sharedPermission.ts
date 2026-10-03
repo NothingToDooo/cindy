@@ -4,7 +4,10 @@ import type { InteractionDecision } from '@cindy/maker-core';
 export interface SharedPermission {
   readonly result: Promise<InteractionDecision>;
   readonly decision: InteractionDecision | undefined;
+  /** Submit an answer; the Host may hold it while execution is paused. */
   decide(decision: InteractionDecision): boolean;
+  /** Host execution boundary: publish the final decision, including cancellation. */
+  settle(decision: InteractionDecision): boolean;
 }
 
 export function createSharedPermission(): SharedPermission {
@@ -13,17 +16,19 @@ export function createSharedPermission(): SharedPermission {
   const result = new Promise<InteractionDecision>((done) => {
     resolve = done;
   });
+  const settle = (value: InteractionDecision) => {
+    if (decision || value.kind !== 'permission') return false;
+    decision = value;
+    resolve(value);
+    return true;
+  };
   return {
     result,
     get decision() {
       return decision;
     },
-    decide(value) {
-      if (decision || value.kind !== 'permission') return false;
-      decision = value;
-      resolve(value);
-      return true;
-    },
+    decide: settle,
+    settle,
   };
 }
 

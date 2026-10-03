@@ -2765,6 +2765,30 @@ function persistInteractionDecision(
   );
 }
 
+/** Keep IM answers provisional in the same pause boundary as Desktop answers. */
+function bindSharedPermission(requestId: string, entry: PendingInteractionEntry, shared: SharedPermission): void {
+  entry.sharedPermission = shared;
+  const originalResolve = entry.resolve;
+  entry.resolve = (decision) => {
+    shared.settle(decision);
+    originalResolve(shared.decision ?? decision);
+  };
+  shared.decide = (decision) => {
+    if (decision.kind !== 'permission' || shared.decision || entry.deferredDecision
+      || pendingInteractionResolvers.get(requestId) !== entry) return false;
+    if (agentInputCoordinatorHolder?.isExecutionPaused(entry.sessionId)) {
+      entry.deferredDecision = decision;
+      return true;
+    }
+    return shared.settle(decision);
+  };
+  void shared.result.then((decision) => {
+    if (pendingInteractionResolvers.get(requestId) === entry) {
+      resolvePendingInteraction(requestId, decision, true);
+    }
+  });
+}
+
 function resolvePendingInteraction(requestId: string, decision: InteractionDecision, fromShared = false): boolean {
   const resolver = pendingInteractionResolvers.get(requestId);
   if (!resolver || (!fromShared && agentInputCoordinatorHolder?.isExecutionPaused(resolver.sessionId))) return false;
@@ -2924,20 +2948,7 @@ export function takePendingInteractionsForSession(sessionId: string): Array<{
       if (entry.timeoutId) clearTimeout(entry.timeoutId);
       entry.timeoutId = undefined;
       const shared = createSharedPermission();
-      entry.sharedPermission = shared;
-      const originalResolve = entry.resolve;
-      entry.resolve = (decision) => {
-        shared.decide(decision);
-        originalResolve(decision);
-      };
-      void shared.result.then((decision) => {
-        if (pendingInteractionResolvers.get(requestId) !== entry) return;
-        if (agentInputCoordinatorHolder?.isExecutionPaused(sessionId)) {
-          entry.deferredDecision = decision;
-          return;
-        }
-        resolvePendingInteraction(requestId, decision, true);
-      });
+      bindSharedPermission(requestId, entry, shared);
       taken.push({ requestId, request: entry.request, resolve: shared.decide, sharedPermission: shared });
       continue;
     }
@@ -4384,10 +4395,7 @@ export function installDesktopInteractionListener(session: {
         sharedPermission,
         sessionId: session.id,
         kind: req.kind,
-        resolve: (decision) => {
-          sharedPermission?.decide(decision);
-          resolve(sharedPermission?.decision ?? decision);
-        },
+        resolve,
         request: boundaryRequest,
         persistId: interactionPersistId ?? undefined,
       };
@@ -4395,11 +4403,7 @@ export function installDesktopInteractionListener(session: {
       // 「no pending resolver」,确认卡看起来没反应,Codex 最终却记成用户拒绝。
       pendingInteractionResolvers.set(req.requestId, entry);
       if (sharedPermission) {
-        void sharedPermission.result.then((decision) => {
-          if (pendingInteractionResolvers.get(req.requestId) === entry) {
-            resolvePendingInteraction(req.requestId, decision, true);
-          }
-        });
+        bindSharedPermission(req.requestId, entry, sharedPermission);
       } else {
         schedulePendingPermissionTimeout(req.requestId, entry);
       }
