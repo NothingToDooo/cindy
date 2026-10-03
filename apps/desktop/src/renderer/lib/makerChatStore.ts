@@ -4215,12 +4215,19 @@ function _needsRemoteTaskSelfHeal(sessionId: string, state: SessionChatState, no
 // keep the plan in planReviewPlan, and new payload fields must not escape.
 const _messageCharacterEstimates = new WeakMap<ChatMessage, number>();
 
-function _valueCharacters(value: unknown, depth: number): number {
-  if (typeof value === 'string') return value.length;
-  if (!value || typeof value !== 'object' || depth > 8) return 0;
+// Walk with an explicit stack and a visited set: tool inputs are arbitrary
+// nested objects, so neither a depth cut-off nor recursion is safe here.
+function _valueCharacters(root: unknown): number {
   let size = 0;
-  for (const item of Array.isArray(value) ? value : Object.values(value)) {
-    size += _valueCharacters(item, depth + 1);
+  const seen = new Set<object>();
+  const pending: unknown[] = [root];
+  while (pending.length > 0) {
+    const value = pending.pop();
+    if (typeof value === 'string') size += value.length;
+    else if (value && typeof value === 'object' && !seen.has(value)) {
+      seen.add(value);
+      for (const item of Array.isArray(value) ? value : Object.values(value)) pending.push(item);
+    }
   }
   return size;
 }
@@ -4228,7 +4235,7 @@ function _valueCharacters(value: unknown, depth: number): number {
 function _messageCharacters(message: ChatMessage): number {
   let size = _messageCharacterEstimates.get(message);
   if (size === undefined) {
-    size = _valueCharacters(message, 0);
+    size = _valueCharacters(message);
     _messageCharacterEstimates.set(message, size);
   }
   return size;

@@ -1421,13 +1421,17 @@ describe('makerChatStore active view tracking', () => {
     }
   });
 
-  it('counts structured tool input toward the text budget', () => {
+  it('counts deeply nested, cyclic tool input toward the text budget', () => {
     const sessionId = sid('soft-evict-tool-input');
+    // Deeply nested (and cyclic) arbitrary MCP input must still be counted.
+    let deepInput: Record<string, unknown> = { content: 'x'.repeat(5_000) };
+    for (let level = 0; level < 20; level++) deepInput = { level, nested: deepInput };
+    deepInput.self = deepInput;
     const dispose = enter(sessionId);
     makerChatStore.__applyStreamEventForTest(sessionId, {
       sessionId,
       type: 'tool_use',
-      data: { toolUseId: 'tu-write', toolName: 'Write', input: { file_path: '/a', content: 'x'.repeat(5_000) } },
+      data: { toolUseId: 'tu-write', toolName: 'Write', input: deepInput },
     } as never);
     dispose();
     const [row] = makerChatStore.getSnapshot(sessionId).messages;
