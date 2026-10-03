@@ -1,17 +1,6 @@
-/**
- * hook-control/ackReactions.ts — 官方 bot 的 ack 表情。
- * ---------------------------------------------------------------------------
- * 个人 Telegram bot 一直有这个动作: 收到消息先打 👀 表示「看到了, 在做」, 跑完
- * 换成 👍 / 👎。官方 bot 没有 —— 用户在两个 bot 之间切换时, 这是最先被察觉的
- * 差异之一(消息发出去后, 到第一条回复落地之前, 官方 bot 那边什么反馈都没有)。
- *
- * 补上它靠的是 msg.op(#1855 第二刀): 客户端说「给这条消息打这个表情」, 服务端
- * 只做授权与执行。这也是 msg.op 的第一个真实使用点 —— 刻意挑了一个**纯增量、
- * 失败无害**的动作打通链路: 表情没打上不影响任何消息、任何任务。
- *
- * 幂等键直接用 requestId 派生(`<requestId>:ack` / `<requestId>:final`)。断连
- * 重发时同一个动作天然拿到同一个 opId, 不需要额外记账 —— Telegram 没有发送端
- * 幂等键, opId 是服务端去重的唯一依据。
+/** Official Telegram lifecycle feedback for servers that still execute desktop reactions.
+ * New servers own this feedback; the same operations remain compatible with old servers.
+ * Queue = eyes, processing = one work/thinking variant, success/cancel = clear.
  */
 
 import {
@@ -23,14 +12,13 @@ import {
   type TelegramEmojiReactions,
 } from '@cindy/slack-hook-protocol';
 import {
-  EXPRESSIVE_DONE_POOL,
+  PROCESSING_REACTION_POOL,
   EXPRESSIVE_ERROR_POOL,
   pickExpressiveReaction,
 } from '@cindy/im';
 
 /** minimal 档 —— 与个人 bot 逐个对齐, 两个 bot 的表情语义不该各说各话。 */
 const ACK_EMOJI = '👀';
-const OK_EMOJI = '👍';
 const FAIL_EMOJI = '👎';
 
 export interface AckReactionTask {
@@ -44,7 +32,9 @@ export interface AckReactionTask {
 export interface AckReactions {
   /** 任务被接下: 打 👀。 */
   onAccepted(task: AckReactionTask, send: (m: HookMessage) => boolean): void;
-  /** 任务收口: 换成 👍 / 👎。cancelled 与 ok 同档 —— 用户主动停止不是失败。 */
+  /** 开始执行时随机选一个处理表情，不随进度刷新。 */
+  onStarted(task: AckReactionTask, send: (m: HookMessage) => boolean): void;
+  /** 任务完成或取消时撤销状态；失败保留错误表情。 */
   onFinished(
     task: AckReactionTask,
     status: 'ok' | 'error' | 'cancelled',
@@ -132,7 +122,7 @@ export function createAckReactions(deps: {
 
   function react(
     task: AckReactionTask,
-    suffix: 'ack' | 'final' | 'final-fallback',
+    suffix: 'ack' | 'processing' | 'final' | 'final-fallback',
     emoji: string,
     send: (m: HookMessage) => boolean,
   ): ReactOutcome {
@@ -208,7 +198,7 @@ export function createAckReactions(deps: {
   /**
    * 可回落的终态表情: opId → 该轮的任务与成败。
    *
-   * 只有 expressive 档进这张表 —— 基础款 👍/👎 是 Telegram 的默认可用集, 被拒
+   * 只有 expressive 档的错误表情进这张表 —— 基础款 👎 被拒
    * 也没有更基础的可退。
    */
   const retryables = new Map<string, { task: AckReactionTask; failed: boolean }>();
@@ -270,7 +260,7 @@ export function createAckReactions(deps: {
         // 之前断掉, 提前删掉就再也补不上了。opId 原样(可能是 :final-fallback),
         // 服务端按它去重。
         const outcome = reactWithOpId(entry.task, opId, entry.emoji, send);
-        if (outcome === 'sent' && modeOf() === 'expressive') {
+        if (outcome === 'sent' && entry.failed && entry.emoji !== '' && modeOf() === 'expressive') {
           retryables.set(opId, { task: entry.task, failed: entry.failed });
         }
       }
@@ -280,6 +270,10 @@ export function createAckReactions(deps: {
       // 在重连后补上, 消息不会永远停在处理中。
       if (react(task, 'ack', ACK_EMOJI, send) === 'sent') acked.set(task.requestId, task);
     },
+    onStarted(task, send) {
+      const emoji = pickExpressiveReaction(PROCESSING_REACTION_POOL, random);
+      if (react(task, 'processing', emoji, send) === 'sent') acked.set(task.requestId, task);
+    },
     onFinished(task, status, send) {
       const failed = status === 'error';
       const mode = modeOf();
@@ -287,22 +281,17 @@ export function createAckReactions(deps: {
       // 任务跑到一半用户把表情关了: 没打过 👀 就什么都不做(用户要的就是「别打」),
       // 打过就必须收掉 —— 撤销(空串)而不是补一个终态, 否则等于无视用户的选择。
       if (mode === 'off' && !hadAck) return;
-      // expressive 只影响**终态**: ack 恒为 👀(与个人 bot 一致 —— 生动档也不
-      // 拿开场表情做文章), 正负池分开取, 成功不会随机出 👎 一类。
-      const emoji =
-        mode === 'off'
-          ? ''
-          : mode === 'expressive'
-            ? pickExpressiveReaction(failed ? EXPRESSIVE_ERROR_POOL : EXPRESSIVE_DONE_POOL, random)
-            : failed
-              ? FAIL_EMOJI
-              : OK_EMOJI;
+      const emoji = mode === 'off' || !failed
+        ? ''
+        : mode === 'expressive'
+          ? pickExpressiveReaction(EXPRESSIVE_ERROR_POOL, random)
+          : FAIL_EMOJI;
       const opId = `${task.requestId}:final`;
       const outcome = react(task, 'final', emoji, send);
       // sent 与 failed 都要记: 前者只是进了本地 ws 缓冲, 服务端到底收没收到、
       // 执行没执行, 要等 msg.op.result。skipped 才是真的不需要收口。
       if (outcome !== 'skipped') rememberPendingFinal(opId, { task, emoji, failed });
-      if (outcome === 'sent' && mode === 'expressive') {
+      if (outcome === 'sent' && failed && mode === 'expressive') {
         retryables.set(opId, { task, failed });
       }
     },
@@ -322,7 +311,7 @@ export function createAckReactions(deps: {
         // 直接返回上一次的失败)。只回落一次, 基础款再被拒就认了。
         retryables.delete(payload.opId);
         pendingFinals.delete(payload.opId);
-        const fallback = retry.failed ? FAIL_EMOJI : OK_EMOJI;
+        const fallback = FAIL_EMOJI;
         const fallbackOpId = `${retry.task.requestId}:final-fallback`;
         log.info(`msg.op ${payload.opId} reaction rejected; retrying with the base emoji`);
         // 回落这一发同样要等它自己的回执, 所以接着进待收口表。

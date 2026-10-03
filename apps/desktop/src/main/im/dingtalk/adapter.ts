@@ -69,6 +69,7 @@ export function buildDingTalkAdapter(
       }),
     },
     processingEmoji: '',
+    silentQueue: true,
     buildVendorOptions: (userId) => ({ dingtalkChatId: userId, source: 'dingtalk' }),
     handleTextInteraction: (userId, request) =>
       handleDingTalkTextInteraction(dingtalkIm, userId, request),
