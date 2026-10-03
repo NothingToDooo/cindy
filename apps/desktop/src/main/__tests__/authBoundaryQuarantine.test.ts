@@ -518,6 +518,44 @@ describe('Ghost skill projection boundary state', () => {
     expect(fs.readFileSync(__testing.filePath(), 'utf8')).toBe(before);
   });
 
+  it('lets a passive process join an older primary that only published the legacy marker', async () => {
+    const legacyDir = path.join(pathMock.homeDir, '.cindy');
+    fs.mkdirSync(legacyDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(legacyDir, 'ghost-skill-projection-boundary.json'),
+      JSON.stringify({
+        version: 1,
+        phase: 'stable',
+        ownerId: 'owner-a',
+        transitionId: 'legacy',
+        updatedAt: 1,
+      }),
+    );
+    expect(isGhostSkillProjectionBoundaryStableForOwner('owner-a')).toBe(false);
+
+    process.env.XDT_PASSIVE_SHARED_USER_DATA = '1';
+    await expect(withGhostSkillProjectionReadOnlyOwner('owner-a', async () => 42)).resolves.toBe(
+      42,
+    );
+    await expect(withGhostSkillProjectionReadOnlyOwner('owner-b', async () => 42)).rejects.toThrow(
+      'another active session',
+    );
+
+    fs.writeFileSync(
+      path.join(legacyDir, 'ghost-skill-projection-boundary.quarantine.json'),
+      JSON.stringify({
+        version: 1,
+        phase: 'quarantined',
+        previousOwnerId: 'owner-a',
+        nextOwnerId: 'owner-b',
+        transitionId: 'legacy-q',
+        updatedAt: 2,
+      }),
+    );
+    expect(isGhostSkillProjectionBoundaryStableForOwner('owner-a')).toBe(false);
+    expect(fs.existsSync(__testing.filePath())).toBe(false);
+  });
+
   it('serializes owner commit and reconcile inside one process', async () => {
     let releaseCommit!: () => void;
     const commitBlocked = new Promise<void>((resolve) => {

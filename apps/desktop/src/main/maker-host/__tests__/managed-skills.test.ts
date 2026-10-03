@@ -16,9 +16,16 @@ vi.mock('../../appSessionState.js', () => ({
   getActiveAppSession: () => ({ dataOwnerId: state.owner }),
   isAppSessionBoundaryPending: () => state.pending,
 }));
+const locks = vi.hoisted(() => ({ calls: [] as string[] }));
 vi.mock('../../authBoundaryQuarantine.js', () => ({
-  withOwnerPrivateSkillProjectionMutation: async (_owner: string, work: () => Promise<unknown>) =>
-    work(),
+  withOwnerPrivateSkillProjectionMutation: async (_owner: string, work: () => Promise<unknown>) => {
+    locks.calls.push('private');
+    return work();
+  },
+  withSharedGlobalSkillProjectionMutation: async (_owner: string, work: () => Promise<unknown>) => {
+    locks.calls.push('shared');
+    return work();
+  },
 }));
 vi.mock('../built-in-skills.js', () => ({
   sharedBuiltInSkillsRoot: (root: string) => path.join(root, 'shared-system-skills'),
@@ -65,6 +72,7 @@ beforeEach(async () => {
   state.pending = false;
   state.enabled = true;
   state.verified = true;
+  locks.calls.length = 0;
   await writeSkill(path.join(state.root, 'shared-system-skills'), 'learn', 'learn');
   await writeSkill(
     path.join(state.root, 'a', 'ghost-install-state', 'skill-snapshots', 'rev'),
@@ -169,5 +177,16 @@ describe('Cindy managed skill catalog', () => {
       );
     }
     expect(await fs.readFile(source, 'utf8')).toContain('Fixture');
+  });
+
+  it('takes the machine-wide lock only for Codex homes outside this instance userData', async () => {
+    await prepareCindyCodexSkills(path.join(state.root, 'codex-home'));
+    const externalHome = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-external-codex-home-'));
+    try {
+      await prepareCindyCodexSkills(externalHome);
+    } finally {
+      await fs.rm(externalHome, { recursive: true, force: true });
+    }
+    expect(locks.calls).toEqual(['private', 'shared']);
   });
 });

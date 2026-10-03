@@ -177,7 +177,8 @@ export function ErrorBanner({
   // (makerSendTransaction),这里换成可操作文案;Retry 保留 —— 其它任务结束后重试即成功。
   const isCredentialSwitchBusy = error.startsWith('CREDENTIAL_SWITCH_BUSY:');
   // Main 侧账号边界未稳定(换号中 / 状态待修复 / 边界锁被占)时的内部错误,原文对用户
-  // 无意义;它会在边界提交后自愈,提示稍后重试即可。原始错误仍可在下方展开查看。
+  // 无意义。锁被占与换号会在边界提交后自愈;状态待修复要等下一次账号提交(重启时冷启动
+  // 必然提交),所以文案同时给出「稍后重试」与「一直出现就重启」。原始错误仍可展开查看。
   const isAccountBoundaryPending =
     /Ghost skill projection (?:is not stable|is quarantined)|projection boundary lock is busy/.test(
       error,
