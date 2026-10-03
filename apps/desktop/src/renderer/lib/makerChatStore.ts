@@ -4210,8 +4210,9 @@ function _needsRemoteTaskSelfHeal(sessionId: string, state: SessionChatState, no
 }
 
 // Message objects are immutable (every update replaces the row), so each size
-// is computed once. tool_use rows keep only a summary in `content`; their full
-// input (a whole file for Write) lives in toolInput and must count too.
+// is computed once. Count every string field, not just `content`: tool_use rows
+// keep the full input (a whole file for Write) in toolInput, plan_review rows
+// keep the plan in planReviewPlan, and new payload fields must not escape.
 const _messageCharacterEstimates = new WeakMap<ChatMessage, number>();
 
 function _valueCharacters(value: unknown, depth: number): number {
@@ -4227,11 +4228,7 @@ function _valueCharacters(value: unknown, depth: number): number {
 function _messageCharacters(message: ChatMessage): number {
   let size = _messageCharacterEstimates.get(message);
   if (size === undefined) {
-    size =
-      message.content.length +
-      _valueCharacters(message.toolInput, 0) +
-      _valueCharacters(message.systemCardData, 0) +
-      _valueCharacters(message.retryFiles, 0);
+    size = _valueCharacters(message, 0);
     _messageCharacterEstimates.set(message, size);
   }
   return size;

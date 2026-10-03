@@ -1443,6 +1443,29 @@ describe('makerChatStore active view tracking', () => {
     expect(makerChatStore.getSnapshot(sessionId).messages).toHaveLength(0);
   });
 
+  it('counts every payload field, e.g. a completed plan kept outside content', async () => {
+    const sessionId = sid('soft-evict-plan');
+    const dispose = enter(sessionId);
+    vi.mocked(messageService.list).mockResolvedValueOnce([{
+      ...dbMessage(sessionId, 'plan-row', '', BASE_TIME.toISOString()),
+      role: 'plan_review',
+      content: { requestId: 'plan-1', status: 'approved', plan: '# Plan\n' + 'step\n'.repeat(1_000) },
+    } as unknown as Message]);
+    makerChatStore.ensureInitialMessages(sessionId);
+    await flushPromises();
+    dispose();
+    const [row] = makerChatStore.getSnapshot(sessionId).messages;
+    expect(row).toMatchObject({ role: 'plan_review', content: '' });
+
+    try {
+      makerChatStore.__activeViewTest.setSoftEvictionBudget({ messages: 100, characters: 4_000 });
+      vi.advanceTimersByTime(30_000);
+    } finally {
+      makerChatStore.__activeViewTest.setSoftEvictionBudget(null);
+    }
+    expect(makerChatStore.getSnapshot(sessionId).messages).toHaveLength(0);
+  });
+
   it('evicts a prefetched session that never enters a mounted view by budget', async () => {
     const sessionId = sid('prefetch-evict');
     addMessage(sessionId);
