@@ -10,7 +10,7 @@ export function isAsyncStorageFullError(error: unknown): boolean {
 }
 
 /**
- * 写满时先腾出可重建的缓存再重试一次;仍然写不进就换成人话报错,
+ * 写满时先把旧消息缓存迁出 AsyncStorage 腾出空间,再重试一次;仍然写不进就换成人话报错,
  * 让用户知道是手机本地存储满了,而不是电脑或整机磁盘。
  */
 export function withAsyncStorageFullRecovery(

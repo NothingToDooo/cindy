@@ -7,9 +7,9 @@ import { discardMobileUploadedAttachment } from "./mobileAttachmentUpload";
 import type { RemoteSerializedAttachment } from "./types";
 import { reconcileCommittedComposerDraft } from './composerDraftStore';
 import { withAsyncStorageFullRecovery } from './asyncStorageFull';
-import { discardLegacySessionMessageCache } from './mobileSessionMessageCache';
+import { migrateLegacySessionMessageCache } from './mobileSessionMessageCache';
 
-const outboxStorage = withAsyncStorageFullRecovery(AsyncStorage, discardLegacySessionMessageCache);
+const outboxStorage = withAsyncStorageFullRecovery(AsyncStorage, migrateLegacySessionMessageCache);
 export const mobileDurableOutbox = createDurableOutbox(outboxStorage, async (record, guard) => {
   if (!record.draftHandoff) return;
   const owner = getMobileAuthOwner();
