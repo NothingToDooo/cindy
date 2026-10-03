@@ -24,8 +24,10 @@
 新增只读 `local-db:history:query` channel，仅接受 `list_sessions` 或
 `search_chat_history`，复用原工具的参数校验、本机查询和输出格式。远端不允许继续转发，
 不加入 unlinked/shared-task 白名单，不增加自动重试、缓存或聊天同步。沿用同账号
-device-link 授权、撤权与 owner fence；仅有归属范围权限的调用方不能扩展历史范围，远端隐藏伙伴的
-任务、命中、上下文和元数据在普通回复、缓存回复与离线重发时重新过滤。
+device-link 授权、撤权与 owner fence；仅有归属范围权限的调用方不能扩展历史范围。远端任务
+列表及搜索两路召回在排名、限量和分页前应用同一条伙伴可见性条件，隐藏任务不占分页名额，
+游标和候选池信息只基于可见结果。普通回复、缓存回复与离线重发仍重新核验；页内任务若已
+变为隐藏，整页返回 `NOT_FOUND`，不发送该页的内容或过期分页信息，调用方可重新查询。
 
 远程结果中的任务 ID 为 `deviceId::sessionId`，可直接供现有 `get_chat_history` 读取。
 搜索上下文每条最多 2000 字符，省略时带 `remoteContentTruncated`；完整阅读继续使用历史

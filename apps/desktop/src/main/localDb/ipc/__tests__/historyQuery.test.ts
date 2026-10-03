@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { DL_HISTORY_QUERY_CHANNEL, REMOTE_INVOKE_ALLOWLIST } from '@cindy/device-link';
 import { createHistoryQueryHandler, registerHistoryQueryIpc } from '../historyQuery.js';
 import { runDeviceLinkInvokeContext } from '../../../device-link/invoke-context.js';
+import { listSessionsForHistory } from '../../chatHistoryReader.js';
+import { searchChatHistoryHybrid } from '../../chatHistorySearch.js';
 
 const handlers = vi.hoisted(() => new Map<string, (...args: any[]) => any>());
 vi.mock('electron', () => ({
@@ -10,6 +12,10 @@ vi.mock('electron', () => ({
   },
 }));
 vi.mock('../../chatHistorySearch.js', () => ({ searchChatHistoryHybrid: vi.fn() }));
+vi.mock('../../chatHistoryReader.js', () => ({
+  listSessionsForHistory: vi.fn(),
+  getMessagesForHistory: vi.fn(),
+}));
 
 function setup() {
   const listSessions = vi.fn(async () => ({
@@ -137,5 +143,43 @@ describe('remote history query handler', () => {
         () => handler({}, {}),
       ),
     ).rejects.toThrow('authorized device link');
+  });
+  it('forces source-side visibility on both readers without accepting an override from the wire', async () => {
+    vi.mocked(listSessionsForHistory).mockResolvedValue({
+      items: [],
+      hasMore: false,
+      nextCursor: null,
+    });
+    vi.mocked(searchChatHistoryHybrid).mockResolvedValue({
+      hits: [],
+      sessions: {},
+      hasMore: false,
+      nextOffset: null,
+      poolSize: 0,
+      poolCapped: false,
+      vectorUsed: false,
+      vectorSkipReason: 'disabled',
+    });
+    registerHistoryQueryIpc();
+    const handler = handlers.get(DL_HISTORY_QUERY_CHANNEL)!;
+    for (const tool of ['list_sessions', 'search_chat_history']) {
+      const invoke = (args: Record<string, unknown>) =>
+        runDeviceLinkInvokeContext(
+          { controllerDeviceId: 'owner', channel: DL_HISTORY_QUERY_CHANNEL },
+          () => handler({}, { tool, args }),
+        );
+      const args = tool === 'list_sessions' ? {} : { query: 'needle' };
+      expect(await invoke(args)).toMatchObject({ ok: true });
+      expect(await invoke({ ...args, remoteVisibleOnly: false })).toMatchObject({
+        ok: false,
+        errorCode: 'INVALID_ARGS',
+      });
+    }
+    expect(listSessionsForHistory).toHaveBeenCalledWith(
+      expect.objectContaining({ remoteVisibleOnly: true }),
+    );
+    expect(searchChatHistoryHybrid).toHaveBeenCalledWith(
+      expect.objectContaining({ remoteVisibleOnly: true }),
+    );
   });
 });

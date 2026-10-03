@@ -111,14 +111,19 @@ export async function projectRemoteSessionResult(channel: string, value: unknown
     // Rechecked on normal, cached and queued delivery by the existing dispatch path.
     const row = record(value);
     if (!row || row.ok !== true) return value;
-    if (Array.isArray(row.sessions)) return { ...row,
-      sessions: await projectRemoteSessionResult('local-db:sessions:list', row.sessions),
-    };
+    if (Array.isArray(row.sessions)) {
+      const sessions = await projectRemoteSessionResult('local-db:sessions:list', row.sessions) as unknown[];
+      // A cached/in-flight page cannot be safely repaginated after visibility changes.
+      // Reject the whole page rather than exposing a stale cursor or hidden row count.
+      if (sessions.length !== row.sessions.length) throw new Error('[NOT_FOUND] History page is no longer available');
+      return { ...row, sessions };
+    }
     if (!Array.isArray(row.hits)) throw new Error('[INVALID_PARAMS] Invalid history result');
     const visible = await projectRemoteSessionResult('local-db:sessions:list',
       row.hits.map((hit) => ({ id: record(hit)?.sessionId }))) as { id: string }[];
     const allowed = new Set(visible.map((item) => item.id));
     const hits = row.hits.filter((hit) => allowed.has(String(record(hit)?.sessionId)));
+    if (hits.length !== row.hits.length) throw new Error('[NOT_FOUND] History page is no longer available');
     return { ...row, hits,
       sessions: Object.fromEntries(Object.entries(record(row.sessions) ?? {}).filter(([id]) => allowed.has(id))),
       // Hidden results must not reveal their content, metadata or candidate count.

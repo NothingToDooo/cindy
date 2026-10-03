@@ -56,8 +56,14 @@ export function createHistoryQueryHandler(
 
 export function registerHistoryQueryIpc(): void {
   const execute = createHistoryQueryHandler({
-    listSessions: async (args) => ({ ok: true, page: await listSessionsForHistory(args) }),
-    searchChatHistory: async (args) => ({ ok: true, result: await searchChatHistoryHybrid(args) }),
+    listSessions: async (args) => ({
+      ok: true,
+      page: await listSessionsForHistory({ ...args, remoteVisibleOnly: true }),
+    }),
+    searchChatHistory: async (args) => ({
+      ok: true,
+      result: await searchChatHistoryHybrid({ ...args, remoteVisibleOnly: true }),
+    }),
   });
   ipcMain.handle(DL_HISTORY_QUERY_CHANNEL, async (_event, value: unknown) => {
     const context = getDeviceLinkInvokeContext();

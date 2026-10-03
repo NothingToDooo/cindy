@@ -5,7 +5,7 @@ import {
 
 afterEach(() => setRemoteBotSessionLookup(null));
 
-it('filters hidden history hits, contexts and metadata again when visibility changes', async () => {
+it('rejects stale history pages without returning hidden content or pagination metadata', async () => {
   let hide = false;
   setRemoteBotSessionLookup(async (id) => hide && id === 'secret' ? 'hidden' : 'ordinary');
   const result = { ok: true, hits: [
@@ -14,10 +14,11 @@ it('filters hidden history hits, contexts and metadata again when visibility cha
   ], sessions: { normal: { title: 'Normal' }, secret: { title: 'Private title' } }, pool_size: 2, pool_capped: true, nextCursor: 'opaque', hasMore: true };
   expect(await projectRemoteSessionResult('local-db:history:query', result)).toMatchObject({ hits: result.hits });
   hide = true;
-  const filtered = await projectRemoteSessionResult('local-db:history:query', result);
-  expect(filtered).toEqual({ ...result, hits: [result.hits[0]], sessions: { normal: { title: 'Normal' } }, pool_size: undefined });
-  expect(JSON.stringify(filtered)).not.toContain('private');
-  expect(await projectRemoteSessionResult('local-db:history:query', { ok: true, sessions: [{ id: 'normal' }, { id: 'secret' }], nextCursor: 'cursor', hasMore: true })).toEqual({ ok: true, sessions: [{ id: 'normal' }], nextCursor: 'cursor', hasMore: true });
+  await expect(projectRemoteSessionResult('local-db:history:query', result)).rejects.toThrow('[NOT_FOUND] History page is no longer available');
+  for (const sessions of [[{ id: 'normal' }, { id: 'secret' }], [{ id: 'secret' }]]) {
+    await expect(projectRemoteSessionResult('local-db:history:query', { ok: true, sessions, nextCursor: 'cursor', hasMore: true })).rejects.toThrow('[NOT_FOUND] History page is no longer available');
+  }
+  await expect(projectRemoteSessionResult('local-db:history:query', { ...result, hits: [result.hits[1]] })).rejects.toThrow('[NOT_FOUND] History page is no longer available');
 });
 
 it('checks nested history target IDs and fails closed before visibility initialization', async () => {

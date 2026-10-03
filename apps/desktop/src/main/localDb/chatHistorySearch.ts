@@ -43,6 +43,7 @@ import { messageToCamel } from './mapper';
 import { fuseRRF, buildMessagesFtsMatch, extractMessagesFtsTokens } from './chatHistorySearch.pure';
 import { buildSnippetFromContent, SNIPPET_SOURCE_MAX_CHARS } from './cjkSeg';
 import { resolveStoredWorkingDirCandidates } from './workingDirHistoryFilter';
+import { remoteVisibleSessionSql } from './ipc/botRemoteVisibility.js';
 import { createLogger } from '../logger';
 import { getEmbeddingService } from '../embedding-host';
 import {
@@ -86,6 +87,8 @@ interface HitMeta {
 type SearchSessionStatus = 'active' | 'archived' | 'deleted';
 
 interface SearchChatHistoryEngineArgs extends SearchChatHistoryArgs {
+  /** Host-owned remote visibility scope, applied to both retrieval arms before ranking. */
+  remoteVisibleOnly?: boolean;
   /**
    * Optional host-side filters for product entry points that should only expose
    * desktop-visible conversations. MCP callers omit these and keep the original
@@ -426,6 +429,7 @@ function buildFilterClause(
   workdirCandidates: string[] | null,
 ): { clause: string; params: unknown[] } {
   const conds: string[] = ['m.rewind_at IS NULL'];
+  if (args.remoteVisibleOnly) conds.push(remoteVisibleSessionSql('s'));
   const params: unknown[] = [];
   if (args.sessionIds && args.sessionIds.length > 0) {
     conds.push(`m.session_id IN (${args.sessionIds.map(() => '?').join(',')})`);
