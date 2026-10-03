@@ -72,4 +72,13 @@ describe('useUserMessageAutoCollapse measurement reuse', () => {
     expect(collapsed(third.container)).toBe('false');
     third.unmount();
   });
+
+  it('does not retain very long bodies; they are measured on every mount', () => {
+    const content = `long-${Math.random()}-${'x'.repeat(70_000)}`;
+    mirrorHeight = 50;
+    render(createElement(Probe, { content })).unmount();
+    heightReads = 0;
+    render(createElement(Probe, { content })).unmount();
+    expect(heightReads).toBe(1);
+  });
 });

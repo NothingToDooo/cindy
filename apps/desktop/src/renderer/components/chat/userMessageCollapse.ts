@@ -88,26 +88,40 @@ export function mayExceedVisualLineThreshold(
 /**
  * 同一正文在同一阈值下最近一次的实测结论。切回长任务时整屏气泡重新挂载,逐个在
  * layout effect 里同步测量会在挂载中途强制排版;有上次结论时直接沿用,只交给
- * ResizeObserver 在排版完成后复核(宽度变了照样纠正)。只存布尔,按插入序封顶,不落盘。
+ * ResizeObserver 在排版完成后复核(宽度变了照样纠正)。只存布尔,不落盘。
+ * 正文本身是键,会话窗口被淘汰后仍被它持有:条数与总字符数都封顶(按插入序淘汰),
+ * 超长单条直接不缓存,照旧同步测量。
  */
 const MEASURED_COLLAPSE_LIMIT = 500;
-const measuredCollapseByThreshold = new Map<number, Map<string, boolean>>();
+const MEASURED_COLLAPSE_MAX_CHARACTERS = 1_000_000;
+const MEASURED_COLLAPSE_MAX_ENTRY_CHARACTERS = 64 * 1024;
+/** 正文 → (阈值 → 是否收起)。 */
+const measuredCollapse = new Map<string, Map<number, boolean>>();
+let measuredCollapseCharacters = 0;
 
 function readMeasuredCollapse(content: string, threshold: number): boolean | undefined {
-  return measuredCollapseByThreshold.get(threshold)?.get(content);
+  return measuredCollapse.get(content)?.get(threshold);
 }
 
 function rememberMeasuredCollapse(content: string, threshold: number, collapse: boolean): void {
-  let measured = measuredCollapseByThreshold.get(threshold);
-  if (!measured) {
-    measured = new Map();
-    measuredCollapseByThreshold.set(threshold, measured);
+  if (content.length > MEASURED_COLLAPSE_MAX_ENTRY_CHARACTERS) return;
+  let byThreshold = measuredCollapse.get(content);
+  if (byThreshold) measuredCollapse.delete(content);
+  else {
+    byThreshold = new Map();
+    measuredCollapseCharacters += content.length;
   }
-  measured.delete(content);
-  measured.set(content, collapse);
-  if (measured.size > MEASURED_COLLAPSE_LIMIT) {
-    const oldest = measured.keys().next().value;
-    if (oldest !== undefined) measured.delete(oldest);
+  byThreshold.set(threshold, collapse);
+  measuredCollapse.set(content, byThreshold);
+  // The new entry is last and below the total cap, so this never evicts it.
+  while (
+    measuredCollapse.size > MEASURED_COLLAPSE_LIMIT ||
+    measuredCollapseCharacters > MEASURED_COLLAPSE_MAX_CHARACTERS
+  ) {
+    const oldest = measuredCollapse.keys().next().value;
+    if (oldest === undefined) break;
+    measuredCollapse.delete(oldest);
+    measuredCollapseCharacters -= oldest.length;
   }
 }
 

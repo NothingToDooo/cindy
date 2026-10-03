@@ -4209,6 +4209,34 @@ function _needsRemoteTaskSelfHeal(sessionId: string, state: SessionChatState, no
   return now - (_lastViewedAt.get(sessionId) ?? now) >= REMOTE_TASK_SELF_HEAL_IDLE_MS;
 }
 
+// Message objects are immutable (every update replaces the row), so each size
+// is computed once. tool_use rows keep only a summary in `content`; their full
+// input (a whole file for Write) lives in toolInput and must count too.
+const _messageCharacterEstimates = new WeakMap<ChatMessage, number>();
+
+function _valueCharacters(value: unknown, depth: number): number {
+  if (typeof value === 'string') return value.length;
+  if (!value || typeof value !== 'object' || depth > 8) return 0;
+  let size = 0;
+  for (const item of Array.isArray(value) ? value : Object.values(value)) {
+    size += _valueCharacters(item, depth + 1);
+  }
+  return size;
+}
+
+function _messageCharacters(message: ChatMessage): number {
+  let size = _messageCharacterEstimates.get(message);
+  if (size === undefined) {
+    size =
+      message.content.length +
+      _valueCharacters(message.toolInput, 0) +
+      _valueCharacters(message.systemCardData, 0) +
+      _valueCharacters(message.retryFiles, 0);
+    _messageCharacterEstimates.set(message, size);
+  }
+  return size;
+}
+
 function _softEvictIdleSessions(): void {
   const now = Date.now();
   let messageCount = 0;
@@ -4218,7 +4246,7 @@ function _softEvictIdleSessions(): void {
   const selfHeal: Candidate[] = [];
   for (const [sessionId, state] of sessions) {
     let size = 0;
-    for (const message of state.messages) size += message.content.length;
+    for (const message of state.messages) size += _messageCharacters(message);
     messageCount += state.messages.length;
     characters += size;
     if (!_isSoftEvictionCandidate(sessionId, state)) continue;

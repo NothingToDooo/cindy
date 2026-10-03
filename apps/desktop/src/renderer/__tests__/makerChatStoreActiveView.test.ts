@@ -1421,6 +1421,28 @@ describe('makerChatStore active view tracking', () => {
     }
   });
 
+  it('counts structured tool input toward the text budget', () => {
+    const sessionId = sid('soft-evict-tool-input');
+    const dispose = enter(sessionId);
+    makerChatStore.__applyStreamEventForTest(sessionId, {
+      sessionId,
+      type: 'tool_use',
+      data: { toolUseId: 'tu-write', toolName: 'Write', input: { file_path: '/a', content: 'x'.repeat(5_000) } },
+    } as never);
+    dispose();
+    const [row] = makerChatStore.getSnapshot(sessionId).messages;
+    expect(row.content.length).toBeLessThan(5_000);
+
+    try {
+      // The summary alone fits, the full Write input does not.
+      makerChatStore.__activeViewTest.setSoftEvictionBudget({ messages: 100, characters: 4_000 });
+      vi.advanceTimersByTime(30_000);
+    } finally {
+      makerChatStore.__activeViewTest.setSoftEvictionBudget(null);
+    }
+    expect(makerChatStore.getSnapshot(sessionId).messages).toHaveLength(0);
+  });
+
   it('evicts a prefetched session that never enters a mounted view by budget', async () => {
     const sessionId = sid('prefetch-evict');
     addMessage(sessionId);
