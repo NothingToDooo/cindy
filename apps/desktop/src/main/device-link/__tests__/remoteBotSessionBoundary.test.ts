@@ -5,6 +5,29 @@ import {
 
 afterEach(() => setRemoteBotSessionLookup(null));
 
+it('filters hidden history hits, contexts and metadata again when visibility changes', async () => {
+  let hide = false;
+  setRemoteBotSessionLookup(async (id) => hide && id === 'secret' ? 'hidden' : 'ordinary');
+  const result = { ok: true, hits: [
+    { sessionId: 'normal', context: [{ content: 'visible' }] },
+    { sessionId: 'secret', context: [{ content: 'private' }] },
+  ], sessions: { normal: { title: 'Normal' }, secret: { title: 'Private title' } }, pool_size: 2, pool_capped: true, nextCursor: 'opaque', hasMore: true };
+  expect(await projectRemoteSessionResult('local-db:history:query', result)).toMatchObject({ hits: result.hits });
+  hide = true;
+  const filtered = await projectRemoteSessionResult('local-db:history:query', result);
+  expect(filtered).toEqual({ ...result, hits: [result.hits[0]], sessions: { normal: { title: 'Normal' } }, pool_size: undefined });
+  expect(JSON.stringify(filtered)).not.toContain('private');
+  expect(await projectRemoteSessionResult('local-db:history:query', { ok: true, sessions: [{ id: 'normal' }, { id: 'secret' }], nextCursor: 'cursor', hasMore: true })).toEqual({ ok: true, sessions: [{ id: 'normal' }], nextCursor: 'cursor', hasMore: true });
+});
+
+it('checks nested history target IDs and fails closed before visibility initialization', async () => {
+  const args = [{ tool: 'search_chat_history', args: { session_ids: ['secret'] } }];
+  await expect(assertRemoteBotInvocationAllowed(args, 'local-db:history:query')).rejects.toThrow('HOST_NOT_READY');
+  setRemoteBotSessionLookup(async () => 'hidden');
+  await expect(assertRemoteBotInvocationAllowed(args, 'local-db:history:query')).rejects.toThrow('NOT_FOUND');
+  await expect(assertRemoteBotInvocationAllowed([{ tool: 'search_chat_history', args: { session_ids: Array(51).fill('id') } }], 'local-db:history:query')).rejects.toThrow('INVALID_PARAMS');
+});
+
 it('checks the normalized source task before remote Review and rechecks visibility changes', async () => {
   let hidden = false;
   const lookup = vi.fn(async () => hidden ? 'hidden' as const : 'ordinary' as const);

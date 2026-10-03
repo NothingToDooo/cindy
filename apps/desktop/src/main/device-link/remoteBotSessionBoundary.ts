@@ -1,3 +1,5 @@
+import { DL_HISTORY_QUERY_CHANNEL } from '@cindy/device-link';
+
 export type RemoteBotSessionAccess = 'ordinary' | 'visible' | 'hidden' | 'missing';
 type Lookup = (sessionId: string, kind?: 'session' | 'bot') => Promise<RemoteBotSessionAccess>;
 export type RemoteBotSessionBatchLookup = (ids: readonly string[], kind: 'session' | 'bot') => Promise<ReadonlyMap<string, RemoteBotSessionAccess>>;
@@ -24,6 +26,15 @@ function sessionIds(value: unknown): string[] {
 
 /** Resolve channel-specific Bot IDs before checking generic Session references. */
 export async function assertRemoteBotInvocationAllowed(args: unknown[], channel = ''): Promise<void> {
+  if (channel === DL_HISTORY_QUERY_CHANNEL) {
+    if (!lookup) throw new Error('[HOST_NOT_READY] History visibility is not ready');
+    const ids = record(record(args[0])?.args)?.session_ids;
+    if (ids !== undefined && (!Array.isArray(ids) || ids.length > 50 || ids.some((id) => typeof id !== 'string' || !id || id.length > 512))) {
+      throw new Error('[INVALID_PARAMS] Invalid history session IDs');
+    }
+    await assertRemoteBotInvocationAllowed([{ sessionIds: ids }]);
+    return;
+  }
   if (channel === 'maker:review:start') {
     const id = record(args[0])?.sourceSessionId;
     if (typeof id !== 'string' || !id.trim() || id.length > 512) {
@@ -95,6 +106,25 @@ export async function assertRemoteBotInvocationAllowed(args: unknown[], channel 
 }
 
 export async function projectRemoteSessionResult(channel: string, value: unknown): Promise<unknown> {
+  if (channel === DL_HISTORY_QUERY_CHANNEL) {
+    if (!lookup) throw new Error('[HOST_NOT_READY] History visibility is not ready');
+    // Rechecked on normal, cached and queued delivery by the existing dispatch path.
+    const row = record(value);
+    if (!row || row.ok !== true) return value;
+    if (Array.isArray(row.sessions)) return { ...row,
+      sessions: await projectRemoteSessionResult('local-db:sessions:list', row.sessions),
+    };
+    if (!Array.isArray(row.hits)) throw new Error('[INVALID_PARAMS] Invalid history result');
+    const visible = await projectRemoteSessionResult('local-db:sessions:list',
+      row.hits.map((hit) => ({ id: record(hit)?.sessionId }))) as { id: string }[];
+    const allowed = new Set(visible.map((item) => item.id));
+    const hits = row.hits.filter((hit) => allowed.has(String(record(hit)?.sessionId)));
+    return { ...row, hits,
+      sessions: Object.fromEntries(Object.entries(record(row.sessions) ?? {}).filter(([id]) => allowed.has(id))),
+      // Hidden results must not reveal their content, metadata or candidate count.
+      pool_size: undefined,
+    };
+  }
   if (!lookup || ![
       'local-db:task-tags:execute',
       'local-db:sessions:get', 'local-db:sessions:get-many', 'local-db:sessions:list', 'maker:list-active', 'local-db:sessions:interrupted-pending', 'local-db:bots:get', 'local-db:bots:list', 'maker:remote-resources:get', 'maker:remote-resources:list'].includes(channel)) return value;
