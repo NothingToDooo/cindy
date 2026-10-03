@@ -17,7 +17,7 @@ vi.mock('../../appSessionState.js', () => ({
   isAppSessionBoundaryPending: () => state.pending,
 }));
 vi.mock('../../authBoundaryQuarantine.js', () => ({
-  withSharedGlobalSkillProjectionMutation: async (_owner: string, work: () => Promise<unknown>) =>
+  withOwnerPrivateSkillProjectionMutation: async (_owner: string, work: () => Promise<unknown>) =>
     work(),
 }));
 vi.mock('../built-in-skills.js', () => ({
